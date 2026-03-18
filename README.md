@@ -17,6 +17,23 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Detail panel** — Click any node to see full host details (ports, services, traffic, DNS queries)
 - **Large capture support** — Streams up to 150,000 packets without loading everything into memory
 
+## OT/ICS Protocol Support
+
+The visualizer detects and classifies industrial control system devices and protocols:
+
+**Supported protocols:** Modbus TCP, EtherNet/IP, Siemens S7comm, DNP3, IEC 60870-5-104, BACnet, OPC-UA, MQTT, PROFINET, HART-IP, GE SRTP, OMRON FINS, Emerson DeltaV
+
+**OT device types:** PLC, RTU, IED, HMI, SCADA Server, DCS, Historian, Engineering Workstation, Building Controller, IoT Gateway, Field Device
+
+**OT vendor fingerprinting:** Rockwell Automation, Siemens, Schneider Electric, ABB, Emerson, GE Digital, Honeywell, Yokogawa, WAGO, Phoenix Contact, Mitsubishi Electric, Omron, Beckhoff, Moxa
+
+**OT-specific anomaly detection:**
+- Modbus write commands (FC 5/6/15/16) — unauthorized PLC writes
+- OT device exposed to internet traffic
+- Cleartext OT protocols (Modbus, DNP3, S7, BACnet have no encryption)
+
+**Modbus TCP deep inspection:** The packet inspector decodes Modbus function codes, unit IDs, register addresses, and flags write commands in red.
+
 ## Requirements
 
 - Python 3.8+

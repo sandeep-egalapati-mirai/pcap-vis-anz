@@ -27,6 +27,17 @@ const HOST_COLORS = {
   "Broadcast":       "#37474F",
   "Multicast":       "#455A64",
   "Unknown Host":    "#546E7A",
+  "PLC":                    "#FF6B35",
+  "RTU":                    "#F7C59F",
+  "IED":                    "#EFEFD0",
+  "HMI":                    "#FF9F1C",
+  "SCADA Server":           "#E71D36",
+  "DCS":                    "#C77DFF",
+  "Historian":              "#7B2D8B",
+  "Engineering Workstation":"#2EC4B6",
+  "Building Controller":    "#CBF3F0",
+  "IoT Gateway":            "#FFBF69",
+  "Field Device":           "#A8DADC",
 };
 
 const PROTO_COLORS = {
@@ -61,6 +72,21 @@ const PROTO_COLORS = {
   "BGP":        "#4DB6AC",
   "Telnet":     "#FF5722",
   "IP":         "#607D8B",
+  "Modbus":       "#FF6B35",
+  "EtherNet/IP":  "#FF9F1C",
+  "S7comm":       "#2196F3",
+  "DNP3":         "#9C27B0",
+  "IEC-104":      "#E91E63",
+  "BACnet":       "#009688",
+  "OPC-UA":       "#FF5722",
+  "MQTT":         "#795548",
+  "MQTT-TLS":     "#8D6E63",
+  "PROFINET":     "#3F51B5",
+  "HART-IP":      "#607D8B",
+  "GE-SRTP":      "#F44336",
+  "OMRON-FINS":   "#4CAF50",
+  "Emerson-DeltaV":"#FF9800",
+  "PROFIBUS":     "#9E9E9E",
 };
 
 function protoColor(protocols) {
@@ -732,6 +758,10 @@ function showDetailPanel(d) {
   const rows = [];
 
   rows.push(row("Type", badge(d.host_type, hostColor(d.host_type))));
+  const OT_TYPES = new Set(["PLC","RTU","IED","HMI","SCADA Server","DCS","Historian","Engineering Workstation","Building Controller","IoT Gateway","Field Device"]);
+  if (OT_TYPES.has(d.host_type)) {
+    rows.push(`<div class="ot-device-badge">&#9881; OT/ICS Device</div>`);
+  }
   if (d.os_hint)     rows.push(row("OS guess",   mono(d.os_hint)));
   if (d.mac)         rows.push(row("MAC", mono(d.mac) + (d.mac_vendor ? ` <span style="color:var(--text2)">(${d.mac_vendor})</span>` : "")));
   rows.push(row("Traffic",
@@ -962,6 +992,17 @@ function hostIcon(type) {
     "Internet Host":   "I",
     "Broadcast":       "•",
     "Multicast":       "•",
+    "PLC":                    "P",
+    "RTU":                    "R",
+    "IED":                    "I",
+    "HMI":                    "H",
+    "SCADA Server":           "S",
+    "DCS":                    "D",
+    "Historian":              "H",
+    "Engineering Workstation":"E",
+    "Building Controller":    "B",
+    "IoT Gateway":            "G",
+    "Field Device":           "F",
   };
   return icons[type] || "?";
 }
@@ -1111,6 +1152,37 @@ function renderPktDetail(p) {
     httpDiv.appendChild(hdr);
     httpDiv.appendChild(content);
     pktTree.appendChild(httpDiv);
+  }
+
+  // Modbus section
+  if (p.modbus) {
+    const mb = p.modbus;
+    const mbDiv = document.createElement("div");
+    mbDiv.className = "pkt-layer";
+    const hdr = document.createElement("div");
+    hdr.className = "pkt-layer-header";
+    const fcColor = mb.is_write ? "var(--red)" : mb.is_error ? "var(--yellow)" : "var(--green)";
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> <span style="color:${fcColor}">Modbus TCP</span>`;
+    hdr.addEventListener("click", () => mbDiv.classList.toggle("collapsed"));
+    const fields = document.createElement("div");
+    fields.className = "pkt-layer-fields";
+    const mbFields = [
+      {k: "Transaction ID", v: mb.transaction_id},
+      {k: "Unit ID",        v: mb.unit_id},
+      {k: "Function Code",  v: `${mb.function_code} — ${mb.function_name}`},
+      ...Object.entries(mb.details || {}).map(([k, v]) => ({k, v})),
+    ];
+    if (mb.is_write) mbFields.push({k: "⚠ WARNING", v: "WRITE command — modifies PLC state"});
+    mbFields.forEach(f => {
+      const row = document.createElement("div");
+      row.className = "pkt-field";
+      const valColor = mb.is_write && f.k === "⚠ WARNING" ? "var(--red)" : "";
+      row.innerHTML = `<span class="pkt-fk">${escHtml(String(f.k))}:</span><span class="pkt-fv" style="color:${valColor}">${escHtml(String(f.v))}</span>`;
+      fields.appendChild(row);
+    });
+    mbDiv.appendChild(hdr);
+    mbDiv.appendChild(fields);
+    pktTree.appendChild(mbDiv);
   }
 
   // Hex dump

@@ -25,6 +25,27 @@ MAC_VENDORS = {
     "001E58": "D-Link", "001CF0": "D-Link",
     "B4752E": "ASUSTek",
     "001018": "Broadcom",
+    # OT/ICS vendors
+    "001D9C": "Rockwell Automation",
+    "00E0B1": "Rockwell Automation",
+    "000B00": "Siemens",
+    "001FB9": "Siemens",
+    "0021CA": "Siemens",
+    "00A087": "Schneider Electric",
+    "0020F4": "Schneider Electric",
+    "002569": "Yokogawa",
+    "00A0F1": "ABB",
+    "D89D67": "ABB",
+    "0008A1": "Emerson",
+    "001E67": "GE Digital",
+    "000049": "Honeywell",
+    "001177": "Honeywell",
+    "000D69": "WAGO",
+    "0006ED": "Phoenix Contact",
+    "00A0D1": "Mitsubishi Electric",
+    "00E0E3": "Omron",
+    "001094": "Beckhoff",
+    "0030D8": "Moxa",
 }
 
 # ── Port → (protocol label, host-type hint) ───────────────────────────────────
@@ -83,9 +104,30 @@ PORT_MAP = {
     5353: ("mDNS",          "Discovery"),
     1900: ("SSDP",          "Discovery"),
     5355: ("LLMNR",         "Windows Host"),
+    # OT/ICS protocols
+    502:   ("Modbus",       "PLC"),
+    2222:  ("EtherNet/IP",  "PLC"),
+    44818: ("EtherNet/IP",  "PLC"),
+    102:   ("S7comm",       "PLC"),
+    20000: ("DNP3",         "RTU"),
+    2404:  ("IEC-104",      "IED"),
+    47808: ("BACnet",       "Building Controller"),
+    4840:  ("OPC-UA",       "SCADA Server"),
+    1883:  ("MQTT",         "IoT Gateway"),
+    8883:  ("MQTT-TLS",     "IoT Gateway"),
+    34964: ("PROFINET",     "PLC"),
+    5094:  ("HART-IP",      "Field Device"),
+    18245: ("GE-SRTP",      "PLC"),
+    18246: ("GE-SRTP",      "PLC"),
+    9600:  ("OMRON-FINS",   "PLC"),
+    4000:  ("Emerson-DeltaV","DCS"),
+    1541:  ("Foxboro",      "DCS"),
 }
 
 HOST_TYPE_PRIORITY = [
+    "PLC", "RTU", "IED", "HMI", "SCADA Server", "DCS",
+    "Historian", "Engineering Workstation", "Building Controller",
+    "IoT Gateway", "Field Device",
     "Router", "VPN Gateway", "Network Device", "DNS Server",
     "DHCP Server", "Web Server", "Mail Server", "Database Server",
     "SSH Server", "FTP Server", "Telnet Server", "Windows Host", "Directory Server",
@@ -207,6 +249,52 @@ def parse_http(payload_bytes, protocol):
     return None
 
 
+def parse_modbus(payload_bytes):
+    """Parse Modbus TCP payload. Returns dict or None."""
+    if not payload_bytes or len(payload_bytes) < 6:
+        return None
+    try:
+        import struct
+        transaction_id = struct.unpack(">H", payload_bytes[0:2])[0]
+        protocol_id    = struct.unpack(">H", payload_bytes[2:4])[0]
+        length         = struct.unpack(">H", payload_bytes[4:6])[0]
+        if protocol_id != 0 or len(payload_bytes) < 7:
+            return None
+        unit_id  = payload_bytes[6]
+        func_code = payload_bytes[7] if len(payload_bytes) > 7 else None
+        FC_NAMES = {
+            1: "Read Coils", 2: "Read Discrete Inputs",
+            3: "Read Holding Registers", 4: "Read Input Registers",
+            5: "Write Single Coil", 6: "Write Single Register",
+            8: "Diagnostics", 15: "Write Multiple Coils",
+            16: "Write Multiple Registers", 22: "Mask Write Register",
+            23: "Read/Write Multiple Registers", 43: "Read Device Identification",
+            90: "Modbus Encapsulated (suspicious)",
+        }
+        result = {
+            "transaction_id": transaction_id,
+            "unit_id": unit_id,
+            "function_code": func_code,
+            "function_name": FC_NAMES.get(func_code, f"Unknown FC {func_code}"),
+            "is_write": func_code in (5, 6, 15, 16, 22, 23),
+            "is_error": func_code is not None and func_code > 0x80,
+            "details": {},
+        }
+        data = payload_bytes[8:] if len(payload_bytes) > 8 else b""
+        if func_code in (1, 2, 3, 4) and len(data) >= 4:
+            result["details"]["start_address"] = struct.unpack(">H", data[0:2])[0]
+            result["details"]["quantity"]       = struct.unpack(">H", data[2:4])[0]
+        elif func_code in (5, 6) and len(data) >= 4:
+            result["details"]["output_address"] = struct.unpack(">H", data[0:2])[0]
+            result["details"]["output_value"]   = struct.unpack(">H", data[2:4])[0]
+        elif func_code in (15, 16) and len(data) >= 4:
+            result["details"]["start_address"]  = struct.unpack(">H", data[0:2])[0]
+            result["details"]["quantity"]       = struct.unpack(">H", data[2:4])[0]
+        return result
+    except Exception:
+        return None
+
+
 def analyze_anomalies(hosts, connections, packet_store):
     """Detect network anomalies and return a list of anomaly dicts."""
     anomalies = []
@@ -303,6 +391,61 @@ def analyze_anomalies(hosts, connections, packet_store):
                     "src": a,
                     "dst": b,
                     "description": f"Suspicious port {port} used between {a} and {b} — possible malicious activity",
+                })
+                break
+
+    # ── OT: Modbus write commands from unexpected sources ──────────────────────
+    for conn_key, pkts in packet_store.items():
+        for pkt in pkts:
+            if pkt.get("dport") == 502 or pkt.get("sport") == 502:
+                hex_str = pkt.get("hex", "")
+                if hex_str:
+                    try:
+                        raw = bytes.fromhex(hex_str)
+                        # Modbus TCP starts after Ethernet+IP+TCP headers (~54 bytes)
+                        # Try to find Modbus payload in raw bytes
+                        for offset in range(40, min(60, len(raw) - 8)):
+                            mb = parse_modbus(raw[offset:])
+                            if mb and mb.get("is_write"):
+                                anomalies.append({
+                                    "type": "ot_modbus_write",
+                                    "severity": "high",
+                                    "src": pkt["src"],
+                                    "dst": pkt["dst"],
+                                    "description": f"Modbus WRITE command ({mb['function_name']}) from {pkt['src']} to {pkt['dst']} — unauthorized PLC write",
+                                })
+                                break
+                    except Exception:
+                        pass
+                break
+
+    # ── OT: IT host communicating directly with OT device ─────────────────────
+    ot_types = {"PLC", "RTU", "IED", "DCS", "SCADA Server", "Building Controller", "Field Device"}
+    for ip, h in hosts.items():
+        if h["host_type"] in ot_types:
+            for (a, b) in connections:
+                peer = b if a == ip else (a if b == ip else None)
+                if peer and not is_private(peer):
+                    anomalies.append({
+                        "type": "ot_internet_exposure",
+                        "severity": "high",
+                        "src": peer,
+                        "dst": ip,
+                        "description": f"OT device {ip} ({h['host_type']}) communicating with internet host {peer} — critical exposure",
+                    })
+
+    # ── OT: Cleartext OT protocols (Modbus, DNP3, S7, BACnet) ─────────────────
+    cleartext_ot_ports = {502: "Modbus", 20000: "DNP3", 102: "S7comm", 47808: "BACnet", 4840: "OPC-UA"}
+    for (a, b), pkts in packet_store.items():
+        for pkt in pkts:
+            port = pkt.get("dport") or pkt.get("sport")
+            if port in cleartext_ot_ports:
+                anomalies.append({
+                    "type": "ot_cleartext",
+                    "severity": "medium",
+                    "src": a,
+                    "dst": b,
+                    "description": f"Cleartext {cleartext_ot_ports[port]} traffic between {a} and {b} — OT protocol has no encryption",
                 })
                 break
 
@@ -526,6 +669,7 @@ def analyze_pcap(filepath):
                             "sport": sport_, "dport": dport_,
                             "layers": [], "hex": "", "info": "",
                             "http": None,
+                            "modbus": None,
                         }
                         if Ether in pkt:
                             e_ = pkt[Ether]
@@ -585,6 +729,12 @@ def analyze_pcap(filepath):
                         # HTTP parsing
                         if protocol == "HTTP" and payload:
                             pd["http"] = parse_http(payload, protocol)
+
+                        # Modbus TCP parsing
+                        if payload and (dport_ == 502 or sport_ == 502):
+                            mb = parse_modbus(payload)
+                            if mb:
+                                pd["modbus"] = mb
 
                         # Store hex dump of payload
                         if payload:
