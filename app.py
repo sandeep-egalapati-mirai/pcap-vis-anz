@@ -855,6 +855,9 @@ def index():
 @app.route("/upload", methods=["POST"])
 def upload():
     files = request.files.getlist("file")
+    if not files:
+        single = request.files.get("file")
+        files = [single] if single else []
     if not files or all(not f.filename for f in files):
         return jsonify({"error": "No file provided"}), 400
 
