@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PCAP Network Visualizer</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<!-- ── Loading overlay ─────────────────────────────────────────────────── -->
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <p>Parsing network capture&hellip;</p>
+</div>
+
+<!-- ── Upload modal ────────────────────────────────────────────────────── -->
+<div id="modal-overlay">
+  <div id="modal-box">
+    <h2>PCAP Network Visualizer</h2>
+    <p>Upload a network capture file to map host communications, detect host types, and visualise protocol traffic.</p>
+
+    <div id="drop-zone">
+      <div class="dz-icon">📡</div>
+      <p>Drop your capture file here or <span>click to browse</span></p>
+      <p style="font-size:11px;margin-top:6px;color:#555">.pcap · .pcapng · .cap · up to 200 MB</p>
+    </div>
+
+    <input type="file" id="file-input" accept=".pcap,.pcapng,.cap">
+    <div id="modal-error"></div>
+  </div>
+</div>
+
+<!-- ── App shell ────────────────────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Header -->
+  <header>
+    <h1>PCAP <span>Network Visualizer</span></h1>
+    <div id="stats-bar">
+      <div class="stat">Hosts: <strong id="stat-hosts">—</strong></div>
+      <div class="stat">Connections: <strong id="stat-conns">—</strong></div>
+      <div class="stat">Packets: <strong id="stat-pkts">—</strong></div>
+    </div>
+    <button id="upload-btn">Upload File</button>
+  </header>
+
+  <!-- Main -->
+  <div id="main">
+
+    <!-- Sidebar -->
+    <div id="sidebar">
+
+      <div class="sidebar-section">
+        <h3>Search</h3>
+        <input id="search-box" type="text" placeholder="IP address or hostname…">
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Protocols</h3>
+        <div id="proto-filters"></div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Host Types</h3>
+        <div id="type-filters"></div>
+      </div>
+
+    </div><!-- /sidebar -->
+
+    <!-- Graph -->
+    <div id="graph-wrap">
+      <svg id="graph-svg"></svg>
+
+      <!-- Truncation banner -->
+      <div id="trunc-banner">
+        ⚠ Large capture — showing first 150,000 packets
+      </div>
+
+      <!-- Graph controls -->
+      <div id="graph-controls">
+        <button class="gc-btn" id="btn-zoom-in"  title="Zoom in">+</button>
+        <button class="gc-btn" id="btn-zoom-out" title="Zoom out">−</button>
+        <button class="gc-btn" id="btn-zoom-fit" title="Fit to screen">⊡</button>
+      </div>
+
+      <!-- Legend -->
+      <div id="legend">
+        <h4>Host Types</h4>
+        <div id="legend-hosts"></div>
+      </div>
+
+      <!-- Tooltip -->
+      <div id="tooltip"></div>
+    </div><!-- /graph-wrap -->
+
+    <!-- Detail panel -->
+    <div id="detail-panel">
+      <div id="detail-header">
+        <button id="detail-close">×</button>
+        <div class="dh-ip" id="dh-ip">—</div>
+        <div class="dh-hostname" id="dh-hostname"></div>
+      </div>
+      <div id="detail-body"></div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"
+        integrity="sha512-vc58qvvBdrDR4etbxMdlTt4GBQk1qjvyORR2nrsPsFPyrs+/u5c3+1Ct6upOgdZoIl7eq6k3a1UPDSNAQi/32A=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
