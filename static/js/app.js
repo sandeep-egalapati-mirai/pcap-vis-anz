@@ -169,8 +169,10 @@ function closeModal() {
 }
 
 async function uploadFiles(files) {
+  // Copy to array immediately — closeModal() clears the live FileList via fileInput.value=""
+  const fileArray = Array.from(files);
   const allowed = ["pcap","pcapng","cap"];
-  for (const file of files) {
+  for (const file of fileArray) {
     const ext = file.name.split(".").pop().toLowerCase();
     if (!allowed.includes(ext)) {
       modalError.textContent = `Unsupported file type: ${file.name}. Use .pcap, .pcapng, or .cap`;
@@ -182,7 +184,7 @@ async function uploadFiles(files) {
   loadingOverlay.classList.remove("hidden");
 
   const form = new FormData();
-  for (const file of files) form.append("file", file);
+  for (const file of fileArray) form.append("file", file);
 
   try {
     const resp = await fetch("/upload", { method: "POST", body: form });
