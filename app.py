@@ -1,5 +1,6 @@
 import os
 import tempfile
+import statistics
 from collections import defaultdict, Counter
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
@@ -92,6 +93,8 @@ HOST_TYPE_PRIORITY = [
     "NTP Server", "Print Server", "Security Tool", "Remote Desktop",
 ]
 
+SUSPICIOUS_PORTS = {4444, 1337, 31337, 6666, 6667, 6668}
+
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -129,6 +132,192 @@ def is_private(ip):
         return False
 
 
+def geo_lookup(ip):
+    try:
+        import geoip2.database
+        reader = geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-City.mmdb')
+        r = reader.city(ip)
+        return {
+            "country": r.country.name,
+            "country_code": r.country.iso_code,
+            "city": r.city.name,
+            "lat": float(r.location.latitude) if r.location.latitude else None,
+            "lon": float(r.location.longitude) if r.location.longitude else None,
+        }
+    except Exception:
+        return None
+
+
+def parse_http(payload_bytes, protocol):
+    """Try to parse HTTP request or response from payload bytes."""
+    if not payload_bytes:
+        return None
+    try:
+        text = payload_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        try:
+            text = payload_bytes.decode("latin-1", errors="replace")
+        except Exception:
+            return None
+
+    lines = text.split("\r\n")
+    if not lines:
+        return None
+    first = lines[0]
+
+    http_methods = ("GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "TRACE", "CONNECT")
+    if any(first.startswith(m) for m in http_methods):
+        # Request
+        parts = first.split(" ", 2)
+        if len(parts) < 2:
+            return None
+        method = parts[0]
+        url = parts[1] if len(parts) > 1 else ""
+        version = parts[2] if len(parts) > 2 else ""
+        headers = {}
+        body_start = 0
+        for i, line in enumerate(lines[1:], 1):
+            if line == "":
+                body_start = i + 1
+                break
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip()] = v.strip()
+        body_preview = "\r\n".join(lines[body_start:body_start + 5]) if body_start else ""
+        return {"type": "request", "method": method, "url": url, "version": version,
+                "headers": headers, "body_preview": body_preview[:500]}
+    elif first.startswith("HTTP/"):
+        # Response
+        parts = first.split(" ", 2)
+        version = parts[0] if len(parts) > 0 else ""
+        status_code = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        reason = parts[2] if len(parts) > 2 else ""
+        headers = {}
+        body_start = 0
+        for i, line in enumerate(lines[1:], 1):
+            if line == "":
+                body_start = i + 1
+                break
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip()] = v.strip()
+        body_preview = "\r\n".join(lines[body_start:body_start + 5]) if body_start else ""
+        return {"type": "response", "version": version, "status_code": status_code,
+                "reason": reason, "headers": headers, "body_preview": body_preview[:500]}
+    return None
+
+
+def analyze_anomalies(hosts, connections, packet_store):
+    """Detect network anomalies and return a list of anomaly dicts."""
+    anomalies = []
+
+    # ── Port scan: single source contacting >5 unique dst IPs with >15 unique dst ports ──
+    src_dst_ips = defaultdict(set)
+    src_dst_ports = defaultdict(set)
+    for (a, b), conn in connections.items():
+        src_dst_ips[a].add(b)
+        src_dst_ips[b].add(a)
+        for p in conn["dst_ports"]:
+            src_dst_ports[a].add(p)
+            src_dst_ports[b].add(p)
+
+    for ip, dst_ips in src_dst_ips.items():
+        if len(dst_ips) > 5 and len(src_dst_ports.get(ip, set())) > 15:
+            anomalies.append({
+                "type": "port_scan",
+                "severity": "high",
+                "src": ip,
+                "dst": None,
+                "description": f"{ip} contacted {len(dst_ips)} unique IPs across {len(src_dst_ports[ip])} ports — possible port scan",
+            })
+
+    # ── Cleartext credentials: FTP/Telnet connections with payload ──
+    for (a, b), pkts in packet_store.items():
+        for pkt in pkts:
+            dport = pkt.get("dport")
+            sport = pkt.get("sport")
+            if dport in (21, 23) or sport in (21, 23):
+                if pkt.get("hex"):
+                    port = dport if dport in (21, 23) else sport
+                    proto_name = "FTP" if port == 21 else "Telnet"
+                    anomalies.append({
+                        "type": "cleartext_creds",
+                        "severity": "medium",
+                        "src": pkt.get("src", a),
+                        "dst": pkt.get("dst", b),
+                        "description": f"Cleartext {proto_name} traffic detected between {a} and {b} — credentials may be exposed",
+                    })
+                    break
+
+    # ── Beaconing: regular inter-packet timing ──
+    for conn_key, pkts in packet_store.items():
+        if len(pkts) < 10:
+            continue
+        times = [p["time"] for p in pkts]
+        times.sort()
+        intervals = [times[i+1] - times[i] for i in range(len(times)-1)]
+        if not intervals:
+            continue
+        mean_interval = sum(intervals) / len(intervals)
+        if mean_interval <= 0:
+            continue
+        try:
+            std_interval = statistics.stdev(intervals)
+        except statistics.StatisticsError:
+            continue
+        cv = std_interval / mean_interval  # coefficient of variation
+        if cv < 0.2:  # < 20% of mean
+            a, b = conn_key
+            anomalies.append({
+                "type": "beaconing",
+                "severity": "medium",
+                "src": a,
+                "dst": b,
+                "description": f"Regular beaconing detected between {a} and {b} ({len(pkts)} packets, CV={cv:.2%})",
+            })
+
+    # ── Data exfiltration: host sending >10MB to non-private IP ──
+    TEN_MB = 10 * 1024 * 1024
+    for ip, h in hosts.items():
+        if h["bytes_sent"] > TEN_MB:
+            # Check if any connections go to non-private IPs
+            for (a, b) in connections:
+                peer = b if a == ip else (a if b == ip else None)
+                if peer and not is_private(peer):
+                    anomalies.append({
+                        "type": "exfiltration",
+                        "severity": "high",
+                        "src": ip,
+                        "dst": peer,
+                        "description": f"{ip} sent {h['bytes_sent'] / 1048576:.1f} MB to external IP {peer} — possible data exfiltration",
+                    })
+                    break
+
+    # ── Suspicious ports ──
+    for (a, b), conn in connections.items():
+        for port in conn["dst_ports"]:
+            if port in SUSPICIOUS_PORTS:
+                anomalies.append({
+                    "type": "suspicious_port",
+                    "severity": "high",
+                    "src": a,
+                    "dst": b,
+                    "description": f"Suspicious port {port} used between {a} and {b} — possible malicious activity",
+                })
+                break
+
+    # Deduplicate (keep unique type+src+dst combos)
+    seen = set()
+    deduped = []
+    for a in anomalies:
+        key = (a["type"], a["src"], a["dst"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(a)
+
+    return deduped
+
+
 def analyze_pcap(filepath):
     try:
         from scapy.all import IP, IPv6, TCP, UDP, ICMP, ARP, Ether, DNS
@@ -142,6 +331,8 @@ def analyze_pcap(filepath):
         "packet_count": 0,
         "bytes": 0,
         "dst_ports": set(),
+        "first_seen": None,
+        "last_seen": None,
     })
 
     def host(ip, mac=None):
@@ -207,6 +398,7 @@ def analyze_pcap(filepath):
                 dip = pkt[IP].dst
                 ttl = pkt[IP].ttl
                 plen = len(pkt)
+                rel_t = round(float(pkt.time) - first_pkt_time, 6) if first_pkt_time else 0
 
                 smac = pkt[Ether].src if Ether in pkt else None
                 dmac = pkt[Ether].dst if Ether in pkt else None
@@ -227,6 +419,12 @@ def analyze_pcap(filepath):
 
                 protocol = "IP"
                 conn_key = tuple(sorted([sip, dip]))
+
+                # Update connection timing
+                conn = connections[conn_key]
+                if conn["first_seen"] is None:
+                    conn["first_seen"] = rel_t
+                conn["last_seen"] = rel_t
 
                 # ── TCP ──────────────────────────────────────────────────────
                 if TCP in pkt:
@@ -320,7 +518,6 @@ def analyze_pcap(filepath):
                 # ── Per-packet capture for drill-down ────────────────────────
                 if len(packet_store[conn_key]) < MAX_STORED_PER_CONN:
                     try:
-                        rel_t = round(float(pkt.time) - first_pkt_time, 6) if first_pkt_time else 0
                         sport_ = pkt[TCP].sport if TCP in pkt else (pkt[UDP].sport if UDP in pkt else None)
                         dport_ = pkt[TCP].dport if TCP in pkt else (pkt[UDP].dport if UDP in pkt else None)
                         pd = {
@@ -328,6 +525,7 @@ def analyze_pcap(filepath):
                             "protocol": protocol, "len": plen,
                             "sport": sport_, "dport": dport_,
                             "layers": [], "hex": "", "info": "",
+                            "http": None,
                         }
                         if Ether in pkt:
                             e_ = pkt[Ether]
@@ -348,6 +546,7 @@ def analyze_pcap(filepath):
                             {"k": "Src",         "v": ip_.src},
                             {"k": "Dst",         "v": ip_.dst},
                         ]})
+                        payload = b""
                         if TCP in pkt:
                             t_ = pkt[TCP]
                             flag_str = str(t_.flags)
@@ -382,8 +581,14 @@ def analyze_pcap(filepath):
                             ]})
                             pd["info"] = t_names.get(ic_.type, f"Type {ic_.type}")
                             payload = b""
-                        else:
-                            payload = b""
+
+                        # HTTP parsing
+                        if protocol == "HTTP" and payload:
+                            pd["http"] = parse_http(payload, protocol)
+
+                        # Store hex dump of payload
+                        if payload:
+                            pd["payload_hex"] = payload[:256].hex()
                         raw = bytes(pkt)[:256]
                         pd["hex"] = raw.hex()
                         packet_store[conn_key].append(pd)
@@ -428,9 +633,15 @@ def analyze_pcap(filepath):
         else:
             h["host_type"] = "Unknown Host"
 
+    # ── Anomaly detection ─────────────────────────────────────────────────────
+    anomalies = analyze_anomalies(hosts, connections, packet_store)
+
     # ── Serialise ─────────────────────────────────────────────────────────────
     nodes = []
     for ip, h in hosts.items():
+        geo = None
+        if not h["is_private"]:
+            geo = geo_lookup(ip)
         nodes.append({
             "id": ip,
             "ip": ip,
@@ -449,6 +660,7 @@ def analyze_pcap(filepath):
             "dns_queries": sorted(h["dns_queries"])[:10],
             "is_private": h["is_private"],
             "flags": list(h["flags"]),
+            "geo": geo,
         })
 
     edges = []
@@ -460,6 +672,8 @@ def analyze_pcap(filepath):
             "packet_count": c["packet_count"],
             "bytes": c["bytes"],
             "ports": sorted(c["dst_ports"])[:20],
+            "first_seen": c["first_seen"],
+            "last_seen": c["last_seen"],
         })
 
     all_protocols = sorted({p for n in nodes for p in n["protocols"]})
@@ -480,6 +694,7 @@ def analyze_pcap(filepath):
         "nodes": nodes,
         "edges": edges,
         "packets": packets_out,
+        "anomalies": anomalies,
         "stats": {
             "total_packets": processed,
             "total_hosts": len(nodes),
@@ -487,6 +702,145 @@ def analyze_pcap(filepath):
             "protocols": all_protocols,
             "host_types": all_host_types,
             "truncated": processed >= MAX_PACKETS,
+        },
+    }
+
+
+def merge_results(results):
+    """Merge multiple analyze_pcap result dicts into one."""
+    merged_nodes = {}
+    merged_edges = {}
+    merged_packets = {}
+    merged_anomalies = []
+    anomaly_keys = set()
+    total_packets = 0
+    truncated = False
+
+    for result in results:
+        if "error" in result:
+            continue
+        total_packets += result["stats"]["total_packets"]
+        if result["stats"]["truncated"]:
+            truncated = True
+
+        # Merge nodes
+        for n in result["nodes"]:
+            ip = n["ip"]
+            if ip not in merged_nodes:
+                merged_nodes[ip] = dict(n)
+                merged_nodes[ip]["protocols"] = set(n["protocols"])
+                merged_nodes[ip]["services"] = set(n["services"])
+                merged_nodes[ip]["open_ports"] = set(n["open_ports"])
+                merged_nodes[ip]["dns_names"] = set(n["dns_names"])
+                merged_nodes[ip]["dns_queries"] = set(n["dns_queries"])
+            else:
+                mn = merged_nodes[ip]
+                mn["packet_count"] += n["packet_count"]
+                mn["bytes_sent"] += n["bytes_sent"]
+                mn["bytes_recv"] += n["bytes_recv"]
+                mn["protocols"].update(n["protocols"])
+                mn["services"].update(n["services"])
+                mn["open_ports"].update(n["open_ports"])
+                mn["dns_names"].update(n["dns_names"])
+                mn["dns_queries"].update(n["dns_queries"])
+                if not mn["hostname"] and n["hostname"]:
+                    mn["hostname"] = n["hostname"]
+                if not mn["geo"] and n.get("geo"):
+                    mn["geo"] = n["geo"]
+
+        # Merge edges
+        for e in result["edges"]:
+            key = tuple(sorted([e["source"], e["target"]]))
+            if key not in merged_edges:
+                merged_edges[key] = {
+                    "source": key[0],
+                    "target": key[1],
+                    "protocols": set(e["protocols"]),
+                    "packet_count": e["packet_count"],
+                    "bytes": e["bytes"],
+                    "ports": set(e["ports"]),
+                    "first_seen": e.get("first_seen"),
+                    "last_seen": e.get("last_seen"),
+                }
+            else:
+                me = merged_edges[key]
+                me["packet_count"] += e["packet_count"]
+                me["bytes"] += e["bytes"]
+                me["protocols"].update(e["protocols"])
+                me["ports"].update(e["ports"])
+                if e.get("last_seen") is not None:
+                    if me["last_seen"] is None or e["last_seen"] > me["last_seen"]:
+                        me["last_seen"] = e["last_seen"]
+
+        # Merge packets
+        for conn_key, pkts in result["packets"].items():
+            if conn_key not in merged_packets:
+                merged_packets[conn_key] = pkts[:50]
+            else:
+                existing = merged_packets[conn_key]
+                remaining = 50 - len(existing)
+                if remaining > 0:
+                    merged_packets[conn_key] = existing + pkts[:remaining]
+
+        # Merge anomalies (deduplicate)
+        for a in result.get("anomalies", []):
+            akey = (a["type"], a["src"], a["dst"])
+            if akey not in anomaly_keys:
+                anomaly_keys.add(akey)
+                merged_anomalies.append(a)
+
+    # Serialize merged nodes
+    nodes_out = []
+    for ip, mn in merged_nodes.items():
+        nodes_out.append({
+            "id": ip,
+            "ip": ip,
+            "mac": mn["mac"],
+            "mac_vendor": mn["mac_vendor"],
+            "hostname": mn["hostname"],
+            "dns_names": sorted(mn["dns_names"])[:5],
+            "protocols": sorted(mn["protocols"]),
+            "services": sorted(mn["services"]),
+            "open_ports": sorted(mn["open_ports"])[:30],
+            "os_hint": mn["os_hint"],
+            "host_type": mn["host_type"],
+            "packet_count": mn["packet_count"],
+            "bytes_sent": mn["bytes_sent"],
+            "bytes_recv": mn["bytes_recv"],
+            "dns_queries": sorted(mn["dns_queries"])[:10],
+            "is_private": mn["is_private"],
+            "flags": mn.get("flags", []),
+            "geo": mn.get("geo"),
+        })
+
+    edges_out = []
+    for key, me in merged_edges.items():
+        edges_out.append({
+            "source": me["source"],
+            "target": me["target"],
+            "protocols": sorted(me["protocols"]),
+            "packet_count": me["packet_count"],
+            "bytes": me["bytes"],
+            "ports": sorted(me["ports"])[:20],
+            "first_seen": me.get("first_seen"),
+            "last_seen": me.get("last_seen"),
+        })
+
+    all_protocols = sorted({p for n in nodes_out for p in n["protocols"]})
+    all_host_types = sorted({n["host_type"] for n in nodes_out})
+
+    return {
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "packets": merged_packets,
+        "anomalies": merged_anomalies,
+        "stats": {
+            "total_packets": total_packets,
+            "total_hosts": len(nodes_out),
+            "total_connections": len(edges_out),
+            "protocols": all_protocols,
+            "host_types": all_host_types,
+            "truncated": truncated,
         },
     }
 
@@ -500,28 +854,46 @@ def index():
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    if "file" not in request.files:
+    files = request.files.getlist("file")
+    if not files or all(not f.filename for f in files):
         return jsonify({"error": "No file provided"}), 400
 
-    f = request.files["file"]
-    if not f.filename:
-        return jsonify({"error": "No file selected"}), 400
-
-    if not allowed_file(f.filename):
-        return jsonify({"error": "Unsupported file type. Upload a .pcap, .pcapng, or .cap file."}), 400
-
-    suffix = "." + secure_filename(f.filename).rsplit(".", 1)[-1]
-    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    results = []
+    tmp_paths = []
     try:
-        f.save(tmp.name)
-        tmp.close()
-        result = analyze_pcap(tmp.name)
+        for f in files:
+            if not f.filename:
+                continue
+            if not allowed_file(f.filename):
+                return jsonify({"error": f"Unsupported file type: {f.filename}. Upload .pcap, .pcapng, or .cap files."}), 400
+            suffix = "." + secure_filename(f.filename).rsplit(".", 1)[-1]
+            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            f.save(tmp.name)
+            tmp.close()
+            tmp_paths.append(tmp.name)
+            results.append(analyze_pcap(tmp.name))
+
+        if not results:
+            return jsonify({"error": "No valid files processed"}), 400
+
+        # Check for errors
+        errors = [r.get("error") for r in results if "error" in r]
+        if errors and len(errors) == len(results):
+            return jsonify({"error": errors[0]}), 400
+
+        result = merge_results([r for r in results if "error" not in r])
         return jsonify(result)
     finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+        for path in tmp_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+@app.route("/session-schema")
+def session_schema():
+    return jsonify({"status": "ok", "note": "Sessions are handled client-side only."})
 
 
 if __name__ == "__main__":

@@ -18,17 +18,22 @@
 <div id="modal-overlay">
   <div id="modal-box">
     <h2>PCAP Network Visualizer</h2>
-    <p>Upload a network capture file to map host communications, detect host types, and visualise protocol traffic.</p>
+    <p>Upload one or more network capture files to map host communications, detect host types, and visualise protocol traffic.</p>
 
     <div id="drop-zone">
       <div class="dz-icon">📡</div>
-      <p>Drop your capture file here or <span>click to browse</span></p>
+      <p>Drop one or more capture files here or <span>click to browse</span></p>
       <p style="font-size:11px;margin-top:6px;color:#555">.pcap · .pcapng · .cap · up to 200 MB</p>
     </div>
 
-    <input type="file" id="file-input" accept=".pcap,.pcapng,.cap">
+    <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" multiple>
     <div id="modal-error"></div>
   </div>
+</div>
+
+<!-- ── Node context menu ────────────────────────────────────────────────── -->
+<div id="ctx-menu" class="hidden">
+  <div id="ctx-add-note">✎ Add Note</div>
 </div>
 
 <!-- ── App shell ────────────────────────────────────────────────────────── -->
@@ -42,6 +47,29 @@
       <div class="stat">Connections: <strong id="stat-conns">—</strong></div>
       <div class="stat">Packets: <strong id="stat-pkts">—</strong></div>
     </div>
+
+    <!-- View toggle -->
+    <div class="btn-group" id="view-toggle">
+      <button class="vt-btn active" data-view="graph">Graph</button>
+      <button class="vt-btn" data-view="table">Table</button>
+      <button class="vt-btn" data-view="dns">DNS Map</button>
+    </div>
+
+    <!-- Export dropdown -->
+    <div class="dropdown" id="export-dropdown">
+      <button class="header-btn" id="export-btn">Export ▾</button>
+      <div class="dropdown-menu hidden" id="export-menu">
+        <div class="dropdown-item" id="exp-png">Export PNG</div>
+        <div class="dropdown-item" id="exp-csv">Export CSV</div>
+        <div class="dropdown-item" id="exp-anomalies">Export Anomalies</div>
+      </div>
+    </div>
+
+    <!-- Session buttons -->
+    <button class="header-btn icon-btn" id="save-session-btn" title="Save Session">💾</button>
+    <button class="header-btn icon-btn" id="load-session-btn" title="Load Session">📂</button>
+    <input type="file" id="session-file-input" accept=".json" style="display:none">
+
     <button id="upload-btn">Upload File</button>
   </header>
 
@@ -66,9 +94,14 @@
         <div id="type-filters"></div>
       </div>
 
+      <div class="sidebar-section" id="anomaly-section" style="display:none">
+        <h3>Anomalies</h3>
+        <div id="anomaly-list"></div>
+      </div>
+
     </div><!-- /sidebar -->
 
-    <!-- Graph -->
+    <!-- Graph view -->
     <div id="graph-wrap">
       <svg id="graph-svg"></svg>
 
@@ -79,6 +112,12 @@
 
       <!-- Graph controls -->
       <div id="graph-controls">
+        <!-- Layout modes -->
+        <div class="layout-group">
+          <button class="gc-btn layout-btn active" data-layout="force" title="Force layout">⊙</button>
+          <button class="gc-btn layout-btn" data-layout="radial" title="Radial layout">◎</button>
+          <button class="gc-btn layout-btn" data-layout="cluster" title="Cluster layout">⊞</button>
+        </div>
         <button class="gc-btn" id="btn-zoom-in"  title="Zoom in">+</button>
         <button class="gc-btn" id="btn-zoom-out" title="Zoom out">−</button>
         <button class="gc-btn" id="btn-zoom-fit" title="Fit to screen">⊡</button>
@@ -92,6 +131,19 @@
 
       <!-- Tooltip -->
       <div id="tooltip"></div>
+
+      <!-- Timeline -->
+      <div id="timeline-bar" class="hidden">
+        <div id="timeline-inner">
+          <button id="tl-play-btn" class="gc-btn" title="Play/Pause">▶</button>
+          <div id="tl-slider-wrap">
+            <input type="range" id="tl-slider" min="0" max="100" value="100" step="1">
+            <div id="tl-minimap"></div>
+          </div>
+          <span id="tl-time-label">All time</span>
+        </div>
+      </div>
+
       <!-- Packet Inspector -->
       <div id="packet-inspector" class="hidden">
         <div id="pkt-resize-handle"></div>
@@ -124,6 +176,38 @@
       </div>
 
     </div><!-- /graph-wrap -->
+
+    <!-- Table view -->
+    <div id="table-view" class="hidden">
+      <div id="conn-table-wrap">
+        <table id="conn-table">
+          <thead>
+            <tr>
+              <th data-col="source" class="sortable">Source IP <span class="sort-arrow"></span></th>
+              <th data-col="target" class="sortable">Destination IP <span class="sort-arrow"></span></th>
+              <th data-col="protocols">Protocol(s)</th>
+              <th data-col="packet_count" class="sortable">Packets <span class="sort-arrow"></span></th>
+              <th data-col="bytes" class="sortable">Bytes <span class="sort-arrow"></span></th>
+              <th data-col="ports">Ports</th>
+              <th data-col="duration" class="sortable">Duration <span class="sort-arrow"></span></th>
+            </tr>
+          </thead>
+          <tbody id="conn-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- DNS Map view -->
+    <div id="dns-view" class="hidden">
+      <div id="dns-host-list">
+        <div class="dns-section-title">Hosts with DNS queries</div>
+        <div id="dns-hosts"></div>
+      </div>
+      <div id="dns-query-panel">
+        <div class="dns-section-title" id="dns-query-title">Select a host to view DNS queries</div>
+        <div id="dns-queries-list"></div>
+      </div>
+    </div>
 
     <!-- Detail panel -->
     <div id="detail-panel">
