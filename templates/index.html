@@ -92,6 +92,37 @@
 
       <!-- Tooltip -->
       <div id="tooltip"></div>
+      <!-- Packet Inspector -->
+      <div id="packet-inspector" class="hidden">
+        <div id="pkt-resize-handle"></div>
+        <div id="pkt-header">
+          <span id="pkt-title">Packets</span>
+          <span id="pkt-conn-label"></span>
+          <button id="pkt-close">×</button>
+        </div>
+        <div id="pkt-list-wrap">
+          <table id="pkt-table">
+            <thead>
+              <tr>
+                <th>No.</th><th>Time</th><th>Source</th><th>Destination</th>
+                <th>Protocol</th><th>Len</th><th>Info</th>
+              </tr>
+            </thead>
+            <tbody id="pkt-tbody"></tbody>
+          </table>
+        </div>
+        <div id="pkt-detail-row">
+          <div id="pkt-tree-wrap">
+            <div id="pkt-tree-empty" class="pkt-empty-msg">← Select a packet to inspect</div>
+            <div id="pkt-tree"></div>
+          </div>
+          <div id="pkt-hex-wrap">
+            <div id="pkt-hex-empty" class="pkt-empty-msg">No payload</div>
+            <pre id="pkt-hex"></pre>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /graph-wrap -->
 
     <!-- Detail panel -->

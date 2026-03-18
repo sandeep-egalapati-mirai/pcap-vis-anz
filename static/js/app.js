@@ -97,6 +97,7 @@ let selectedNode = null;
 let activeProtos = new Set();
 let activeTypes  = new Set();
 let searchTerm   = "";
+let packetData   = {};
 
 /* ── DOM refs ────────────────────────────────────────────────────────────── */
 const svg           = d3.select("#graph-svg");
@@ -185,6 +186,8 @@ async function uploadFile(file) {
 /* ── Graph rendering ─────────────────────────────────────────────────────── */
 function loadGraph(data) {
   graphData = data;
+  packetData = data.packets || {};
+  closePktInspector();
   selectedNode = null;
   searchTerm = "";
   searchBox.value = "";
@@ -326,7 +329,14 @@ function renderGraph(data) {
     .on("mousemove", (event) => {
       positionTooltip(event);
     })
-    .on("mouseleave", () => hideTooltip());
+    .on("mouseleave", () => hideTooltip())
+    .on("click", (event, d) => {
+      event.stopPropagation();
+      hideTooltip();
+      const sid = typeof d.source === "object" ? d.source.id : d.source;
+      const tid = typeof d.target === "object" ? d.target.id : d.target;
+      openPktInspector(sid, tid);
+    });
 
   // ── Nodes ──
   const nodeSel = nodesGroup.selectAll(".node")
@@ -547,6 +557,13 @@ function showDetailPanel(d) {
   }
 
   body.innerHTML = rows.join("");
+
+  // "View Packets" button
+  const vpBtn = document.createElement("button");
+  vpBtn.className = "btn-view-pkts";
+  vpBtn.textContent = "View Packets for this host";
+  vpBtn.addEventListener("click", () => openPktInspectorForHost(d.ip));
+  body.appendChild(vpBtn);
 }
 
 function row(key, val) {
@@ -666,3 +683,170 @@ window.addEventListener("load", () => {
   loadingOverlay.classList.add("hidden");
   modalOverlay.classList.remove("hidden");
 });
+
+/* ── Packet Inspector ─────────────────────────────────────────────────────── */
+const pktInspector  = document.getElementById("packet-inspector");
+const pktConnLabel  = document.getElementById("pkt-conn-label");
+const pktTbody      = document.getElementById("pkt-tbody");
+const pktTree       = document.getElementById("pkt-tree");
+const pktHex        = document.getElementById("pkt-hex");
+const pktTreeEmpty  = document.getElementById("pkt-tree-empty");
+const pktHexEmpty   = document.getElementById("pkt-hex-empty");
+const graphWrap     = document.getElementById("graph-wrap");
+
+document.getElementById("pkt-close").addEventListener("click", closePktInspector);
+
+function openPktInspector(sid, tid) {
+  const key = [sid, tid].sort().join("|");
+  const pkts = packetData[key] || [];
+  pktConnLabel.textContent = `${sid}  ↔  ${tid}  ·  ${pkts.length} packet${pkts.length !== 1 ? "s" : ""} captured`;
+  renderPktTable(pkts);
+  pktInspector.classList.remove("hidden");
+  graphWrap.classList.add("pkt-open");
+}
+
+function openPktInspectorForHost(ip) {
+  const allPkts = [];
+  for (const [key, pkts] of Object.entries(packetData)) {
+    const [a, b] = key.split("|");
+    if (a === ip || b === ip) allPkts.push(...pkts);
+  }
+  allPkts.sort((a, b) => a.time - b.time);
+  pktConnLabel.textContent = `Host ${ip}  ·  ${allPkts.length} packet${allPkts.length !== 1 ? "s" : ""} captured`;
+  renderPktTable(allPkts);
+  pktInspector.classList.remove("hidden");
+  graphWrap.classList.add("pkt-open");
+}
+
+function closePktInspector() {
+  pktInspector.classList.add("hidden");
+  graphWrap.classList.remove("pkt-open");
+  pktTbody.innerHTML = "";
+  pktTree.innerHTML = "";
+  pktHex.innerHTML = "";
+  pktTreeEmpty.style.display = "block";
+  pktHexEmpty.style.display = "block";
+}
+
+function renderPktTable(pkts) {
+  pktTbody.innerHTML = "";
+  pktTree.innerHTML = "";
+  pktHex.innerHTML = "";
+  pktTreeEmpty.style.display = "block";
+  pktHexEmpty.style.display = "block";
+
+  const t0 = pkts.length ? pkts[0].time : 0;
+
+  pkts.forEach((p, i) => {
+    const tr = document.createElement("tr");
+    tr.className = protoRowClass(p.protocol);
+
+    const srcStr = p.src + (p.sport != null ? ":" + p.sport : "");
+    const dstStr = p.dst + (p.dport != null ? ":" + p.dport : "");
+    tr.innerHTML = `
+      <td>${i + 1}</td>
+      <td>${(p.time - t0).toFixed(6)}</td>
+      <td title="${srcStr}">${srcStr}</td>
+      <td title="${dstStr}">${dstStr}</td>
+      <td>${p.protocol}</td>
+      <td>${p.len}</td>
+      <td title="${escHtml(p.info || "")}">${escHtml(p.info || "")}</td>
+    `;
+    tr.addEventListener("click", () => {
+      pktTbody.querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
+      tr.classList.add("selected");
+      renderPktDetail(p);
+    });
+    pktTbody.appendChild(tr);
+  });
+}
+
+function protoRowClass(proto) {
+  const p = (proto || "").toUpperCase();
+  if (p === "HTTP")  return "pr-http";
+  if (p === "HTTPS") return "pr-https";
+  if (p === "DNS")   return "pr-dns";
+  if (p === "SSH")   return "pr-ssh";
+  if (p === "ICMP")  return "pr-icmp";
+  if (p === "UDP")   return "pr-udp";
+  return "pr-tcp";
+}
+
+function renderPktDetail(p) {
+  // Protocol tree
+  pktTree.innerHTML = "";
+  pktTreeEmpty.style.display = "none";
+  (p.layers || []).forEach(layer => {
+    const div = document.createElement("div");
+    div.className = "pkt-layer";
+    const hdr = document.createElement("div");
+    hdr.className = "pkt-layer-header";
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> ${layer.name}`;
+    hdr.addEventListener("click", () => div.classList.toggle("collapsed"));
+    const fields = document.createElement("div");
+    fields.className = "pkt-layer-fields";
+    (layer.fields || []).forEach(f => {
+      const row = document.createElement("div");
+      row.className = "pkt-field";
+      row.innerHTML = `<span class="pkt-fk">${escHtml(String(f.k))}:</span><span class="pkt-fv">${escHtml(String(f.v))}</span>`;
+      fields.appendChild(row);
+    });
+    div.appendChild(hdr);
+    div.appendChild(fields);
+    pktTree.appendChild(div);
+  });
+
+  // Hex dump
+  const hexStr = p.hex || "";
+  if (!hexStr) {
+    pktHex.innerHTML = "";
+    pktHexEmpty.style.display = "block";
+    return;
+  }
+  pktHexEmpty.style.display = "none";
+  const bytes = [];
+  for (let i = 0; i < hexStr.length; i += 2) bytes.push(parseInt(hexStr.slice(i, i + 2), 16));
+  const ROW = 16;
+  let out = "";
+  for (let off = 0; off < bytes.length; off += ROW) {
+    const chunk = bytes.slice(off, off + ROW);
+    const offset = off.toString(16).padStart(4, "0");
+    const hex1 = chunk.slice(0, 8).map(b => b.toString(16).padStart(2, "0")).join(" ");
+    const hex2 = chunk.slice(8).map(b => b.toString(16).padStart(2, "0")).join(" ");
+    const hexPart = (hex1 + (hex2 ? "  " + hex2 : "")).padEnd(49);
+    const ascii = chunk.map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : ".").join("");
+    out += `<span class="hx-off">${offset}</span>  <span class="hx-byt">${hexPart}</span><span class="hx-asc">${escHtml(ascii)}</span>\n`;
+  }
+  pktHex.innerHTML = out;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+/* ── Packet inspector resize handle ──────────────────────────────────────── */
+(function () {
+  const handle = document.getElementById("pkt-resize-handle");
+  let dragging = false, startY = 0, startH = 0;
+  handle.addEventListener("mousedown", e => {
+    dragging = true; startY = e.clientY; startH = pktInspector.offsetHeight;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "ns-resize";
+  });
+  document.addEventListener("mousemove", e => {
+    if (!dragging) return;
+    const newH = Math.max(120, Math.min(startH + (startY - e.clientY), window.innerHeight * 0.75));
+    pktInspector.style.height = newH + "px";
+    // keep graph controls clear
+    const shift = newH + 16;
+    document.querySelectorAll("#graph-controls, #legend").forEach(el => {
+      if (graphWrap.classList.contains("pkt-open")) el.style.bottom = shift + "px";
+    });
+  });
+  document.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+  });
+})();

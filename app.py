@@ -174,6 +174,9 @@ def analyze_pcap(filepath):
 
     MAX_PACKETS = 150_000
     processed = 0
+    packet_store = defaultdict(list)
+    MAX_STORED_PER_CONN = 50
+    first_pkt_time = None
 
     try:
         with PcapReader(filepath) as reader:
@@ -181,6 +184,8 @@ def analyze_pcap(filepath):
                 if processed >= MAX_PACKETS:
                     break
                 processed += 1
+                if first_pkt_time is None and hasattr(pkt, "time"):
+                    first_pkt_time = float(pkt.time)
 
                 # ── ARP ──────────────────────────────────────────────────────
                 if ARP in pkt:
@@ -312,6 +317,79 @@ def analyze_pcap(filepath):
                 conn["packet_count"] += 1
                 conn["bytes"] += plen
 
+                # ── Per-packet capture for drill-down ────────────────────────
+                if len(packet_store[conn_key]) < MAX_STORED_PER_CONN:
+                    try:
+                        rel_t = round(float(pkt.time) - first_pkt_time, 6) if first_pkt_time else 0
+                        sport_ = pkt[TCP].sport if TCP in pkt else (pkt[UDP].sport if UDP in pkt else None)
+                        dport_ = pkt[TCP].dport if TCP in pkt else (pkt[UDP].dport if UDP in pkt else None)
+                        pd = {
+                            "time": rel_t, "src": sip, "dst": dip,
+                            "protocol": protocol, "len": plen,
+                            "sport": sport_, "dport": dport_,
+                            "layers": [], "hex": "", "info": "",
+                        }
+                        if Ether in pkt:
+                            e_ = pkt[Ether]
+                            pd["layers"].append({"name": "Ethernet", "fields": [
+                                {"k": "Dst MAC", "v": e_.dst},
+                                {"k": "Src MAC", "v": e_.src},
+                                {"k": "Type",    "v": hex(e_.type)},
+                            ]})
+                        ip_ = pkt[IP]
+                        pd["layers"].append({"name": "Internet Protocol", "fields": [
+                            {"k": "Version",     "v": ip_.version},
+                            {"k": "Hdr Length",  "v": f"{ip_.ihl * 4} bytes"},
+                            {"k": "Total Len",   "v": ip_.len},
+                            {"k": "ID",          "v": hex(ip_.id)},
+                            {"k": "Flags",       "v": str(ip_.flags)},
+                            {"k": "TTL",         "v": ip_.ttl},
+                            {"k": "Protocol",    "v": ip_.proto},
+                            {"k": "Src",         "v": ip_.src},
+                            {"k": "Dst",         "v": ip_.dst},
+                        ]})
+                        if TCP in pkt:
+                            t_ = pkt[TCP]
+                            flag_str = str(t_.flags)
+                            pd["layers"].append({"name": "Transmission Control Protocol", "fields": [
+                                {"k": "Src Port",  "v": t_.sport},
+                                {"k": "Dst Port",  "v": t_.dport},
+                                {"k": "Seq",       "v": t_.seq},
+                                {"k": "Ack",       "v": t_.ack},
+                                {"k": "Flags",     "v": flag_str},
+                                {"k": "Window",    "v": t_.window},
+                            ]})
+                            pd["info"] = f"{t_.sport} → {t_.dport} [{flag_str}] Seq={t_.seq}"
+                            payload = bytes(t_.payload)
+                            if payload:
+                                pd["info"] += f" Len={len(payload)}"
+                        elif UDP in pkt:
+                            u_ = pkt[UDP]
+                            pd["layers"].append({"name": "User Datagram Protocol", "fields": [
+                                {"k": "Src Port", "v": u_.sport},
+                                {"k": "Dst Port", "v": u_.dport},
+                                {"k": "Length",   "v": u_.len},
+                            ]})
+                            pd["info"] = f"{u_.sport} → {u_.dport}"
+                            payload = bytes(u_.payload)
+                        elif ICMP in pkt:
+                            ic_ = pkt[ICMP]
+                            t_names = {0: "Echo Reply", 3: "Dest Unreachable",
+                                       8: "Echo Request", 11: "Time Exceeded"}
+                            pd["layers"].append({"name": "Internet Control Message Protocol", "fields": [
+                                {"k": "Type", "v": f"{ic_.type} ({t_names.get(ic_.type, 'Unknown')})"},
+                                {"k": "Code", "v": ic_.code},
+                            ]})
+                            pd["info"] = t_names.get(ic_.type, f"Type {ic_.type}")
+                            payload = b""
+                        else:
+                            payload = b""
+                        raw = bytes(pkt)[:256]
+                        pd["hex"] = raw.hex()
+                        packet_store[conn_key].append(pd)
+                    except Exception:
+                        pass
+
     except Exception as e:
         return {"error": f"Failed to parse file: {e}"}
 
@@ -387,9 +465,21 @@ def analyze_pcap(filepath):
     all_protocols = sorted({p for n in nodes for p in n["protocols"]})
     all_host_types = sorted({n["host_type"] for n in nodes})
 
+    # ── Build packets output (top 40 connections) ──────────────────────────
+    top_conn_keys = sorted(
+        connections.keys(),
+        key=lambda k: connections[k]["packet_count"],
+        reverse=True,
+    )[:40]
+    packets_out = {}
+    for k in top_conn_keys:
+        if packet_store[k]:
+            packets_out[f"{k[0]}|{k[1]}"] = packet_store[k]
+
     return {
         "nodes": nodes,
         "edges": edges,
+        "packets": packets_out,
         "stats": {
             "total_packets": processed,
             "total_hosts": len(nodes),
