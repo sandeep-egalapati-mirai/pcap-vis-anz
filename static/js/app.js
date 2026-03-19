@@ -357,10 +357,11 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
     const color = colorMap[item] || "#546E7A";
     const div = document.createElement("div");
     div.className = "filter-item";
+    const iconSpan = kind === "type" ? `<span class="fi-icon">${hostIcon(item)}</span>` : "";
     div.innerHTML = `
       <input type="checkbox" id="f-${kind}-${CSS.escape(item)}" checked>
       <div class="dot" style="background:${color}"></div>
-      <label for="f-${kind}-${CSS.escape(item)}">${item}</label>
+      ${iconSpan}<label for="f-${kind}-${CSS.escape(item)}">${item}</label>
       <span class="count">${counts[item] || 0}</span>
     `;
     const cb = div.querySelector("input");
@@ -560,8 +561,9 @@ function renderGraph(data) {
 
   // Icon character
   nodeSel.append("text")
-    .attr("dy", "0.35em")
-    .attr("font-size", d => Math.min(nodeRadius(d) - 1, 11) + "px")
+    .attr("class", "node-icon")
+    .attr("dy", "0.38em")
+    .attr("font-size", d => Math.min(nodeRadius(d) * 1.1, 16) + "px")
     .text(d => hostIcon(d.host_type));
 
   // IP label below node
@@ -990,7 +992,7 @@ function buildLegend(data) {
   data.stats.host_types.forEach(ht => {
     const div = document.createElement("div");
     div.className = "legend-row";
-    div.innerHTML = `<div class="legend-dot" style="background:${hostColor(ht)}"></div><span>${ht}</span>`;
+    div.innerHTML = `<span class="legend-icon">${hostIcon(ht)}</span><div class="legend-dot" style="background:${hostColor(ht)}"></div><span>${ht}</span>`;
     hostLegend.appendChild(div);
   });
 }
@@ -998,44 +1000,48 @@ function buildLegend(data) {
 /* ── Host icon ───────────────────────────────────────────────────────────── */
 function hostIcon(type) {
   const icons = {
-    "Web Server":      "W",
-    "DNS Server":      "D",
-    "DHCP Server":     "H",
-    "SSH Server":      "S",
-    "Telnet Server":   "T",
-    "FTP Server":      "F",
-    "Mail Server":     "M",
-    "Database Server": "B",
-    "Cache Server":    "C",
-    "Windows Host":    "W",
-    "Linux Host":      "L",
-    "Linux Server":    "L",
-    "Network Device":  "N",
-    "Router":          "R",
-    "VPN Gateway":     "V",
-    "Container Host":  "K",
-    "Internet Host":   "I",
-    "Broadcast":       "•",
-    "Multicast":       "•",
-    "PLC":                    "P",
-    "RTU":                    "R",
-    "IED":                    "I",
-    "HMI":                    "H",
-    "SCADA Server":           "S",
-    "DCS":                    "D",
-    "Historian":              "H",
-    "Engineering Workstation":"E",
-    "Building Controller":    "B",
-    "IoT Gateway":            "G",
-    "Field Device":           "F",
-    "IP Camera":        "C",
-    "Smart Home Hub":   "Z",
-    "Smart Meter":      "M",
-    "IoT Sensor":       "~",
-    "Smart Speaker":    "♪",
-    "CPE Device":       "T",
+    // IT servers
+    "Web Server":      "🌐",
+    "DNS Server":      "🔍",
+    "DHCP Server":     "🗄️",
+    "SSH Server":      "🔒",
+    "Telnet Server":   "💻",
+    "FTP Server":      "📁",
+    "Mail Server":     "✉️",
+    "Database Server": "🗄️",
+    "Cache Server":    "⚡",
+    // IT hosts
+    "Windows Host":    "🖥️",
+    "Linux Host":      "🐧",
+    "Linux Server":    "🐧",
+    "Network Device":  "🔀",
+    "Router":          "📡",
+    "VPN Gateway":     "🛡️",
+    "Container Host":  "📦",
+    "Internet Host":   "🌍",
+    "Broadcast":       "📢",
+    "Multicast":       "📢",
+    // OT / ICS
+    "PLC":                    "⚙️",
+    "RTU":                    "📟",
+    "IED":                    "⚡",
+    "HMI":                    "🖥️",
+    "SCADA Server":           "🏭",
+    "DCS":                    "🏭",
+    "Historian":               "📊",
+    "Engineering Workstation": "🔧",
+    "Building Controller":     "🏢",
+    "IoT Gateway":             "🔗",
+    "Field Device":            "🔌",
+    // IoT
+    "IP Camera":       "📷",
+    "Smart Home Hub":  "🏠",
+    "Smart Meter":     "📊",
+    "IoT Sensor":      "📡",
+    "Smart Speaker":   "🔊",
+    "CPE Device":      "📡",
   };
-  return icons[type] || "?";
+  return icons[type] || "❓";
 }
 
 /* ── On page load: show upload modal ─────────────────────────────────────── */
