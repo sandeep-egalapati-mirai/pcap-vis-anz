@@ -46,6 +46,34 @@ MAC_VENDORS = {
     "00E0E3": "Omron",
     "001094": "Beckhoff",
     "0030D8": "Moxa",
+    # IoT device vendors
+    "F4F26D": "Amazon Echo",
+    "44650D": "Amazon Echo",
+    "A4C138": "Amazon Echo",
+    "F0272D": "Google Home",
+    "4854F7": "Google Nest",
+    "1C1AC0": "Google Nest",
+    "00178A": "Philips Hue",
+    "ECB5FA": "Philips Hue",
+    "001788": "Philips Hue",
+    "286C07": "Samsung SmartThings",
+    "D052A8": "Samsung SmartThings",
+    "18B430": "Ring",
+    "B0090C": "Ring",
+    "DCEF09": "Wyze",
+    "2CAA8E": "Wyze",
+    "50C7BF": "TP-Link Kasa",
+    "B09575": "TP-Link Kasa",
+    "34298F": "Tuya Smart",
+    "84E342": "Tuya Smart",
+    "E8DB84": "Shelly",
+    "C45BBE": "Shelly",
+    "AC233F": "Particle IoT",
+    "0017F2": "Nest Labs",
+    "18B7CE": "Nest Labs",
+    "6C5697": "Fitbit",
+    "3C71BF": "August Smart Lock",
+    "D8EBD3": "LIFX Smart Bulb",
 }
 
 # ── Port → (protocol label, host-type hint) ───────────────────────────────────
@@ -122,12 +150,32 @@ PORT_MAP = {
     9600:  ("OMRON-FINS",   "PLC"),
     4000:  ("Emerson-DeltaV","DCS"),
     1541:  ("Foxboro",      "DCS"),
+    # IoT protocols
+    5683:  ("CoAP",          "IoT Sensor"),
+    5684:  ("CoAP-DTLS",     "IoT Sensor"),
+    5672:  ("AMQP",          "IoT Gateway"),
+    5671:  ("AMQPS",         "IoT Gateway"),
+    5222:  ("XMPP",          "Smart Home Hub"),
+    5223:  ("XMPP-TLS",      "Smart Home Hub"),
+    554:   ("RTSP",          "IP Camera"),
+    8554:  ("RTSP",          "IP Camera"),
+    8000:  ("Hikvision",     "IP Camera"),
+    37777: ("Dahua",         "IP Camera"),
+    5540:  ("Matter",        "Smart Home Hub"),
+    3702:  ("WS-Discovery",  "IoT Gateway"),
+    7547:  ("TR-069",        "CPE Device"),
+    6668:  ("Tuya-IoT",      "Smart Home Hub"),
+    9119:  ("XIMSS",         "Smart Home Hub"),
+    1026:  ("CAP",           "Smart Meter"),
+    4059:  ("DLMS",          "Smart Meter"),
 }
 
 HOST_TYPE_PRIORITY = [
     "PLC", "RTU", "IED", "HMI", "SCADA Server", "DCS",
     "Historian", "Engineering Workstation", "Building Controller",
     "IoT Gateway", "Field Device",
+    "IP Camera", "Smart Home Hub", "Smart Meter", "IoT Sensor",
+    "Smart Speaker", "CPE Device",
     "Router", "VPN Gateway", "Network Device", "DNS Server",
     "DHCP Server", "Web Server", "Mail Server", "Database Server",
     "SSH Server", "FTP Server", "Telnet Server", "Windows Host", "Directory Server",
@@ -295,6 +343,179 @@ def parse_modbus(payload_bytes):
         return None
 
 
+def parse_mqtt(payload_bytes):
+    """Parse MQTT packet. Returns dict or None."""
+    if not payload_bytes or len(payload_bytes) < 2:
+        return None
+    try:
+        msg_type_byte = payload_bytes[0]
+        msg_type = (msg_type_byte >> 4) & 0x0F
+        MQTT_TYPES = {
+            1: "CONNECT", 2: "CONNACK", 3: "PUBLISH",
+            4: "PUBACK",  5: "PUBREC",  6: "PUBREL",
+            7: "PUBCOMP", 8: "SUBSCRIBE", 9: "SUBACK",
+            10: "UNSUBSCRIBE", 11: "UNSUBACK",
+            12: "PINGREQ", 13: "PINGRESP", 14: "DISCONNECT",
+        }
+        type_name = MQTT_TYPES.get(msg_type, f"Unknown({msg_type})")
+        result = {
+            "type": msg_type,
+            "type_name": type_name,
+            "qos": (msg_type_byte >> 1) & 0x03,
+            "retain": bool(msg_type_byte & 0x01),
+            "details": {},
+        }
+        # Decode remaining length (variable-length encoding)
+        idx = 1
+        multiplier = 1
+        remaining = 0
+        while idx < len(payload_bytes):
+            byte = payload_bytes[idx]
+            remaining += (byte & 0x7F) * multiplier
+            multiplier *= 128
+            idx += 1
+            if not (byte & 0x80):
+                break
+        payload = payload_bytes[idx:]
+
+        if msg_type == 1 and len(payload) >= 10:  # CONNECT
+            proto_name_len = (payload[0] << 8) | payload[1]
+            if len(payload) >= 2 + proto_name_len + 4:
+                proto_name = payload[2:2+proto_name_len].decode("utf-8", errors="replace")
+                connect_flags = payload[2 + proto_name_len + 3]
+                has_username = bool(connect_flags & 0x80)
+                has_password = bool(connect_flags & 0x40)
+                clean_session = bool(connect_flags & 0x02)
+                result["details"]["protocol"] = proto_name
+                result["details"]["clean_session"] = clean_session
+                result["details"]["has_credentials"] = has_username or has_password
+                # Client ID
+                ci_offset = 2 + proto_name_len + 4
+                if len(payload) >= ci_offset + 2:
+                    ci_len = (payload[ci_offset] << 8) | payload[ci_offset + 1]
+                    if len(payload) >= ci_offset + 2 + ci_len:
+                        client_id = payload[ci_offset+2:ci_offset+2+ci_len].decode("utf-8", errors="replace")
+                        result["details"]["client_id"] = client_id
+
+        elif msg_type == 3 and len(payload) >= 2:  # PUBLISH
+            topic_len = (payload[0] << 8) | payload[1]
+            if len(payload) >= 2 + topic_len:
+                topic = payload[2:2+topic_len].decode("utf-8", errors="replace")
+                result["details"]["topic"] = topic
+                msg_payload = payload[2+topic_len:]
+                try:
+                    result["details"]["payload_preview"] = msg_payload[:100].decode("utf-8", errors="replace")
+                except Exception:
+                    result["details"]["payload_preview"] = msg_payload[:100].hex()
+
+        elif msg_type == 8 and len(payload) >= 4:  # SUBSCRIBE
+            topics = []
+            p_idx = 2  # skip message ID
+            while p_idx + 2 < len(payload):
+                t_len = (payload[p_idx] << 8) | payload[p_idx+1]
+                p_idx += 2
+                if p_idx + t_len <= len(payload):
+                    topics.append(payload[p_idx:p_idx+t_len].decode("utf-8", errors="replace"))
+                    p_idx += t_len + 1  # +1 for QoS byte
+            if topics:
+                result["details"]["topics"] = ", ".join(topics[:5])
+
+        elif msg_type == 2:  # CONNACK
+            if len(payload) >= 2:
+                RETURN_CODES = {
+                    0: "Connection Accepted",
+                    1: "Refused: Bad Protocol",
+                    2: "Refused: Client ID Rejected",
+                    3: "Refused: Server Unavailable",
+                    4: "Refused: Bad Credentials",
+                    5: "Refused: Not Authorized",
+                }
+                rc = payload[1] if len(payload) > 1 else 0
+                result["details"]["return_code"] = RETURN_CODES.get(rc, f"Unknown ({rc})")
+                result["details"]["session_present"] = bool(payload[0] & 0x01)
+
+        return result
+    except Exception:
+        return None
+
+
+def parse_coap(payload_bytes):
+    """Parse CoAP packet. Returns dict or None."""
+    if not payload_bytes or len(payload_bytes) < 4:
+        return None
+    try:
+        version = (payload_bytes[0] >> 6) & 0x03
+        if version != 1:
+            return None
+        msg_type = (payload_bytes[0] >> 4) & 0x03
+        token_len = payload_bytes[0] & 0x0F
+        code_byte = payload_bytes[1]
+        msg_id = (payload_bytes[2] << 8) | payload_bytes[3]
+
+        code_class = (code_byte >> 5) & 0x07
+        code_detail = code_byte & 0x1F
+        code_str = f"{code_class}.{code_detail:02d}"
+
+        TYPE_NAMES = {0: "CON", 1: "NON", 2: "ACK", 3: "RST"}
+        METHOD_CODES = {
+            "0.01": "GET", "0.02": "POST", "0.03": "PUT", "0.04": "DELETE",
+        }
+        RESPONSE_CODES = {
+            "2.01": "Created", "2.02": "Deleted", "2.03": "Valid",
+            "2.04": "Changed", "2.05": "Content",
+            "4.00": "Bad Request", "4.01": "Unauthorized",
+            "4.03": "Forbidden", "4.04": "Not Found",
+            "4.05": "Method Not Allowed", "5.00": "Internal Server Error",
+        }
+        code_name = METHOD_CODES.get(code_str) or RESPONSE_CODES.get(code_str, code_str)
+
+        result = {
+            "type": TYPE_NAMES.get(msg_type, str(msg_type)),
+            "code": code_str,
+            "code_name": code_name,
+            "message_id": msg_id,
+            "is_request": code_class == 0,
+            "details": {},
+        }
+
+        # Parse options to find Uri-Path
+        idx = 4 + token_len
+        uri_parts = []
+        prev_opt = 0
+        while idx < len(payload_bytes):
+            if payload_bytes[idx] == 0xFF:  # payload marker
+                rest = payload_bytes[idx+1:]
+                try:
+                    result["details"]["payload_preview"] = rest[:80].decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                break
+            opt_delta = (payload_bytes[idx] >> 4) & 0x0F
+            opt_len   = payload_bytes[idx] & 0x0F
+            idx += 1
+            if opt_delta == 13:
+                opt_delta = payload_bytes[idx] + 13; idx += 1
+            elif opt_delta == 14:
+                opt_delta = ((payload_bytes[idx] << 8) | payload_bytes[idx+1]) + 269; idx += 2
+            if opt_len == 13:
+                opt_len = payload_bytes[idx] + 13; idx += 1
+            elif opt_len == 14:
+                opt_len = ((payload_bytes[idx] << 8) | payload_bytes[idx+1]) + 269; idx += 2
+            opt_num = prev_opt + opt_delta
+            prev_opt = opt_num
+            opt_val = payload_bytes[idx:idx+opt_len]
+            idx += opt_len
+            if opt_num == 11:  # Uri-Path
+                uri_parts.append(opt_val.decode("utf-8", errors="replace"))
+            elif opt_num == 12:  # Content-Format
+                result["details"]["content_format"] = int.from_bytes(opt_val, "big") if opt_val else 0
+        if uri_parts:
+            result["details"]["uri"] = "/" + "/".join(uri_parts)
+        return result
+    except Exception:
+        return None
+
+
 def analyze_anomalies(hosts, connections, packet_store):
     """Detect network anomalies and return a list of anomaly dicts."""
     anomalies = []
@@ -448,6 +669,60 @@ def analyze_anomalies(hosts, connections, packet_store):
                     "description": f"Cleartext {cleartext_ot_ports[port]} traffic between {a} and {b} — OT protocol has no encryption",
                 })
                 break
+
+    # ── IoT: MQTT without TLS (cleartext broker) ──────────────────────────────
+    for (a, b), pkts in packet_store.items():
+        for pkt in pkts:
+            if pkt.get("dport") == 1883 or pkt.get("sport") == 1883:
+                anomalies.append({
+                    "type": "iot_mqtt_cleartext",
+                    "severity": "medium",
+                    "src": a,
+                    "dst": b,
+                    "description": f"Cleartext MQTT (port 1883) between {a} and {b} — credentials and data sent unencrypted",
+                })
+                break
+
+    # ── IoT: Telnet access to IoT device (Mirai-style) ────────────────────────
+    iot_types = {"IP Camera", "Smart Home Hub", "Smart Meter", "IoT Sensor", "Smart Speaker", "IoT Gateway"}
+    for ip, h in hosts.items():
+        if h["host_type"] in iot_types:
+            for (a, b), conn in connections.items():
+                peer = b if a == ip else (a if b == ip else None)
+                if peer and 23 in conn.get("dst_ports", set()):
+                    anomalies.append({
+                        "type": "iot_telnet",
+                        "severity": "high",
+                        "src": peer,
+                        "dst": ip,
+                        "description": f"Telnet access to IoT device {ip} ({h['host_type']}) from {peer} — common botnet/Mirai attack vector",
+                    })
+
+    # ── IoT: IP Camera sending data to internet ────────────────────────────────
+    for ip, h in hosts.items():
+        if h["host_type"] == "IP Camera":
+            for (a, b) in connections:
+                peer = b if a == ip else (a if b == ip else None)
+                if peer and not is_private(peer):
+                    anomalies.append({
+                        "type": "iot_camera_exfil",
+                        "severity": "high",
+                        "src": ip,
+                        "dst": peer,
+                        "description": f"IP Camera {ip} sending data to external host {peer} — possible unauthorized stream or firmware C2",
+                    })
+                    break
+
+    # ── IoT: Insecure device using TR-069 (CPE WAN management) ───────────────
+    for (a, b), conn in connections.items():
+        if 7547 in conn.get("dst_ports", set()):
+            anomalies.append({
+                "type": "iot_tr069",
+                "severity": "medium",
+                "src": a,
+                "dst": b,
+                "description": f"TR-069 (port 7547) detected between {a} and {b} — remote CPE management protocol, often exploited",
+            })
 
     # Deduplicate (keep unique type+src+dst combos)
     seen = set()
@@ -670,6 +945,8 @@ def analyze_pcap(filepath):
                             "layers": [], "hex": "", "info": "",
                             "http": None,
                             "modbus": None,
+                            "mqtt": None,
+                            "coap": None,
                         }
                         if Ether in pkt:
                             e_ = pkt[Ether]
@@ -735,6 +1012,18 @@ def analyze_pcap(filepath):
                             mb = parse_modbus(payload)
                             if mb:
                                 pd["modbus"] = mb
+
+                        # MQTT parsing
+                        if payload and (dport_ in (1883, 8883) or sport_ in (1883, 8883)):
+                            mq = parse_mqtt(payload)
+                            if mq:
+                                pd["mqtt"] = mq
+
+                        # CoAP parsing
+                        if payload and (dport_ in (5683, 5684) or sport_ in (5683, 5684)):
+                            cp = parse_coap(payload)
+                            if cp:
+                                pd["coap"] = cp
 
                         # Store hex dump of payload
                         if payload:

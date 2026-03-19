@@ -34,6 +34,24 @@ The visualizer detects and classifies industrial control system devices and prot
 
 **Modbus TCP deep inspection:** The packet inspector decodes Modbus function codes, unit IDs, register addresses, and flags write commands in red.
 
+## IoT Device Support
+
+**Supported protocols:** MQTT, MQTT-TLS, CoAP, CoAP-DTLS, AMQP, AMQPS, XMPP, RTSP, Matter, WS-Discovery, TR-069, Tuya-IoT, Hikvision, Dahua, DLMS (smart meters)
+
+**IoT device types:** IP Camera, Smart Home Hub, Smart Meter, IoT Sensor, Smart Speaker, IoT Gateway, CPE Device
+
+**IoT vendor fingerprinting (MAC OUI):** Amazon Echo, Google Home/Nest, Philips Hue, Samsung SmartThings, Ring, Wyze, TP-Link Kasa, Tuya Smart, Shelly, Particle, Fitbit, LIFX, August Smart Lock
+
+**IoT-specific anomaly detection:**
+- Cleartext MQTT (port 1883) — credentials and sensor data unencrypted
+- Telnet access to IoT devices — classic Mirai botnet attack vector
+- IP Camera sending data to external IPs — unauthorized streams or C2
+- TR-069 (port 7547) — remote management protocol frequently exploited
+
+**Protocol deep inspection:**
+- **MQTT**: Decodes message type (CONNECT/PUBLISH/SUBSCRIBE), client ID, topic names, payload preview, QoS level, credential presence
+- **CoAP**: Decodes message type (CON/NON/ACK), method/response code, URI path, payload preview
+
 ## Requirements
 
 - Python 3.8+

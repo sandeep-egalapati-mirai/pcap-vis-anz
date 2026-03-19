@@ -38,6 +38,12 @@ const HOST_COLORS = {
   "Building Controller":    "#CBF3F0",
   "IoT Gateway":            "#FFBF69",
   "Field Device":           "#A8DADC",
+  "IP Camera":        "#00BCD4",
+  "Smart Home Hub":   "#8BC34A",
+  "Smart Meter":      "#FFC107",
+  "IoT Sensor":       "#03A9F4",
+  "Smart Speaker":    "#9C27B0",
+  "CPE Device":       "#607D8B",
 };
 
 const PROTO_COLORS = {
@@ -87,6 +93,21 @@ const PROTO_COLORS = {
   "OMRON-FINS":   "#4CAF50",
   "Emerson-DeltaV":"#FF9800",
   "PROFIBUS":     "#9E9E9E",
+  "CoAP":         "#00BCD4",
+  "CoAP-DTLS":    "#0097A7",
+  "AMQP":         "#FF5722",
+  "AMQPS":        "#BF360C",
+  "XMPP":         "#4CAF50",
+  "XMPP-TLS":     "#388E3C",
+  "RTSP":         "#9C27B0",
+  "Matter":       "#673AB7",
+  "WS-Discovery": "#607D8B",
+  "TR-069":       "#F44336",
+  "Tuya-IoT":     "#FF9800",
+  "Hikvision":    "#795548",
+  "Dahua":        "#8D6E63",
+  "AMSP":         "#26C6DA",
+  "DLMS":         "#F06292",
 };
 
 function protoColor(protocols) {
@@ -759,8 +780,12 @@ function showDetailPanel(d) {
 
   rows.push(row("Type", badge(d.host_type, hostColor(d.host_type))));
   const OT_TYPES = new Set(["PLC","RTU","IED","HMI","SCADA Server","DCS","Historian","Engineering Workstation","Building Controller","IoT Gateway","Field Device"]);
+  const IOT_TYPES = new Set(["IP Camera","Smart Home Hub","Smart Meter","IoT Sensor","Smart Speaker","CPE Device","IoT Gateway"]);
   if (OT_TYPES.has(d.host_type)) {
     rows.push(`<div class="ot-device-badge">&#9881; OT/ICS Device</div>`);
+  }
+  if (IOT_TYPES.has(d.host_type)) {
+    rows.push(`<div class="iot-device-badge">&#128267; IoT Device</div>`);
   }
   if (d.os_hint)     rows.push(row("OS guess",   mono(d.os_hint)));
   if (d.mac)         rows.push(row("MAC", mono(d.mac) + (d.mac_vendor ? ` <span style="color:var(--text2)">(${d.mac_vendor})</span>` : "")));
@@ -1003,6 +1028,12 @@ function hostIcon(type) {
     "Building Controller":    "B",
     "IoT Gateway":            "G",
     "Field Device":           "F",
+    "IP Camera":        "C",
+    "Smart Home Hub":   "Z",
+    "Smart Meter":      "M",
+    "IoT Sensor":       "~",
+    "Smart Speaker":    "♪",
+    "CPE Device":       "T",
   };
   return icons[type] || "?";
 }
@@ -1183,6 +1214,66 @@ function renderPktDetail(p) {
     mbDiv.appendChild(hdr);
     mbDiv.appendChild(fields);
     pktTree.appendChild(mbDiv);
+  }
+
+  // MQTT section
+  if (p.mqtt) {
+    const mq = p.mqtt;
+    const mqDiv = document.createElement("div");
+    mqDiv.className = "pkt-layer";
+    const hdr = document.createElement("div");
+    hdr.className = "pkt-layer-header";
+    const mqColor = mq.type_name === "PUBLISH" ? "var(--accent)" :
+                    mq.type_name === "CONNECT" ? "var(--green)" :
+                    mq.type_name.startsWith("DISCONNECT") ? "var(--red)" : "var(--text)";
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> <span style="color:${mqColor}">MQTT — ${escHtml(mq.type_name)}</span>`;
+    hdr.addEventListener("click", () => mqDiv.classList.toggle("collapsed"));
+    const fields = document.createElement("div");
+    fields.className = "pkt-layer-fields";
+    const mqFields = [
+      {k: "Message Type", v: `${mq.type} (${mq.type_name})`},
+      {k: "QoS Level",    v: mq.qos},
+      {k: "Retain",       v: mq.retain ? "Yes" : "No"},
+      ...Object.entries(mq.details || {}).map(([k, v]) => ({k, v})),
+    ];
+    mqFields.forEach(f => {
+      const row = document.createElement("div");
+      row.className = "pkt-field";
+      row.innerHTML = `<span class="pkt-fk">${escHtml(String(f.k))}:</span><span class="pkt-fv">${escHtml(String(f.v))}</span>`;
+      fields.appendChild(row);
+    });
+    mqDiv.appendChild(hdr);
+    mqDiv.appendChild(fields);
+    pktTree.appendChild(mqDiv);
+  }
+
+  // CoAP section
+  if (p.coap) {
+    const cp = p.coap;
+    const cpDiv = document.createElement("div");
+    cpDiv.className = "pkt-layer";
+    const hdr = document.createElement("div");
+    hdr.className = "pkt-layer-header";
+    const cpColor = cp.is_request ? "var(--accent)" : "var(--green)";
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> <span style="color:${cpColor}">CoAP — ${escHtml(cp.code_name)}</span>`;
+    hdr.addEventListener("click", () => cpDiv.classList.toggle("collapsed"));
+    const fields = document.createElement("div");
+    fields.className = "pkt-layer-fields";
+    const cpFields = [
+      {k: "Type",       v: cp.type},
+      {k: "Code",       v: `${cp.code} (${cp.code_name})`},
+      {k: "Message ID", v: cp.message_id},
+      ...Object.entries(cp.details || {}).map(([k, v]) => ({k, v})),
+    ];
+    cpFields.forEach(f => {
+      const row = document.createElement("div");
+      row.className = "pkt-field";
+      row.innerHTML = `<span class="pkt-fk">${escHtml(String(f.k))}:</span><span class="pkt-fv">${escHtml(String(f.v))}</span>`;
+      fields.appendChild(row);
+    });
+    cpDiv.appendChild(hdr);
+    cpDiv.appendChild(fields);
+    pktTree.appendChild(cpDiv);
   }
 
   // Hex dump
