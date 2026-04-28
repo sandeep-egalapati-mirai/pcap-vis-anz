@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Workflow
 
-After completing any change, commit and push to GitHub:
+After completing any change:
+1. Update `README.md` to reflect the change (new protocols, updated limits, new features, etc.)
+2. Commit and push to GitHub:
 
 ```bash
 git add <changed files>

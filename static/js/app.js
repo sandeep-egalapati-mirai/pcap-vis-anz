@@ -1282,6 +1282,166 @@ function renderPktDetail(p) {
     pktTree.appendChild(cpDiv);
   }
 
+  // DNP3 section
+  if (p.dnp3) {
+    const dn = p.dnp3;
+    const dnDiv = document.createElement("div");
+    dnDiv.className = "pkt-layer";
+    const hdr = document.createElement("div");
+    hdr.className = "pkt-layer-header";
+    const dnColor = dn.is_write ? "var(--red)" : dn.is_error ? "var(--yellow)" : "var(--green)";
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> <span style="color:${dnColor}">DNP3</span>`;
+    hdr.addEventListener("click", () => dnDiv.classList.toggle("collapsed"));
+    const fields = document.createElement("div");
+    fields.className = "pkt-layer-fields";
+    const dnFields = [
+      {k: "Src Address", v: dn.src_address},
+      {k: "Dst Address", v: dn.dst_address},
+      {k: "Function Code", v: `${dn.function_code} — ${dn.function_name}`},
+      ...Object.entries(dn.details || {}).map(([k, v]) => ({k, v})),
+    ];
+    if (dn.is_write) dnFields.push({k: "⚠ WARNING", v: "CONTROL command — modifies RTU/IED state"});
+    dnFields.forEach(f => {
+      const row = document.createElement("div");
+      row.className = "pkt-field";
+      const valColor = dn.is_write && f.k === "⚠ WARNING" ? "var(--red)" : "";
+      row.innerHTML = `<span class="pkt-fk">${escHtml(String(f.k))}:</span><span class="pkt-fv" style="color:${valColor}">${escHtml(String(f.v))}</span>`;
+      fields.appendChild(row);
+    });
+    dnDiv.appendChild(hdr);
+    dnDiv.appendChild(fields);
+    pktTree.appendChild(dnDiv);
+  }
+
+  // S7comm section
+  if (p.s7comm) {
+    const s7 = p.s7comm;
+    const s7Div = document.createElement("div");
+    s7Div.className = "pkt-layer";
+    const hdr = document.createElement("div");
+    hdr.className = "pkt-layer-header";
+    const s7Color = s7.is_write ? "var(--red)" : s7.is_error ? "var(--yellow)" : "var(--green)";
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> <span style="color:${s7Color}">S7comm</span>`;
+    hdr.addEventListener("click", () => s7Div.classList.toggle("collapsed"));
+    const fields = document.createElement("div");
+    fields.className = "pkt-layer-fields";
+    const s7Fields = [
+      {k: "ROSCTR", v: `${s7.rosctr} — ${s7.rosctr_name}`},
+      {k: "PDU Reference", v: s7.pdu_ref},
+      ...(s7.function_code !== null ? [{k: "Function Code", v: `0x${s7.function_code.toString(16).toUpperCase()} — ${s7.function_name}`}] : []),
+      ...Object.entries(s7.details || {}).map(([k, v]) => ({k, v})),
+    ];
+    if (s7.is_write) s7Fields.push({k: "⚠ WARNING", v: "WRITE/CONTROL command — modifies PLC state"});
+    s7Fields.forEach(f => {
+      const row = document.createElement("div");
+      row.className = "pkt-field";
+      const valColor = s7.is_write && f.k === "⚠ WARNING" ? "var(--red)" : "";
+      row.innerHTML = `<span class="pkt-fk">${escHtml(String(f.k))}:</span><span class="pkt-fv" style="color:${valColor}">${escHtml(String(f.v))}</span>`;
+      fields.appendChild(row);
+    });
+    s7Div.appendChild(hdr);
+    s7Div.appendChild(fields);
+    pktTree.appendChild(s7Div);
+  }
+
+  // EtherNet/IP section
+  if (p.enip) {
+    const ei = p.enip;
+    const eiDiv = document.createElement("div");
+    eiDiv.className = "pkt-layer";
+    const hdr = document.createElement("div");
+    hdr.className = "pkt-layer-header";
+    const eiColor = ei.is_write ? "var(--red)" : ei.is_error ? "var(--yellow)" : "var(--green)";
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> <span style="color:${eiColor}">EtherNet/IP</span>`;
+    hdr.addEventListener("click", () => eiDiv.classList.toggle("collapsed"));
+    const fields = document.createElement("div");
+    fields.className = "pkt-layer-fields";
+    const eiFields = [
+      {k: "Command", v: `${ei.command_name} (0x${ei.command.toString(16).toUpperCase()})`},
+      {k: "Session Handle", v: ei.session_handle},
+      {k: "Status", v: ei.status === 0 ? "OK" : `Error (${ei.status})`},
+    ];
+    if (ei.cip_service !== null) {
+      eiFields.push({k: "CIP Service", v: `${ei.cip_service_name} (0x${ei.cip_service.toString(16).toUpperCase()})${ei.is_response ? " [Response]" : ""}`});
+    }
+    if (ei.is_write) eiFields.push({k: "⚠ WARNING", v: "CIP WRITE — modifies controller tag/attribute"});
+    eiFields.forEach(f => {
+      const row = document.createElement("div");
+      row.className = "pkt-field";
+      const valColor = ei.is_write && f.k === "⚠ WARNING" ? "var(--red)" : "";
+      row.innerHTML = `<span class="pkt-fk">${escHtml(String(f.k))}:</span><span class="pkt-fv" style="color:${valColor}">${escHtml(String(f.v))}</span>`;
+      fields.appendChild(row);
+    });
+    eiDiv.appendChild(hdr);
+    eiDiv.appendChild(fields);
+    pktTree.appendChild(eiDiv);
+  }
+
+  // IEC 60870-5-104 section
+  if (p.iec104) {
+    const ic = p.iec104;
+    const icDiv = document.createElement("div");
+    icDiv.className = "pkt-layer";
+    const hdr = document.createElement("div");
+    hdr.className = "pkt-layer-header";
+    const icColor = ic.is_write ? "var(--red)" : ic.is_error ? "var(--yellow)" : "var(--green)";
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> <span style="color:${icColor}">IEC 60870-5-104</span>`;
+    hdr.addEventListener("click", () => icDiv.classList.toggle("collapsed"));
+    const fields = document.createElement("div");
+    fields.className = "pkt-layer-fields";
+    const icFields = [
+      {k: "Frame Type", v: ic.frame_type + (ic.u_type ? ` (${ic.u_type})` : "")},
+    ];
+    if (ic.type_id !== null) {
+      icFields.push({k: "Type ID", v: `${ic.type_id} — ${ic.type_name}`});
+      icFields.push({k: "COT", v: `${ic.cot} — ${ic.cot_name}`});
+      if (ic.common_address !== null) icFields.push({k: "Common Address", v: ic.common_address});
+      if (ic.details && ic.details.test) icFields.push({k: "Test Flag", v: "true"});
+    }
+    if (ic.is_write) icFields.push({k: "⚠ WARNING", v: "CONTROL command — activates IED output"});
+    icFields.forEach(f => {
+      const row = document.createElement("div");
+      row.className = "pkt-field";
+      const valColor = ic.is_write && f.k === "⚠ WARNING" ? "var(--red)" : "";
+      row.innerHTML = `<span class="pkt-fk">${escHtml(String(f.k))}:</span><span class="pkt-fv" style="color:${valColor}">${escHtml(String(f.v))}</span>`;
+      fields.appendChild(row);
+    });
+    icDiv.appendChild(hdr);
+    icDiv.appendChild(fields);
+    pktTree.appendChild(icDiv);
+  }
+
+  // BACnet section
+  if (p.bacnet) {
+    const bn = p.bacnet;
+    const bnDiv = document.createElement("div");
+    bnDiv.className = "pkt-layer";
+    const hdr = document.createElement("div");
+    hdr.className = "pkt-layer-header";
+    const bnColor = bn.is_write ? "var(--red)" : bn.is_error ? "var(--yellow)" : "var(--green)";
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> <span style="color:${bnColor}">BACnet/IP</span>`;
+    hdr.addEventListener("click", () => bnDiv.classList.toggle("collapsed"));
+    const fields = document.createElement("div");
+    fields.className = "pkt-layer-fields";
+    const bnFields = [
+      {k: "BVLC Function", v: bn.bvlc_function_name},
+      {k: "PDU Type", v: bn.pdu_type_name},
+    ];
+    if (bn.service_name !== null) bnFields.push({k: "Service", v: bn.service_name});
+    if (bn.invoke_id !== null) bnFields.push({k: "Invoke ID", v: bn.invoke_id});
+    if (bn.is_write) bnFields.push({k: "⚠ WARNING", v: "WRITE service — modifies building controller property"});
+    bnFields.forEach(f => {
+      const row = document.createElement("div");
+      row.className = "pkt-field";
+      const valColor = bn.is_write && f.k === "⚠ WARNING" ? "var(--red)" : "";
+      row.innerHTML = `<span class="pkt-fk">${escHtml(String(f.k))}:</span><span class="pkt-fv" style="color:${valColor}">${escHtml(String(f.v))}</span>`;
+      fields.appendChild(row);
+    });
+    bnDiv.appendChild(hdr);
+    bnDiv.appendChild(fields);
+    pktTree.appendChild(bnDiv);
+  }
+
   // Hex dump
   const hexStr = p.hex || "";
   if (!hexStr) {

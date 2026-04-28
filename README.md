@@ -15,7 +15,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Filtering** — Filter graph by protocol or host type via sidebar checkboxes
 - **Search** — Find nodes by IP address or hostname
 - **Detail panel** — Click any node to see full host details (ports, services, traffic, DNS queries)
-- **Large capture support** — Streams up to 150,000 packets without loading everything into memory
+- **Large capture support** — Streams up to 1,000,000 packets without loading everything into memory (up to 1 GB upload)
 
 ## OT/ICS Protocol Support
 
@@ -29,10 +29,21 @@ The visualizer detects and classifies industrial control system devices and prot
 
 **OT-specific anomaly detection:**
 - Modbus write commands (FC 5/6/15/16) — unauthorized PLC writes
+- DNP3 control/operate commands (Direct Operate, Select-Before-Operate, Cold/Warm Restart)
+- S7comm Write Variable, PLC Stop, and PI Service (Start/Stop) commands
+- EtherNet/IP CIP Write Tag / Set Attribute operations
+- IEC 60870-5-104 command activation (Type IDs 45–50 with COT=Activation)
+- BACnet writeProperty / reinitializeDevice / deviceCommunicationControl
 - OT device exposed to internet traffic
 - Cleartext OT protocols (Modbus, DNP3, S7, BACnet have no encryption)
 
-**Modbus TCP deep inspection:** The packet inspector decodes Modbus function codes, unit IDs, register addresses, and flags write commands in red.
+**Protocol deep inspection (packet detail panel):**
+- **Modbus TCP**: Function codes, unit ID, register addresses; write commands flagged in red
+- **DNP3**: Link-layer src/dst addresses, application function code, direction (master↔RTU)
+- **S7comm**: ROSCTR message type, PDU reference, function code (over TPKT+COTP)
+- **EtherNet/IP**: Encapsulation command, session handle, CIP service code and name
+- **IEC 60870-5-104**: Frame type (I/S/U), ASDU type ID, Cause of Transmission (COT), common address
+- **BACnet/IP**: BVLC function, APDU PDU type, confirmed/unconfirmed service name
 
 ## IoT Device Support
 

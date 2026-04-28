@@ -516,6 +516,339 @@ def parse_coap(payload_bytes):
         return None
 
 
+def parse_dnp3(payload_bytes):
+    """Parse DNP3 link-layer + application-layer. Returns dict or None."""
+    if not payload_bytes or len(payload_bytes) < 10:
+        return None
+    try:
+        if payload_bytes[0] != 0x05 or payload_bytes[1] != 0x64:
+            return None
+        ctrl = payload_bytes[3]
+        direction = "master→RTU" if (ctrl & 0x80) else "RTU→master"
+        dst_addr = int.from_bytes(payload_bytes[4:6], "little")
+        src_addr = int.from_bytes(payload_bytes[6:8], "little")
+
+        func_code = None
+        func_name = "N/A"
+        is_write = False
+        is_error = False
+
+        if len(payload_bytes) >= 12:
+            # Application layer starts at byte 10 (after 8-byte link header + 2-byte CRC)
+            app_fc = payload_bytes[11]
+            func_code = app_fc
+            FC_NAMES = {
+                0: "Confirm", 1: "Read", 2: "Write", 3: "Select",
+                4: "Operate", 5: "Direct Operate", 6: "Direct Operate No ACK",
+                7: "Freeze", 8: "Freeze No ACK", 9: "Freeze Clear",
+                13: "Cold Restart", 14: "Warm Restart",
+                129: "Response", 130: "Unsolicited Response",
+            }
+            func_name = FC_NAMES.get(func_code, f"Unknown FC {func_code}")
+            is_write = func_code in (2, 3, 4, 5, 6, 13, 14)
+            is_error = func_code == 129 and len(payload_bytes) >= 14 and bool(payload_bytes[12] & 0x80)
+
+        return {
+            "src_address": src_addr,
+            "dst_address": dst_addr,
+            "function_code": func_code,
+            "function_name": func_name,
+            "is_write": is_write,
+            "is_error": is_error,
+            "details": {"direction": direction},
+        }
+    except Exception:
+        return None
+
+
+def parse_s7comm(payload_bytes):
+    """Parse S7comm over TPKT+COTP. Returns dict or None."""
+    if not payload_bytes or len(payload_bytes) < 10:
+        return None
+    try:
+        # TPKT header: version must be 0x03
+        if payload_bytes[0] != 0x03:
+            return None
+        cotp_len = payload_bytes[4]  # COTP length indicator (bytes after it in COTP header)
+        s7_offset = 4 + cotp_len + 1
+        if len(payload_bytes) < s7_offset + 10:
+            return None
+
+        s7 = payload_bytes[s7_offset:]
+        if s7[0] != 0x32:
+            return None
+
+        ROSCTR_NAMES = {1: "Job", 2: "Ack", 3: "Ack-Data", 7: "Userdata"}
+        rosctr = s7[1]
+        rosctr_name = ROSCTR_NAMES.get(rosctr, f"Unknown({rosctr})")
+        pdu_ref = int.from_bytes(s7[4:6], "big")
+        param_len = int.from_bytes(s7[6:8], "big")
+        data_len = int.from_bytes(s7[8:10], "big")
+
+        is_error = rosctr == 2 and len(s7) >= 12 and s7[10] != 0
+
+        func_code = None
+        func_name = "N/A"
+        is_write = False
+        if rosctr in (1, 3) and param_len > 0 and len(s7) >= 11:
+            func_code = s7[10]
+            FUNC_NAMES = {
+                0xF0: "Setup Communication",
+                0x04: "Read Variable", 0x05: "Write Variable",
+                0x1A: "Request Download", 0x1B: "Download Block", 0x1C: "Download Ended",
+                0x1D: "Start Upload", 0x1E: "Upload", 0x1F: "End Upload",
+                0x28: "PI Service (Start/Stop)", 0x29: "PLC Stop",
+            }
+            func_name = FUNC_NAMES.get(func_code, f"Unknown FC {hex(func_code)}")
+            is_write = func_code in (0x05, 0x1A, 0x1B, 0x28, 0x29)
+
+        return {
+            "rosctr": rosctr,
+            "rosctr_name": rosctr_name,
+            "pdu_ref": pdu_ref,
+            "function_code": func_code,
+            "function_name": func_name,
+            "is_write": is_write,
+            "is_error": is_error,
+            "details": {"param_len": param_len, "data_len": data_len},
+        }
+    except Exception:
+        return None
+
+
+def parse_enip(payload_bytes):
+    """Parse EtherNet/IP encapsulation header + CIP service. Returns dict or None."""
+    if not payload_bytes or len(payload_bytes) < 24:
+        return None
+    try:
+        import struct
+        command = struct.unpack_from("<H", payload_bytes, 0)[0]
+        length = struct.unpack_from("<H", payload_bytes, 2)[0]
+        session_handle = struct.unpack_from("<I", payload_bytes, 4)[0]
+        status = struct.unpack_from("<I", payload_bytes, 8)[0]
+
+        COMMAND_NAMES = {
+            0x0001: "List Services", 0x0004: "List Identity",
+            0x0065: "Register Session", 0x0066: "Unregister Session",
+            0x006F: "Send RR Data", 0x0070: "Send Unit Data",
+            0x0072: "Indicate Status", 0x0073: "Cancel",
+        }
+        command_name = COMMAND_NAMES.get(command, f"Unknown({hex(command)})")
+
+        cip_service = None
+        cip_service_name = None
+        is_response = False
+        is_write = False
+
+        # Parse CIP for Send RR Data (0x006F)
+        if command == 0x006F and len(payload_bytes) >= 30:
+            data = payload_bytes[24:]
+            # CPF: interface_handle(4) + timeout(2) + item_count(2) + items
+            # Null Address Item (type 0x0000, len 0) + Unconnected Data Item (type 0x00B2)
+            # CIP payload starts after CPF header (~10 bytes into data)
+            cip_offset = 10
+            if len(data) > cip_offset:
+                svc_byte = data[cip_offset]
+                is_response = bool(svc_byte & 0x80)
+                cip_service = svc_byte & 0x7F
+                CIP_SERVICES = {
+                    0x01: "Get_Attribute_All", 0x02: "Set_Attribute_All",
+                    0x0E: "Get_Attribute_Single", 0x10: "Set_Attribute_Single",
+                    0x4C: "Read Tag", 0x4D: "Write Tag",
+                    0x4E: "Read Tag Fragmented", 0x4F: "Write Tag Fragmented",
+                    0x0A: "Multiple_Service_Packet",
+                }
+                cip_service_name = CIP_SERVICES.get(cip_service, f"Service {hex(cip_service)}")
+                is_write = (not is_response) and cip_service in (0x10, 0x4D, 0x4F)
+
+        return {
+            "command": command,
+            "command_name": command_name,
+            "session_handle": session_handle,
+            "status": status,
+            "cip_service": cip_service,
+            "cip_service_name": cip_service_name,
+            "is_response": is_response,
+            "is_write": is_write,
+            "is_error": status != 0,
+            "details": {"length": length},
+        }
+    except Exception:
+        return None
+
+
+def parse_iec104(payload_bytes):
+    """Parse IEC 60870-5-104 APDU. Returns dict or None."""
+    if not payload_bytes or len(payload_bytes) < 6:
+        return None
+    try:
+        if payload_bytes[0] != 0x68:
+            return None
+        apdu_len = payload_bytes[1]
+        cf1 = payload_bytes[2]
+
+        if (cf1 & 0x01) == 0:
+            frame_type = "I"
+        elif (cf1 & 0x03) == 0x01:
+            frame_type = "S"
+        else:
+            frame_type = "U"
+
+        U_TYPES = {
+            0x07: "STARTDT act", 0x0B: "STARTDT con",
+            0x13: "STOPDT act",  0x23: "STOPDT con",
+            0x43: "TESTFR act",  0x83: "TESTFR con",
+        }
+        u_type = U_TYPES.get(cf1) if frame_type == "U" else None
+
+        type_id = None
+        type_name = None
+        cot_val = None
+        cot_name = None
+        common_address = None
+        is_write = False
+        is_error = False
+        vsq = None
+        is_test = False
+
+        if frame_type == "I" and len(payload_bytes) >= 13:
+            type_id = payload_bytes[6]
+            vsq = payload_bytes[7]
+            cot_raw = int.from_bytes(payload_bytes[8:10], "little")
+            cot_val = cot_raw & 0x3F
+            is_test = bool(cot_raw & 0x40)
+            is_error = bool(cot_raw & 0x80)
+            common_address = int.from_bytes(payload_bytes[11:13], "little")
+
+            TYPE_NAMES = {
+                1: "M_SP_NA_1 (Single Point)", 3: "M_DP_NA_1 (Double Point)",
+                13: "M_ME_NC_1 (Float Measurement)",
+                45: "C_SC_NA_1 (Single Command)", 46: "C_DC_NA_1 (Double Command)",
+                47: "C_RC_NA_1 (Regulating Step Command)",
+                48: "C_SE_NA_1 (Setpoint Normalized)", 49: "C_SE_NB_1 (Setpoint Scaled)",
+                50: "C_SE_NC_1 (Setpoint Float)",
+                100: "C_IC_NA_1 (General Interrogation)",
+                101: "C_CI_NA_1 (Counter Interrogation)",
+                103: "C_CS_NA_1 (Clock Sync)",
+            }
+            type_name = TYPE_NAMES.get(type_id, f"Type {type_id}")
+
+            COT_NAMES = {
+                3: "Spontaneous", 5: "Requested", 6: "Activation",
+                7: "Activation Confirmation", 8: "Deactivation",
+                9: "Deactivation Confirmation", 10: "Activation Termination",
+                44: "Unknown Type ID",
+            }
+            cot_name = COT_NAMES.get(cot_val, f"COT {cot_val}")
+            is_write = type_id in (45, 46, 47, 48, 49, 50) and cot_val == 6
+
+        return {
+            "frame_type": frame_type,
+            "u_type": u_type,
+            "type_id": type_id,
+            "type_name": type_name,
+            "cot": cot_val,
+            "cot_name": cot_name,
+            "common_address": common_address,
+            "is_write": is_write,
+            "is_error": is_error,
+            "details": {"vsq": vsq, "test": is_test},
+        }
+    except Exception:
+        return None
+
+
+def parse_bacnet(payload_bytes):
+    """Parse BACnet/IP (BVLC + NPDU + APDU). Returns dict or None."""
+    if not payload_bytes or len(payload_bytes) < 6:
+        return None
+    try:
+        if payload_bytes[0] != 0x81:
+            return None
+        bvlc_func = payload_bytes[1]
+        bvlc_len = int.from_bytes(payload_bytes[2:4], "big")
+
+        BVLC_FUNCS = {
+            0x00: "BVLC-Result", 0x01: "Write-Broadcast-Distribution-Table",
+            0x04: "Register-Foreign-Device", 0x05: "Read-Foreign-Device-Table",
+            0x0A: "Original-Unicast-NPDU", 0x0B: "Original-Broadcast-NPDU",
+            0x0C: "Distribute-Broadcast-To-Network",
+        }
+        bvlc_func_name = BVLC_FUNCS.get(bvlc_func, f"BVLC Func {hex(bvlc_func)}")
+
+        # NPDU starts at byte 4
+        if len(payload_bytes) < 8:
+            return None
+        npdu_ctrl = payload_bytes[5]
+        # Skip NPDU routing fields if present (simplified: assume no routing for now)
+        apdu_offset = 6
+        if npdu_ctrl & 0x04:  # Destination specifier present
+            apdu_offset += 3 + payload_bytes[6]  # hop count + address
+        if npdu_ctrl & 0x08:  # Source specifier present
+            apdu_offset += 3 + (payload_bytes[apdu_offset] if apdu_offset < len(payload_bytes) else 0)
+
+        if apdu_offset >= len(payload_bytes):
+            return {
+                "bvlc_function": bvlc_func, "bvlc_function_name": bvlc_func_name,
+                "pdu_type": None, "pdu_type_name": "NPDU only",
+                "service_choice": None, "service_name": None,
+                "invoke_id": None, "is_write": False, "is_error": False,
+                "details": {"bvlc_length": bvlc_len},
+            }
+
+        apdu = payload_bytes[apdu_offset:]
+        pdu_type = (apdu[0] >> 4) & 0x0F
+        PDU_TYPES = {
+            0x0: "Confirmed-Request", 0x1: "Unconfirmed-Request",
+            0x2: "Simple-ACK", 0x3: "Complex-ACK",
+            0x5: "Error", 0x6: "Reject", 0x7: "Abort",
+        }
+        pdu_type_name = PDU_TYPES.get(pdu_type, f"PDU {hex(pdu_type)}")
+
+        CONFIRMED_SERVICES = {
+            8: "atomicReadFile", 9: "atomicWriteFile",
+            12: "createObject", 13: "deleteObject",
+            14: "readProperty", 15: "readPropertyConditional",
+            16: "readPropertyMultiple", 17: "writeProperty",
+            18: "writePropertyMultiple", 28: "deviceCommunicationControl",
+            30: "reinitializeDevice",
+        }
+        UNCONFIRMED_SERVICES = {
+            0: "i-Am", 1: "i-Have", 2: "unconfirmedCOVNotification",
+            3: "unconfirmedEventNotification", 7: "timeSynchronization",
+            8: "who-Has", 9: "who-Is", 13: "utcTimeSynchronization",
+        }
+
+        service_choice = None
+        service_name = None
+        invoke_id = None
+        is_write = False
+
+        if pdu_type == 0x0 and len(apdu) >= 4:  # Confirmed-Request
+            invoke_id = apdu[2]
+            service_choice = apdu[3]
+            service_name = CONFIRMED_SERVICES.get(service_choice, f"Service {service_choice}")
+            is_write = service_choice in (9, 12, 13, 17, 18, 28, 30)
+        elif pdu_type == 0x1 and len(apdu) >= 2:  # Unconfirmed-Request
+            service_choice = apdu[1]
+            service_name = UNCONFIRMED_SERVICES.get(service_choice, f"Service {service_choice}")
+
+        return {
+            "bvlc_function": bvlc_func,
+            "bvlc_function_name": bvlc_func_name,
+            "pdu_type": pdu_type,
+            "pdu_type_name": pdu_type_name,
+            "service_choice": service_choice,
+            "service_name": service_name,
+            "invoke_id": invoke_id,
+            "is_write": is_write,
+            "is_error": pdu_type == 0x5,
+            "details": {"bvlc_length": bvlc_len},
+        }
+    except Exception:
+        return None
+
+
 def analyze_anomalies(hosts, connections, packet_store):
     """Detect network anomalies and return a list of anomaly dicts."""
     anomalies = []
@@ -723,6 +1056,91 @@ def analyze_anomalies(hosts, connections, packet_store):
                 "dst": b,
                 "description": f"TR-069 (port 7547) detected between {a} and {b} — remote CPE management protocol, often exploited",
             })
+
+    # ── OT: DNP3 control/operate commands ────────────────────────────────────
+    for conn_key, pkts in packet_store.items():
+        for pkt in pkts:
+            if pkt.get("dport") == 20000 or pkt.get("sport") == 20000:
+                dn = pkt.get("dnp3")
+                if dn and dn.get("is_write"):
+                    anomalies.append({
+                        "type": "ot_dnp3_control",
+                        "severity": "high",
+                        "src": pkt["src"],
+                        "dst": pkt["dst"],
+                        "description": f"DNP3 control command ({dn['function_name']}) from {pkt['src']} to {pkt['dst']} — unauthorized RTU operate",
+                    })
+                    break
+
+    # ── OT: S7comm write / PLC stop ──────────────────────────────────────────
+    for conn_key, pkts in packet_store.items():
+        for pkt in pkts:
+            if pkt.get("dport") == 102 or pkt.get("sport") == 102:
+                s7 = pkt.get("s7comm")
+                if s7 and s7.get("is_write"):
+                    fc = s7.get("function_code")
+                    if fc in (0x28, 0x29):
+                        anomalies.append({
+                            "type": "ot_s7_critical",
+                            "severity": "high",
+                            "src": pkt["src"],
+                            "dst": pkt["dst"],
+                            "description": f"S7comm {s7['function_name']} from {pkt['src']} to {pkt['dst']} — critical PLC control command",
+                        })
+                    else:
+                        anomalies.append({
+                            "type": "ot_s7_write",
+                            "severity": "high",
+                            "src": pkt["src"],
+                            "dst": pkt["dst"],
+                            "description": f"S7comm Write Variable from {pkt['src']} to {pkt['dst']} — unauthorized PLC write",
+                        })
+                    break
+
+    # ── OT: EtherNet/IP CIP write tag ────────────────────────────────────────
+    for conn_key, pkts in packet_store.items():
+        for pkt in pkts:
+            if pkt.get("dport") in (2222, 44818) or pkt.get("sport") in (2222, 44818):
+                ei = pkt.get("enip")
+                if ei and ei.get("is_write"):
+                    anomalies.append({
+                        "type": "ot_enip_write",
+                        "severity": "high",
+                        "src": pkt["src"],
+                        "dst": pkt["dst"],
+                        "description": f"EtherNet/IP CIP {ei['cip_service_name']} from {pkt['src']} to {pkt['dst']} — unauthorized tag write",
+                    })
+                    break
+
+    # ── OT: IEC 60870-5-104 control command ──────────────────────────────────
+    for conn_key, pkts in packet_store.items():
+        for pkt in pkts:
+            if pkt.get("dport") == 2404 or pkt.get("sport") == 2404:
+                ic = pkt.get("iec104")
+                if ic and ic.get("is_write"):
+                    anomalies.append({
+                        "type": "ot_iec104_command",
+                        "severity": "high",
+                        "src": pkt["src"],
+                        "dst": pkt["dst"],
+                        "description": f"IEC-104 control command ({ic['type_name']}) from {pkt['src']} to {pkt['dst']} — activation of IED control",
+                    })
+                    break
+
+    # ── OT: BACnet write property ─────────────────────────────────────────────
+    for conn_key, pkts in packet_store.items():
+        for pkt in pkts:
+            if pkt.get("dport") == 47808 or pkt.get("sport") == 47808:
+                bn = pkt.get("bacnet")
+                if bn and bn.get("is_write"):
+                    anomalies.append({
+                        "type": "ot_bacnet_write",
+                        "severity": "high",
+                        "src": pkt["src"],
+                        "dst": pkt["dst"],
+                        "description": f"BACnet {bn['service_name']} from {pkt['src']} to {pkt['dst']} — unauthorized building controller write",
+                    })
+                    break
 
     # Deduplicate (keep unique type+src+dst combos)
     seen = set()
@@ -947,6 +1365,11 @@ def analyze_pcap(filepath):
                             "modbus": None,
                             "mqtt": None,
                             "coap": None,
+                            "dnp3": None,
+                            "s7comm": None,
+                            "enip": None,
+                            "iec104": None,
+                            "bacnet": None,
                         }
                         if Ether in pkt:
                             e_ = pkt[Ether]
@@ -1024,6 +1447,36 @@ def analyze_pcap(filepath):
                             cp = parse_coap(payload)
                             if cp:
                                 pd["coap"] = cp
+
+                        # DNP3 parsing
+                        if payload and (dport_ == 20000 or sport_ == 20000):
+                            dn = parse_dnp3(payload)
+                            if dn:
+                                pd["dnp3"] = dn
+
+                        # S7comm parsing
+                        if payload and (dport_ == 102 or sport_ == 102):
+                            s7 = parse_s7comm(payload)
+                            if s7:
+                                pd["s7comm"] = s7
+
+                        # EtherNet/IP parsing
+                        if payload and (dport_ in (2222, 44818) or sport_ in (2222, 44818)):
+                            ei = parse_enip(payload)
+                            if ei:
+                                pd["enip"] = ei
+
+                        # IEC 60870-5-104 parsing
+                        if payload and (dport_ == 2404 or sport_ == 2404):
+                            ic = parse_iec104(payload)
+                            if ic:
+                                pd["iec104"] = ic
+
+                        # BACnet parsing
+                        if payload and (dport_ == 47808 or sport_ == 47808):
+                            bn = parse_bacnet(payload)
+                            if bn:
+                                pd["bacnet"] = bn
 
                         # Store hex dump of payload
                         if payload:
