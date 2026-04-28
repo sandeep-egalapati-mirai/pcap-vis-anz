@@ -207,6 +207,13 @@ def os_from_ttl(ttl):
 
 def is_private(ip):
     try:
+        if ":" in ip:
+            # IPv6: loopback (::1), link-local (fe80::/10), ULA (fc00::/7)
+            low = ip.lower()
+            return (low == "::1"
+                    or low.startswith("fe80:")
+                    or low.startswith("fc")
+                    or low.startswith("fd"))
         parts = list(map(int, ip.split(".")))
         if len(parts) != 4:
             return False
@@ -794,15 +801,16 @@ def parse_bacnet(payload_bytes):
         if len(payload_bytes) < 8:
             return None
         npdu_ctrl = payload_bytes[5]
-        # Skip NPDU routing fields: DNET(2)+DLEN(1)+DADR(DLEN)+hop(1) / SNET(2)+SLEN(1)+SADR(SLEN)
+        # Skip NPDU routing fields: DNET(2)+DLEN(1)+DADR(DLEN)+hop_count(1) / SNET(2)+SLEN(1)+SADR(SLEN)
         apdu_offset = 6
         if npdu_ctrl & 0x04:  # Destination specifier present
-            dlen = payload_bytes[apdu_offset] if apdu_offset < len(payload_bytes) else 0
-            apdu_offset += 1 + dlen + 1  # DLEN byte + address bytes + hop count
+            if apdu_offset + 2 < len(payload_bytes):
+                dlen = payload_bytes[apdu_offset + 2]   # DLEN is after the 2-byte DNET field
+                apdu_offset += 2 + 1 + dlen + 1         # DNET + DLEN + DADR + hop_count
         if npdu_ctrl & 0x08:  # Source specifier present
-            if apdu_offset < len(payload_bytes):
-                slen = payload_bytes[apdu_offset]
-                apdu_offset += 1 + slen
+            if apdu_offset + 2 < len(payload_bytes):
+                slen = payload_bytes[apdu_offset + 2]   # SLEN is after the 2-byte SNET field
+                apdu_offset += 2 + 1 + slen              # SNET + SLEN + SADR
 
         if apdu_offset >= len(payload_bytes):
             return {
@@ -1278,7 +1286,7 @@ def analyze_pcap(filepath):
                 # broadcast / multicast flags
                 if dip.endswith(".255") or dip == "255.255.255.255":
                     dh["flags"].add("broadcast")
-                if dip.startswith(("224.", "225.", "239.")):
+                if dip.startswith(("224.", "225.", "239.")) or dip.startswith("ff"):
                     dh["flags"].add("multicast")
 
                 protocol = "IP"
