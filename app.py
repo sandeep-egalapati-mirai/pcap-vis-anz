@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200 MB
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
 
 ALLOWED_EXTENSIONS = {"pcap", "pcapng", "cap"}
 
@@ -781,7 +781,7 @@ def analyze_pcap(filepath):
             h["mac_vendor"] = mac_vendor(mac)
         return h
 
-    MAX_PACKETS = 150_000
+    MAX_PACKETS = 1_000_000
     processed = 0
     packet_store = defaultdict(list)
     MAX_STORED_PER_CONN = 50
