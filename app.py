@@ -222,10 +222,24 @@ def is_private(ip):
         return False
 
 
+_geoip_reader = None
+
+def _get_geoip_reader():
+    global _geoip_reader
+    if _geoip_reader is None:
+        try:
+            import geoip2.database
+            _geoip_reader = geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-City.mmdb')
+        except Exception:
+            pass
+    return _geoip_reader
+
+
 def geo_lookup(ip):
+    reader = _get_geoip_reader()
+    if reader is None:
+        return None
     try:
-        import geoip2.database
-        reader = geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-City.mmdb')
         r = reader.city(ip)
         return {
             "country": r.country.name,
@@ -780,12 +794,15 @@ def parse_bacnet(payload_bytes):
         if len(payload_bytes) < 8:
             return None
         npdu_ctrl = payload_bytes[5]
-        # Skip NPDU routing fields if present (simplified: assume no routing for now)
+        # Skip NPDU routing fields: DNET(2)+DLEN(1)+DADR(DLEN)+hop(1) / SNET(2)+SLEN(1)+SADR(SLEN)
         apdu_offset = 6
         if npdu_ctrl & 0x04:  # Destination specifier present
-            apdu_offset += 3 + payload_bytes[6]  # hop count + address
+            dlen = payload_bytes[apdu_offset] if apdu_offset < len(payload_bytes) else 0
+            apdu_offset += 1 + dlen + 1  # DLEN byte + address bytes + hop count
         if npdu_ctrl & 0x08:  # Source specifier present
-            apdu_offset += 3 + (payload_bytes[apdu_offset] if apdu_offset < len(payload_bytes) else 0)
+            if apdu_offset < len(payload_bytes):
+                slen = payload_bytes[apdu_offset]
+                apdu_offset += 1 + slen
 
         if apdu_offset >= len(payload_bytes):
             return {
@@ -1021,8 +1038,10 @@ def analyze_anomalies(hosts, connections, packet_store):
     for ip, h in hosts.items():
         if h["host_type"] in iot_types:
             for (a, b), conn in connections.items():
-                peer = b if a == ip else (a if b == ip else None)
-                if peer and 23 in conn.get("dst_ports", set()):
+                if ip not in (a, b):
+                    continue
+                peer = b if a == ip else a
+                if 23 in conn.get("dst_ports", set()):
                     anomalies.append({
                         "type": "iot_telnet",
                         "severity": "high",
@@ -1200,6 +1219,7 @@ def analyze_pcap(filepath):
         return h
 
     MAX_PACKETS = 1_000_000
+    MAX_HOSTS = 50_000
     processed = 0
     packet_store = defaultdict(list)
     MAX_STORED_PER_CONN = 50
@@ -1226,13 +1246,21 @@ def analyze_pcap(filepath):
                         pass
                     continue
 
-                # ── IPv4 ─────────────────────────────────────────────────────
-                if IP not in pkt:
+                # ── IPv4 / IPv6 ──────────────────────────────────────────────
+                if IP in pkt:
+                    sip = pkt[IP].src
+                    dip = pkt[IP].dst
+                    ttl = pkt[IP].ttl
+                elif IPv6 in pkt:
+                    sip = pkt[IPv6].src
+                    dip = pkt[IPv6].dst
+                    ttl = pkt[IPv6].hlim
+                else:
                     continue
 
-                sip = pkt[IP].src
-                dip = pkt[IP].dst
-                ttl = pkt[IP].ttl
+                # Cap host table to prevent memory exhaustion from crafted PCAPs
+                if len(hosts) >= MAX_HOSTS and sip not in hosts and dip not in hosts:
+                    continue
                 plen = len(pkt)
                 rel_t = round(float(pkt.time) - first_pkt_time, 6) if first_pkt_time else 0
 
@@ -1737,6 +1765,24 @@ def merge_results(results):
     }
 
 
+# ── Security headers ──────────────────────────────────────────────────────────
+
+@app.after_request
+def set_security_headers(response):
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' blob: data:; "
+        "font-src 'self'; "
+        "connect-src 'self';"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -1792,4 +1838,4 @@ def session_schema():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=False, host="127.0.0.1", port=5000)

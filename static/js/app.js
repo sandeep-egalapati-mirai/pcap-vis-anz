@@ -728,7 +728,7 @@ function showTooltipNode(event, d) {
   const geoStr = d.geo ? ` · ${d.geo.country_code || d.geo.country || ""}${d.geo.city ? ", " + d.geo.city : ""}` : "";
   tooltip.innerHTML = `
     <div class="tip-ip">${d.ip}${geoStr ? `<span style="color:var(--text2)">${geoStr}</span>` : ""}</div>
-    ${d.hostname ? `<div class="tip-type">${d.hostname}</div>` : ""}
+    ${d.hostname ? `<div class="tip-type">${escHtml(d.hostname)}</div>` : ""}
     <div class="tip-type">${d.host_type}${d.os_hint ? " · " + d.os_hint : ""}</div>
     <div class="tip-proto">
       ${d.protocols.slice(0, 6).map(p =>
@@ -826,12 +826,12 @@ function showDetailPanel(d) {
 
   if (d.dns_names.length) {
     rows.push(sectionTitle("DNS names"));
-    d.dns_names.forEach(n => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px">${n}</div>`));
+    d.dns_names.forEach(n => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px">${escHtml(n)}</div>`));
   }
 
   if (d.dns_queries.length) {
     rows.push(sectionTitle("DNS queries sent"));
-    d.dns_queries.forEach(q => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px;color:var(--text2)">${q}</div>`));
+    d.dns_queries.forEach(q => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px;color:var(--text2)">${escHtml(q)}</div>`));
   }
 
   // Anomalies for this node

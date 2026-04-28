@@ -108,7 +108,7 @@ Then open your browser and go to:
 http://localhost:5000
 ```
 
-Upload a capture file (`.pcap`, `.pcapng`, or `.cap`, up to 200 MB) and the graph will render automatically.
+Upload a capture file (`.pcap`, `.pcapng`, or `.cap`, up to 1 GB) and the graph will render automatically.
 
 ## Capturing your own traffic
 
@@ -141,15 +141,27 @@ pcap-vis-anz/
 
 | Setting | Default | Description |
 |---|---|---|
-| `MAX_CONTENT_LENGTH` | 200 MB | Maximum upload file size |
-| `MAX_PACKETS` | 150,000 | Packets processed per file |
-| Port | 5000 | HTTP port (`app.py` line 438) |
+| `MAX_CONTENT_LENGTH` | 1 GB | Maximum upload file size |
+| `MAX_PACKETS` | 1,000,000 | Packets processed per file |
+| `MAX_HOSTS` | 50,000 | Max unique hosts tracked per file |
+| Port | 5000 | HTTP port (last line of `app.py`) |
 
 To change the port, edit the last line of `app.py`:
 
 ```python
-app.run(debug=True, host="0.0.0.0", port=5000)
+app.run(debug=False, host="127.0.0.1", port=5000)
 ```
+
+## Security & self-containment
+
+This tool is designed for **air-gapped / offline use**:
+
+- D3.js v7 is bundled locally — no CDN requests
+- CSS uses system fonts only — no Google Fonts
+- The only outbound browser request is `POST /upload` to the same origin
+- PNG export uses `blob:` URLs — no third-party image host
+
+HTTP security headers are set on every response (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`). The app binds to `127.0.0.1` by default so it is not reachable from the network.
 
 ## Troubleshooting
 
