@@ -1086,6 +1086,8 @@ function openPktInspectorForHost(ip) {
 function closePktInspector() {
   pktInspector.classList.add("hidden");
   graphWrap.classList.remove("pkt-open");
+  document.getElementById("legend").style.bottom = "";
+  document.getElementById("graph-controls").style.bottom = "";
   pktTbody.innerHTML = "";
   pktTree.innerHTML = "";
   pktHex.innerHTML = "";
