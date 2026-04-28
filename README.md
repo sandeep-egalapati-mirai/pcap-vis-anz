@@ -6,16 +6,53 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 
 ## Features
 
-- **Interactive graph** — D3.js v7 force simulation; drag, zoom, and pan
-- **Host classification** — Router, Web Server, DNS Server, Windows Host, etc.
-- **Protocol detection** — 50+ protocols identified by port (HTTP, SSH, DNS, RDP, MySQL, …)
-- **OS fingerprinting** — TTL-based heuristic (Linux/Unix, Windows, Network Device)
-- **MAC vendor lookup** — Identifies VMware, Cisco, Apple, Raspberry Pi, and more
-- **DNS name resolution** — Extracts hostnames from captured DNS traffic
+- **Interactive graph** — D3.js v7 force simulation with Force, Radial, and Cluster layout modes; drag, zoom, and pan
+- **Host classification** — 38 host types: Router, PLC, IP Camera, Web Server, DNS Server, Windows Host, and more
+- **Protocol detection** — 80+ protocols identified by port (HTTP, SSH, DNS, RDP, MySQL, Modbus, MQTT, CoAP, …)
+- **IPv4 and IPv6 support** — both address families tracked; private ranges correctly classified
+- **OS fingerprinting** — TTL / hop-limit heuristic (Linux/Unix, Windows, Network Device)
+- **MAC vendor lookup** — OUI lookup covering IT, OT, and IoT vendors (VMware, Cisco, Siemens, Amazon Echo, …)
+- **DNS name resolution** — Extracts hostnames and query logs from captured DNS traffic
 - **Filtering** — Filter graph by protocol or host type via sidebar checkboxes
 - **Search** — Find nodes by IP address or hostname
-- **Detail panel** — Click any node to see full host details (ports, services, traffic, DNS queries)
-- **Large capture support** — Streams up to 1,000,000 packets without loading everything into memory (up to 1 GB upload)
+- **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, anomalies, conversations)
+- **Three views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer)
+- **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap
+- **Packet inspector** — Click any edge or node to open a Wireshark-style panel showing per-packet protocol trees and hex dumps
+- **Exports** — PNG graph screenshot, connections CSV, anomalies CSV
+- **Session save / load** — Export full analysis to JSON and reload without re-uploading the capture file
+- **Node annotations** — Right-click any node to attach a persistent note (stored in browser localStorage)
+- **Anomaly detection** — 18 detection rules across general network, OT/ICS, and IoT threat categories
+- **Large capture support** — Streams up to 1,000,000 packets without loading into memory (up to 1 GB upload)
+
+## Anomaly Detection
+
+18 detection rules fire automatically after analysis:
+
+**General network**
+- Port scan — single source contacting >5 IPs across >15 unique ports
+- Cleartext credentials — FTP or Telnet traffic with payload
+- Beaconing — connection with highly regular inter-packet timing (coefficient of variation < 0.2)
+- Data exfiltration — host sending >10 MB to a non-private IP
+- Suspicious ports — known C2/hack-tool ports (4444, 1337, 31337, 6666, 6667)
+
+**OT / ICS**
+- Modbus write commands (FC 5/6/15/16) — unauthorized PLC writes
+- DNP3 control/operate commands (Direct Operate, Select-Before-Operate, Cold/Warm Restart)
+- S7comm Write Variable and PLC Stop / PI Service commands
+- EtherNet/IP CIP Write Tag / Set Attribute operations
+- IEC 60870-5-104 command activation (Type IDs 45–50 with COT=Activation)
+- BACnet writeProperty / reinitializeDevice / deviceCommunicationControl
+- OT device communicating with an internet host
+- Cleartext OT protocols (Modbus, DNP3, S7, BACnet have no encryption)
+
+**IoT**
+- Cleartext MQTT (port 1883) — credentials and sensor data unencrypted
+- Telnet access to an IoT device — classic Mirai botnet vector
+- IP Camera sending data to an external IP — unauthorized stream or C2
+- TR-069 (port 7547) — remote management protocol frequently exploited
+
+All anomalies are shown in the sidebar and on the node detail panel; affected nodes pulse with a coloured ring (red = high, yellow = medium).
 
 ## OT/ICS Protocol Support
 
@@ -144,6 +181,11 @@ pcap-vis-anz/
 | `MAX_CONTENT_LENGTH` | 1 GB | Maximum upload file size |
 | `MAX_PACKETS` | 1,000,000 | Packets processed per file |
 | `MAX_HOSTS` | 50,000 | Max unique hosts tracked per file |
+| `MAX_STORED_PER_CONN` | 50 | Packets stored per connection for the inspector |
+| Connections in inspector | top 40 | Connections with packet detail (by packet count) |
+| Ports shown per node | 30 | Open ports listed in the detail panel |
+| DNS names per node | 5 | Resolved hostnames shown in the detail panel |
+| DNS queries per node | 10 | DNS queries shown in the detail panel |
 | Port | 5000 | HTTP port (last line of `app.py`) |
 
 To change the port, edit the last line of `app.py`:
@@ -169,9 +211,9 @@ HTTP security headers are set on every response (`Content-Security-Policy`, `X-C
 
 **Permission denied reading pcap** — Some systems require root to read certain capture files. Try `sudo python app.py`.
 
-**Graph is empty after upload** — The file may contain only non-IP traffic (e.g. pure Bluetooth or USB captures). The tool currently supports IPv4 and ARP packets.
+**Graph is empty after upload** — The file may contain only non-IP traffic (e.g. pure Bluetooth or USB captures). The tool supports IPv4, IPv6, and ARP packets.
 
-**Very large files are slow** — Only the first 150,000 packets are processed. For faster results, pre-filter with `tcpdump`:
+**Very large files are slow** — Only the first 1,000,000 packets are processed. For faster results, pre-filter with `tcpdump`:
 ```bash
 tcpdump -r big.pcap -w filtered.pcap 'tcp or udp'
 ```
