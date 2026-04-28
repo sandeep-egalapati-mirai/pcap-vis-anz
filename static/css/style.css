@@ -603,7 +603,7 @@ header h1 span { color: var(--accent); }
 /* ── Graph controls ───────────────────────────────────────────────────────── */
 #graph-controls {
   position: absolute;
-  bottom: 14px;
+  bottom: 60px;
   right: 14px;
   display: flex;
   flex-direction: column;
@@ -639,7 +639,7 @@ header h1 span { color: var(--accent); }
 /* ── Legend (bottom-left of graph) ───────────────────────────────────────── */
 #legend {
   position: absolute;
-  bottom: 14px;
+  bottom: 60px;
   left: 14px;
   background: rgba(22,27,34,0.9);
   border: 1px solid var(--border);
@@ -647,7 +647,7 @@ header h1 span { color: var(--accent); }
   padding: 8px 10px;
   z-index: 10;
   max-width: 200px;
-  max-height: calc(100vh - 120px);
+  max-height: calc(100vh - 150px);
   overflow-y: auto;
 }
 #legend::-webkit-scrollbar { width: 4px; }
