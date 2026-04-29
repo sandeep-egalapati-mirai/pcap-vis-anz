@@ -6,12 +6,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 After completing any change:
 1. Update `README.md` to reflect the change (new protocols, updated limits, new features, etc.)
-2. Commit and push to GitHub:
+2. Update `backlog.md` — mark completed items `[x]`, add newly discovered bugs or ideas.
+3. Run any relevant unit tests: `python -m pytest tests/ -q` (create tests in `tests/` if they don't exist yet).
+4. Commit and push to GitHub:
 
 ```bash
 git add <changed files>
 git commit -m "your message"
 git push
+```
+
+## Testing
+
+Write unit tests in `tests/` using `pytest`. Tests cover:
+- Protocol parsers (`parse_modbus`, `parse_dnp3`, `parse_s7comm`, etc.) in `tests/test_parsers.py`
+- Anomaly detection rules in `tests/test_anomalies.py`
+- Helper functions (`is_private`, `mac_vendor`, `geo_lookup`) in `tests/test_helpers.py`
+
+Run tests before committing:
+```bash
+python -m pytest tests/ -q
 ```
 
 ## Running the app
@@ -66,7 +80,7 @@ Key functions in call order:
 - `packetData` — packet drill-down data, keyed `"srcIP|dstIP"`
 - `simulation` — D3 force simulation instance
 - `activeProtos` / `activeTypes` — Sets driving sidebar filter visibility
-- `currentView` — `"graph"` | `"table"` | `"dns"`
+- `currentView` — `"graph"` | `"table"` | `"dns"` | `"ot"`
 - `currentLayout` — `"force"` | `"radial"` | `"cluster"`
 
 **Rendering pipeline:** upload → `renderGraph(data)` → builds SVG nodes/edges → `buildSidebar()` populates filter checkboxes → `applyFilters()` shows/hides elements. Switching layouts calls `applyLayout()`.

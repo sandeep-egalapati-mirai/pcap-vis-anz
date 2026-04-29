@@ -348,25 +348,42 @@ def parse_modbus(payload_bytes):
             23: "Read/Write Multiple Registers", 43: "Read Device Identification",
             90: "Modbus Encapsulated (suspicious)",
         }
+        is_error = func_code is not None and func_code > 0x80
+        real_fc = (func_code & 0x7F) if is_error else func_code
         result = {
             "transaction_id": transaction_id,
             "unit_id": unit_id,
-            "function_code": func_code,
-            "function_name": FC_NAMES.get(func_code, f"Unknown FC {func_code}"),
-            "is_write": func_code in (5, 6, 15, 16, 22, 23),
-            "is_error": func_code is not None and func_code > 0x80,
+            "unit_id_zero": unit_id == 0,
+            "function_code": real_fc,
+            "function_name": FC_NAMES.get(real_fc, f"Unknown FC {real_fc}"),
+            "is_write": real_fc in (5, 6, 15, 16, 22, 23),
+            "is_error": is_error,
+            "is_response": is_error,
             "details": {},
         }
         data = payload_bytes[8:] if len(payload_bytes) > 8 else b""
-        if func_code in (1, 2, 3, 4) and len(data) >= 4:
+        if is_error and len(data) >= 1:
+            EXCEPTION_CODES = {1: "Illegal Function", 2: "Illegal Data Address",
+                               3: "Illegal Data Value", 4: "Slave Device Failure",
+                               5: "Acknowledge", 6: "Slave Device Busy",
+                               8: "Memory Parity Error", 11: "Gateway Path Unavailable"}
+            exc = data[0]
+            result["exception_code"] = exc
+            result["exception_name"] = EXCEPTION_CODES.get(exc, f"Exception {exc}")
+        elif real_fc in (1, 2, 3, 4) and len(data) >= 4:
             result["details"]["start_address"] = struct.unpack(">H", data[0:2])[0]
             result["details"]["quantity"]       = struct.unpack(">H", data[2:4])[0]
-        elif func_code in (5, 6) and len(data) >= 4:
+            result["register_address"]          = struct.unpack(">H", data[0:2])[0]
+            result["quantity"]                  = struct.unpack(">H", data[2:4])[0]
+        elif real_fc in (5, 6) and len(data) >= 4:
             result["details"]["output_address"] = struct.unpack(">H", data[0:2])[0]
             result["details"]["output_value"]   = struct.unpack(">H", data[2:4])[0]
-        elif func_code in (15, 16) and len(data) >= 4:
+            result["register_address"]          = struct.unpack(">H", data[0:2])[0]
+        elif real_fc in (15, 16) and len(data) >= 4:
             result["details"]["start_address"]  = struct.unpack(">H", data[0:2])[0]
             result["details"]["quantity"]       = struct.unpack(">H", data[2:4])[0]
+            result["register_address"]          = struct.unpack(">H", data[0:2])[0]
+            result["quantity"]                  = struct.unpack(">H", data[2:4])[0]
         return result
     except Exception:
         return None
@@ -577,11 +594,27 @@ def parse_dnp3(payload_bytes):
             is_write = func_code in (2, 3, 4, 5, 6, 13, 14)
             is_error = func_code == 129 and len(payload_bytes) >= 14 and bool(payload_bytes[12] & 0x80)
 
+        role = "master" if (ctrl & 0x80) else "outstation"
+        data_object_group = None
+        DNP3_GROUPS = {
+            1: "Binary Input", 2: "Binary Input Change",
+            3: "Double-bit Binary Input", 10: "Binary Output",
+            12: "Binary Output Control (CROB)",
+            20: "Counter", 21: "Frozen Counter",
+            30: "Analog Input", 32: "Analog Input Change",
+            40: "Analog Output Status", 41: "Analog Output Block",
+            50: "Time and Date", 60: "Class Objects",
+        }
+        if len(payload_bytes) >= 14:
+            grp = payload_bytes[12]
+            data_object_group = DNP3_GROUPS.get(grp, f"Group {grp}")
         return {
             "src_address": src_addr,
             "dst_address": dst_addr,
+            "role": role,
             "function_code": func_code,
             "function_name": func_name,
+            "data_object_group": data_object_group,
             "is_write": is_write,
             "is_error": is_error,
             "details": {"direction": direction},
@@ -631,7 +664,7 @@ def parse_s7comm(payload_bytes):
             func_name = FUNC_NAMES.get(func_code, f"Unknown FC {hex(func_code)}")
             is_write = func_code in (0x05, 0x1A, 0x1B, 0x28, 0x29)
 
-        return {
+        result = {
             "rosctr": rosctr,
             "rosctr_name": rosctr_name,
             "pdu_ref": pdu_ref,
@@ -641,6 +674,23 @@ def parse_s7comm(payload_bytes):
             "is_error": is_error,
             "details": {"param_len": param_len, "data_len": data_len},
         }
+        # Extract block type and number from Download operations
+        if func_code in (0x1A, 0x1B, 0x1C) and len(s7) >= 18:
+            try:
+                fname_len = s7[13] if len(s7) > 13 else 0
+                if 6 <= fname_len <= 14 and len(s7) >= 14 + fname_len:
+                    fname_str = bytes(s7[14:14 + fname_len]).decode("ascii", errors="replace")
+                    for bt in ("SFB", "SFC", "OB", "DB", "FC", "FB"):
+                        idx = fname_str.find(bt)
+                        if idx >= 0:
+                            result["block_type"] = bt
+                            digits = "".join(c for c in fname_str[idx + len(bt):] if c.isdigit())
+                            if digits:
+                                result["block_number"] = int(digits)
+                            break
+            except Exception:
+                pass
+        return result
     except Exception:
         return None
 
@@ -1187,6 +1237,99 @@ def analyze_anomalies(hosts, connections, packet_store):
                     })
                     break
 
+    # ── OT: Modbus bulk register read (reconnaissance pattern) ────────────────
+    for (a, b), pkts in packet_store.items():
+        for pkt in pkts:
+            mb = pkt.get("modbus")
+            if mb and mb.get("quantity", 0) > 100 and mb["function_code"] in (3, 4):
+                anomalies.append({
+                    "type": "ot_modbus_bulk_read",
+                    "severity": "medium",
+                    "src": a,
+                    "dst": b,
+                    "description": f"Modbus bulk read ({mb['quantity']} registers, FC{mb['function_code']}) from {a} to {b} — large register scan may indicate reconnaissance",
+                })
+                break
+
+    # ── OT: Modbus broadcast (unit_id=0, affects all PLCs on segment) ─────────
+    for (a, b), pkts in packet_store.items():
+        for pkt in pkts:
+            mb = pkt.get("modbus")
+            if mb and mb.get("unit_id_zero"):
+                anomalies.append({
+                    "type": "ot_modbus_broadcast",
+                    "severity": "high",
+                    "src": a,
+                    "dst": b,
+                    "description": f"Modbus broadcast (unit_id=0) from {a} — command targets ALL PLCs on segment, unauthorized broadcast risk",
+                })
+                break
+
+    # ── OT: Modbus exception response (bad commands or access failures) ────────
+    for (a, b), pkts in packet_store.items():
+        for pkt in pkts:
+            mb = pkt.get("modbus")
+            if mb and mb.get("exception_code"):
+                anomalies.append({
+                    "type": "ot_modbus_exception",
+                    "severity": "medium",
+                    "src": a,
+                    "dst": b,
+                    "description": f"Modbus exception {mb.get('exception_name', mb['exception_code'])} on {b} — may indicate unauthorized access attempt or misconfigured client",
+                })
+                break
+
+    # ── OT: S7 code download (PLC logic modification) ─────────────────────────
+    for (a, b), pkts in packet_store.items():
+        for pkt in pkts:
+            s7 = pkt.get("s7comm")
+            if s7 and s7.get("function_code") == 0x1A:
+                block_desc = ""
+                if s7.get("block_type"):
+                    block_desc = f" ({s7['block_type']}"
+                    if s7.get("block_number") is not None:
+                        block_desc += f" #{s7['block_number']}"
+                    block_desc += ")"
+                anomalies.append({
+                    "type": "ot_s7_code_download",
+                    "severity": "high",
+                    "src": a,
+                    "dst": b,
+                    "description": f"S7 code download{block_desc} from {a} to {b} — PLC logic is being modified, verify authorization",
+                })
+                break
+
+    # ── OT: DNP3 unusual function codes (evasion/persistence) ────────────────
+    UNUSUAL_DNP3_FCS = {4: "Immediate Freeze Without Reply", 8: "Freeze No ACK", 14: "Warm Restart"}
+    for (a, b), pkts in packet_store.items():
+        for pkt in pkts:
+            dn = pkt.get("dnp3")
+            if dn and dn.get("function_code") in UNUSUAL_DNP3_FCS:
+                anomalies.append({
+                    "type": "ot_dnp3_unusual_fc",
+                    "severity": "medium",
+                    "src": a,
+                    "dst": b,
+                    "description": f"DNP3 {UNUSUAL_DNP3_FCS[dn['function_code']]} (FC{dn['function_code']}) from {a} — covert control or evasion technique",
+                })
+                break
+
+    # ── OT: Multi-unit Modbus polling (network mapping of slaves) ────────────
+    modbus_unit_id_map = defaultdict(set)  # src_ip -> set of unit_ids
+    for ip, h in hosts.items():
+        if h.get("modbus_unit_ids"):
+            modbus_unit_id_map[ip] = h["modbus_unit_ids"]
+    for ip, unit_ids in modbus_unit_id_map.items():
+        non_zero = {u for u in unit_ids if u != 0}
+        if len(non_zero) >= 5:
+            anomalies.append({
+                "type": "ot_multiunit_poll",
+                "severity": "medium",
+                "src": ip,
+                "dst": ip,
+                "description": f"{ip} polling {len(non_zero)} distinct Modbus unit IDs ({sorted(non_zero)[:8]}) — may indicate network mapping of PLC segments",
+            })
+
     # Deduplicate (keep unique type+src+dst combos)
     seen = set()
     deduped = []
@@ -1214,6 +1357,9 @@ def analyze_pcap(filepath):
         "dst_ports": set(),
         "first_seen": None,
         "last_seen": None,
+        "ot_reads": 0,
+        "ot_writes": 0,
+        "ot_errors": 0,
     })
 
     def host(ip, mac=None):
@@ -1237,6 +1383,10 @@ def analyze_pcap(filepath):
                 "bytes_recv": 0,
                 "flags": set(),
                 "is_private": is_private(ip),
+                "modbus_unit_ids": set(),
+                "dnp3_addresses": set(),
+                "ot_role": "unknown",
+                "has_s7_download": False,
             }
         h = hosts[ip]
         if mac and not h["mac"]:
@@ -1487,6 +1637,14 @@ def analyze_pcap(filepath):
                             mb = parse_modbus(payload)
                             if mb:
                                 pd["modbus"] = mb
+                                if mb.get("unit_id") is not None:
+                                    sh["modbus_unit_ids"].add(mb["unit_id"])
+                                if mb["is_write"]:
+                                    conn["ot_writes"] += 1
+                                elif not mb["is_error"]:
+                                    conn["ot_reads"] += 1
+                                if mb["is_error"]:
+                                    conn["ot_errors"] += 1
 
                         # MQTT parsing
                         if payload and (dport_ in (1883, 8883) or sport_ in (1883, 8883)):
@@ -1505,12 +1663,32 @@ def analyze_pcap(filepath):
                             dn = parse_dnp3(payload)
                             if dn:
                                 pd["dnp3"] = dn
+                                sh["dnp3_addresses"].add(dn["src_address"])
+                                dh["dnp3_addresses"].add(dn["dst_address"])
+                                if dn.get("role") == "master":
+                                    sh["ot_role"] = "master"
+                                elif dn.get("role") == "outstation":
+                                    sh["ot_role"] = "outstation"
+                                if dn["is_write"]:
+                                    conn["ot_writes"] += 1
+                                elif not dn["is_error"]:
+                                    conn["ot_reads"] += 1
+                                if dn["is_error"]:
+                                    conn["ot_errors"] += 1
 
                         # S7comm parsing
                         if payload and (dport_ == 102 or sport_ == 102):
                             s7 = parse_s7comm(payload)
                             if s7:
                                 pd["s7comm"] = s7
+                                if s7.get("function_code") == 0x1A:
+                                    sh["has_s7_download"] = True
+                                if s7["is_write"]:
+                                    conn["ot_writes"] += 1
+                                elif not s7["is_error"]:
+                                    conn["ot_reads"] += 1
+                                if s7["is_error"]:
+                                    conn["ot_errors"] += 1
 
                         # EtherNet/IP parsing
                         if payload and (dport_ in (2222, 44818) or sport_ in (2222, 44818)):
@@ -1577,6 +1755,11 @@ def analyze_pcap(filepath):
         else:
             h["host_type"] = "Unknown Host"
 
+    # ── Engineering Workstation auto-detection ────────────────────────────────
+    for ip, h in hosts.items():
+        if h.get("has_s7_download") and h["host_type"] not in ("PLC", "Engineering Workstation"):
+            h["host_type"] = "Engineering Workstation"
+
     # ── Anomaly detection ─────────────────────────────────────────────────────
     anomalies = analyze_anomalies(hosts, connections, packet_store)
 
@@ -1605,6 +1788,9 @@ def analyze_pcap(filepath):
             "is_private": h["is_private"],
             "flags": list(h["flags"]),
             "geo": geo,
+            "ot_role": h.get("ot_role", "unknown"),
+            "modbus_unit_ids": sorted(h.get("modbus_unit_ids", set())),
+            "dnp3_addresses": sorted(h.get("dnp3_addresses", set())),
         })
 
     edges = []
@@ -1618,6 +1804,9 @@ def analyze_pcap(filepath):
             "ports": sorted(c["dst_ports"])[:20],
             "first_seen": c["first_seen"],
             "last_seen": c["last_seen"],
+            "ot_reads": c.get("ot_reads", 0),
+            "ot_writes": c.get("ot_writes", 0),
+            "ot_errors": c.get("ot_errors", 0),
         })
 
     all_protocols = sorted({p for n in nodes for p in n["protocols"]})
@@ -1677,6 +1866,8 @@ def merge_results(results):
                 merged_nodes[ip]["open_ports"] = set(n["open_ports"])
                 merged_nodes[ip]["dns_names"] = set(n["dns_names"])
                 merged_nodes[ip]["dns_queries"] = set(n["dns_queries"])
+                merged_nodes[ip]["modbus_unit_ids"] = set(n.get("modbus_unit_ids", []))
+                merged_nodes[ip]["dnp3_addresses"] = set(n.get("dnp3_addresses", []))
             else:
                 mn = merged_nodes[ip]
                 mn["packet_count"] += n["packet_count"]
@@ -1687,10 +1878,14 @@ def merge_results(results):
                 mn["open_ports"].update(n["open_ports"])
                 mn["dns_names"].update(n["dns_names"])
                 mn["dns_queries"].update(n["dns_queries"])
+                mn["modbus_unit_ids"].update(n.get("modbus_unit_ids", []))
+                mn["dnp3_addresses"].update(n.get("dnp3_addresses", []))
                 if not mn["hostname"] and n["hostname"]:
                     mn["hostname"] = n["hostname"]
                 if not mn["geo"] and n.get("geo"):
                     mn["geo"] = n["geo"]
+                if mn.get("ot_role", "unknown") == "unknown" and n.get("ot_role", "unknown") != "unknown":
+                    mn["ot_role"] = n["ot_role"]
 
         # Merge edges
         for e in result["edges"]:
@@ -1705,6 +1900,9 @@ def merge_results(results):
                     "ports": set(e["ports"]),
                     "first_seen": e.get("first_seen"),
                     "last_seen": e.get("last_seen"),
+                    "ot_reads": e.get("ot_reads", 0),
+                    "ot_writes": e.get("ot_writes", 0),
+                    "ot_errors": e.get("ot_errors", 0),
                 }
             else:
                 me = merged_edges[key]
@@ -1712,6 +1910,9 @@ def merge_results(results):
                 me["bytes"] += e["bytes"]
                 me["protocols"].update(e["protocols"])
                 me["ports"].update(e["ports"])
+                me["ot_reads"] += e.get("ot_reads", 0)
+                me["ot_writes"] += e.get("ot_writes", 0)
+                me["ot_errors"] += e.get("ot_errors", 0)
                 if e.get("last_seen") is not None:
                     if me["last_seen"] is None or e["last_seen"] > me["last_seen"]:
                         me["last_seen"] = e["last_seen"]
@@ -1755,6 +1956,9 @@ def merge_results(results):
             "is_private": mn["is_private"],
             "flags": mn.get("flags", []),
             "geo": mn.get("geo"),
+            "ot_role": mn.get("ot_role", "unknown"),
+            "modbus_unit_ids": sorted(mn.get("modbus_unit_ids", set())),
+            "dnp3_addresses": sorted(mn.get("dnp3_addresses", set())),
         })
 
     edges_out = []
@@ -1768,6 +1972,9 @@ def merge_results(results):
             "ports": sorted(me["ports"])[:20],
             "first_seen": me.get("first_seen"),
             "last_seen": me.get("last_seen"),
+            "ot_reads": me.get("ot_reads", 0),
+            "ot_writes": me.get("ot_writes", 0),
+            "ot_errors": me.get("ot_errors", 0),
         })
 
     all_protocols = sorted({p for n in nodes_out for p in n["protocols"]})

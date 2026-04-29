@@ -53,6 +53,7 @@
       <button class="vt-btn active" data-view="graph">Graph</button>
       <button class="vt-btn" data-view="table">Table</button>
       <button class="vt-btn" data-view="dns">DNS Map</button>
+      <button class="vt-btn" data-view="ot">OT Map</button>
     </div>
 
     <!-- Export dropdown -->
@@ -150,8 +151,11 @@
         <div id="pkt-header">
           <span id="pkt-title">Packets</span>
           <span id="pkt-conn-label"></span>
+          <button class="pkt-tab-btn active" id="pkt-tab-pkts">Packets</button>
+          <button class="pkt-tab-btn" id="pkt-tab-cmds">Cmd Log</button>
           <button id="pkt-close">×</button>
         </div>
+        <div id="pkt-cmd-log" class="hidden"></div>
         <div id="pkt-list-wrap">
           <table id="pkt-table">
             <thead>
@@ -195,6 +199,14 @@
           <tbody id="conn-tbody"></tbody>
         </table>
       </div>
+    </div>
+
+    <!-- OT Map view (Purdue Model) -->
+    <div id="ot-map-view" class="hidden">
+      <div id="ot-map-header">
+        <span id="ot-zone-count"></span>
+      </div>
+      <svg id="ot-map-svg"></svg>
     </div>
 
     <!-- DNS Map view -->

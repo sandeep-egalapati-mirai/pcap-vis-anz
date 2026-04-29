@@ -151,7 +151,7 @@ let activeProtos = new Set();
 let activeTypes  = new Set();
 let searchTerm   = "";
 let packetData   = {};
-let currentView  = "graph";  // "graph" | "table" | "dns"
+let currentView  = "graph";  // "graph" | "table" | "dns" | "ot"
 let currentLayout = "force"; // "force" | "radial" | "cluster"
 let anomalyNodeIps = {};     // ip → highest severity
 let tableSort = { col: "packet_count", dir: "desc" };
@@ -175,6 +175,7 @@ const searchBox      = document.getElementById("search-box");
 const graphWrap      = document.getElementById("graph-wrap");
 const tableView      = document.getElementById("table-view");
 const dnsView        = document.getElementById("dns-view");
+const otMapView      = document.getElementById("ot-map-view");
 const ctxMenu        = document.getElementById("ctx-menu");
 
 /* ── SVG setup ───────────────────────────────────────────────────────────── */
@@ -305,6 +306,7 @@ function setView(view) {
     tlBar.classList.remove("hidden");
     tableView.classList.add("hidden");
     dnsView.classList.add("hidden");
+    otMapView.classList.add("hidden");
     document.getElementById("graph-controls").style.display = "";
     document.getElementById("legend").style.display = "";
   } else if (view === "table") {
@@ -314,6 +316,7 @@ function setView(view) {
     graphWrap.classList.remove("pkt-open");
     tableView.classList.remove("hidden");
     dnsView.classList.add("hidden");
+    otMapView.classList.add("hidden");
     document.getElementById("graph-controls").style.display = "none";
     document.getElementById("legend").style.display = "none";
     renderConnTable();
@@ -324,9 +327,21 @@ function setView(view) {
     graphWrap.classList.remove("pkt-open");
     tableView.classList.add("hidden");
     dnsView.classList.remove("hidden");
+    otMapView.classList.add("hidden");
     document.getElementById("graph-controls").style.display = "none";
     document.getElementById("legend").style.display = "none";
     renderDnsMap();
+  } else if (view === "ot") {
+    graphEl.style.display = "none";
+    tlBar.classList.add("hidden");
+    pktIns.classList.add("hidden");
+    graphWrap.classList.remove("pkt-open");
+    tableView.classList.add("hidden");
+    dnsView.classList.add("hidden");
+    otMapView.classList.remove("hidden");
+    document.getElementById("graph-controls").style.display = "none";
+    document.getElementById("legend").style.display = "none";
+    renderOTMap(graphData);
   }
 }
 
@@ -476,11 +491,31 @@ function renderGraph(data) {
   }
 
   // ── Links ──
+  // Build Purdue level lookup for cross-zone highlighting
+  const _pLevel = {};
+  nodes.forEach(n => { _pLevel[n.id] = purdueLevel(n.host_type); });
+  const _crossCount = links.filter(e => {
+    const sl = _pLevel[typeof e.source === "object" ? e.source.id : e.source] ?? -1;
+    const tl = _pLevel[typeof e.target === "object" ? e.target.id : e.target] ?? -1;
+    return sl !== -1 && tl !== -1 && sl !== tl;
+  }).length;
+  // Update sidebar cross-zone badge if present
+  const _czBadge = document.getElementById("cross-zone-badge");
+  if (_czBadge) _czBadge.textContent = _crossCount > 0 ? `⚠ ${_crossCount} cross-zone` : "";
+
   const linkSel = linksGroup.selectAll(".link")
     .data(links)
     .join("line")
-    .attr("class", "link")
-    .attr("stroke", d => protoColor(d.protocols))
+    .attr("class", d => {
+      const sl = _pLevel[typeof d.source === "object" ? d.source.id : d.source] ?? -1;
+      const tl = _pLevel[typeof d.target === "object" ? d.target.id : d.target] ?? -1;
+      return sl !== -1 && tl !== -1 && sl !== tl ? "link cross-zone" : "link";
+    })
+    .attr("stroke", d => {
+      const sl = _pLevel[typeof d.source === "object" ? d.source.id : d.source] ?? -1;
+      const tl = _pLevel[typeof d.target === "object" ? d.target.id : d.target] ?? -1;
+      return sl !== -1 && tl !== -1 && sl !== tl ? "#ff8c00" : protoColor(d.protocols);
+    })
     .attr("stroke-width", d => edgeWidth(d))
     .on("mouseenter", (event, d) => showTooltipEdge(event, d))
     .on("mousemove", (event) => positionTooltip(event))
@@ -846,6 +881,38 @@ function showDetailPanel(d) {
     });
   }
 
+  // OT Analysis section (for OT host types)
+  const CORE_OT_TYPES = new Set(["PLC","RTU","IED","HMI","SCADA Server","DCS","Historian","Engineering Workstation","Building Controller","Field Device"]);
+  if (CORE_OT_TYPES.has(d.host_type) && graphData) {
+    rows.push(sectionTitle("OT Analysis"));
+    const roleColor = { master: "#3fb950", outstation: "#58a6ff", unknown: "#8b949e" }[d.ot_role || "unknown"] || "#8b949e";
+    rows.push(`<div style="margin-bottom:6px"><span style="background:${roleColor};color:#000;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">${(d.ot_role || "unknown").toUpperCase()}</span></div>`);
+
+    // Read/Write ratio bar
+    const connEdges = graphData.edges.filter(e => e.source === d.ip || e.target === d.ip);
+    const totR = connEdges.reduce((s, e) => s + (e.ot_reads || 0), 0);
+    const totW = connEdges.reduce((s, e) => s + (e.ot_writes || 0), 0);
+    const totE = connEdges.reduce((s, e) => s + (e.ot_errors || 0), 0);
+    if (totR + totW + totE > 0) {
+      const tot = totR + totW + totE;
+      const rPct = Math.round(totR / tot * 100);
+      const wPct = Math.round(totW / tot * 100);
+      const ePct = 100 - rPct - wPct;
+      rows.push(`<div style="font-size:11px;color:var(--text2);margin-bottom:3px">Reads: ${totR} · Writes: ${totW} · Errors: ${totE}</div>`);
+      rows.push(`<div style="display:flex;height:10px;border-radius:4px;overflow:hidden;margin-bottom:8px">
+        <div style="width:${rPct}%;background:#3fb950" title="Reads ${rPct}%"></div>
+        <div style="width:${wPct}%;background:#f85149" title="Writes ${wPct}%"></div>
+        <div style="width:${ePct}%;background:#d29922" title="Errors ${ePct}%"></div>
+      </div>`);
+    }
+    if (d.modbus_unit_ids && d.modbus_unit_ids.length) {
+      rows.push(`<div style="font-size:11px;color:var(--text2)">Modbus unit IDs: <span style="font-family:var(--font-mono)">${d.modbus_unit_ids.join(", ")}</span></div>`);
+    }
+    if (d.dnp3_addresses && d.dnp3_addresses.length) {
+      rows.push(`<div style="font-size:11px;color:var(--text2);margin-top:3px">DNP3 link addresses: <span style="font-family:var(--font-mono)">${d.dnp3_addresses.join(", ")}</span></div>`);
+    }
+  }
+
   // Conversations (top 5 edges)
   if (graphData) {
     const convEdges = graphData.edges.filter(e => e.source === d.ip || e.target === d.ip)
@@ -1064,12 +1131,123 @@ const pktTreeEmpty  = document.getElementById("pkt-tree-empty");
 const pktHexEmpty   = document.getElementById("pkt-hex-empty");
 
 document.getElementById("pkt-close").addEventListener("click", closePktInspector);
+document.getElementById("pkt-tab-pkts").addEventListener("click", () => {
+  const key = pktConnLabel.textContent.split("  ↔  ").map(s => s.trim())[0];
+  _switchPktTab("pkts", []);
+  document.getElementById("pkt-list-wrap").classList.remove("hidden");
+  document.getElementById("pkt-cmd-log").classList.add("hidden");
+  document.getElementById("pkt-tab-pkts").classList.add("active");
+  document.getElementById("pkt-tab-cmds").classList.remove("active");
+});
+document.getElementById("pkt-tab-cmds").addEventListener("click", () => {
+  // gather current packets from the visible table rows' data
+  const allKeys = Object.keys(packetData);
+  let curPkts = [];
+  for (const k of allKeys) { if (packetData[k].length) { curPkts = packetData[k]; break; } }
+  // best effort: find packets by reading what's shown
+  const label = pktConnLabel.textContent;
+  const m = label.match(/^(.+?)  ↔  (.+?)  ·/);
+  if (m) {
+    const key = [m[1].trim(), m[2].trim()].sort().join("|");
+    curPkts = packetData[key] || [];
+  }
+  _switchPktTab("cmds", curPkts);
+});
+
+const OT_PKT_FIELDS = ["modbus","dnp3","s7comm","enip","iec104","bacnet"];
+
+function _switchPktTab(tab, pkts) {
+  const listWrap = document.getElementById("pkt-list-wrap");
+  const cmdLog   = document.getElementById("pkt-cmd-log");
+  const tabPkts  = document.getElementById("pkt-tab-pkts");
+  const tabCmds  = document.getElementById("pkt-tab-cmds");
+  if (tab === "cmds") {
+    listWrap.classList.add("hidden");
+    cmdLog.classList.remove("hidden");
+    tabPkts.classList.remove("active");
+    tabCmds.classList.add("active");
+    renderCmdLog(pkts);
+  } else {
+    cmdLog.classList.add("hidden");
+    listWrap.classList.remove("hidden");
+    tabPkts.classList.add("active");
+    tabCmds.classList.remove("active");
+  }
+}
+
+function renderCmdLog(pkts) {
+  const cmdLog = document.getElementById("pkt-cmd-log");
+  const otPkts = pkts.filter(p => OT_PKT_FIELDS.some(f => p[f]));
+  if (!otPkts.length) {
+    cmdLog.innerHTML = `<div style="padding:12px;color:var(--text2);font-size:12px">No OT/ICS protocol commands in this capture.</div>`;
+    return;
+  }
+  const t0 = pkts[0]?.time || 0;
+  let html = `<table class="pkt-cmd-table"><thead><tr>
+    <th>Time</th><th>Protocol</th><th>Direction</th><th>Function</th><th>Detail</th><th>Result</th>
+  </tr></thead><tbody>`;
+  otPkts.forEach(p => {
+    let proto = "", dir = "", fn = "", detail = "", result = "";
+    const isW_cls = p.modbus?.is_write || p.dnp3?.is_write || p.s7comm?.is_write || p.enip?.is_write || p.iec104?.is_write || p.bacnet?.is_write;
+    if (p.modbus) {
+      proto = "Modbus";
+      dir = p.src < p.dst ? "→" : "←";
+      fn = `FC${p.modbus.function_code} ${p.modbus.function_name}`;
+      if (p.modbus.register_address != null) detail = `@${p.modbus.register_address}`;
+      if (p.modbus.quantity != null) detail += ` ×${p.modbus.quantity}`;
+      result = p.modbus.exception_code ? `ERR: ${escHtml(p.modbus.exception_name || p.modbus.exception_code)}` : "OK";
+    } else if (p.dnp3) {
+      proto = "DNP3";
+      dir = p.dnp3.role === "master" ? "→" : "←";
+      fn = `FC${p.dnp3.function_code} ${p.dnp3.function_name}`;
+      if (p.dnp3.data_object_group) detail = p.dnp3.data_object_group;
+      result = p.dnp3.is_error ? "ERR" : "OK";
+    } else if (p.s7comm) {
+      proto = "S7comm";
+      dir = p.s7comm.rosctr === 1 ? "→" : "←";
+      fn = `${p.s7comm.function_name}`;
+      if (p.s7comm.block_type) { detail = p.s7comm.block_type; if (p.s7comm.block_number != null) detail += ` #${p.s7comm.block_number}`; }
+      result = p.s7comm.is_error ? "ERR" : "OK";
+    } else if (p.enip) {
+      proto = "EtherNet/IP";
+      dir = p.enip.is_response ? "←" : "→";
+      fn = p.enip.cip_service_name || p.enip.command_name;
+      result = p.enip.is_error ? "ERR" : "OK";
+    } else if (p.iec104) {
+      proto = "IEC-104";
+      dir = "→";
+      fn = p.iec104.type_name || p.iec104.frame_type;
+      detail = p.iec104.cot_name || "";
+      result = p.iec104.is_error ? "ERR" : "OK";
+    } else if (p.bacnet) {
+      proto = "BACnet";
+      dir = "→";
+      fn = p.bacnet.service_name || p.bacnet.pdu_type_name;
+      result = p.bacnet.is_error ? "ERR" : "OK";
+    }
+    const rowCls = result.startsWith("ERR") ? "cmd-err" : (isW_cls ? "cmd-write" : "cmd-read");
+    html += `<tr class="${rowCls}">
+      <td>${(p.time - t0).toFixed(3)}s</td>
+      <td>${proto}</td>
+      <td style="font-weight:700">${dir}</td>
+      <td style="font-family:var(--font-mono);font-size:11px">${escHtml(fn)}</td>
+      <td style="font-family:var(--font-mono);font-size:11px;color:var(--text2)">${escHtml(detail)}</td>
+      <td class="${result.startsWith("ERR") ? "cmd-result-err" : "cmd-result-ok"}">${escHtml(result)}</td>
+    </tr>`;
+  });
+  html += "</tbody></table>";
+  cmdLog.innerHTML = html;
+}
 
 function openPktInspector(sid, tid) {
   const key = [sid, tid].sort().join("|");
   const pkts = packetData[key] || [];
   pktConnLabel.textContent = `${sid}  ↔  ${tid}  ·  ${pkts.length} packet${pkts.length !== 1 ? "s" : ""} captured`;
+  _switchPktTab("pkts", pkts);
   renderPktTable(pkts);
+  // Show Cmd Log tab only if there are OT packets
+  const hasOT = pkts.some(p => OT_PKT_FIELDS.some(f => p[f]));
+  document.getElementById("pkt-tab-cmds").style.display = hasOT ? "" : "none";
   pktInspector.classList.remove("hidden");
   graphWrap.classList.add("pkt-open");
 }
@@ -1082,7 +1260,10 @@ function openPktInspectorForHost(ip) {
   }
   allPkts.sort((a, b) => a.time - b.time);
   pktConnLabel.textContent = `Host ${ip}  ·  ${allPkts.length} packet${allPkts.length !== 1 ? "s" : ""} captured`;
+  _switchPktTab("pkts", allPkts);
   renderPktTable(allPkts);
+  const hasOT = allPkts.some(p => OT_PKT_FIELDS.some(f => p[f]));
+  document.getElementById("pkt-tab-cmds").style.display = hasOT ? "" : "none";
   pktInspector.classList.remove("hidden");
   graphWrap.classList.add("pkt-open");
 }
@@ -1602,6 +1783,128 @@ document.querySelectorAll("#conn-table th.sortable").forEach(th => {
     renderConnTable();
   });
 });
+
+/* ── OT Map View (Purdue Model) ──────────────────────────────────────────── */
+const PURDUE_LEVELS = [
+  { level: 4, label: "L4 — Enterprise",    types: new Set(["Windows Host","Web Server","Mail Server","Directory Server","Database Server"]) },
+  { level: 3, label: "L3 — Supervisory",   types: new Set(["SCADA Server","Historian","Engineering Workstation"]) },
+  { level: 2, label: "L2 — Control / HMI", types: new Set(["HMI","DCS"]) },
+  { level: 1, label: "L1 — PLC / RTU",     types: new Set(["PLC","RTU","IED","Building Controller"]) },
+  { level: 0, label: "L0 — Field",         types: new Set(["Field Device","IoT Sensor","Smart Meter"]) },
+];
+const LEVEL_COLORS = { 4:"#1f3a5f", 3:"#2d5a27", 2:"#5a4a00", 1:"#5a1a00", 0:"#2a1a3a" };
+
+function purdueLevel(hostType) {
+  for (const row of PURDUE_LEVELS) {
+    if (row.types.has(hostType)) return row.level;
+  }
+  return -1; // unclassified
+}
+
+function renderOTMap(data) {
+  if (!data) return;
+  const svg = document.getElementById("ot-map-svg");
+  svg.innerHTML = "";
+
+  const W = svg.parentElement.clientWidth || 900;
+  const H = svg.parentElement.clientHeight || 560;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+
+  const LANE_H = Math.floor((H - 40) / PURDUE_LEVELS.length);
+  const LABEL_W = 160;
+  const nodeR = 16;
+
+  // Build node → level map
+  const nodeLevel = {};
+  data.nodes.forEach(n => { nodeLevel[n.id] = purdueLevel(n.host_type); });
+
+  // Count cross-zone edges
+  let crossZone = 0;
+  data.edges.forEach(e => {
+    const sl = nodeLevel[e.source] ?? -1;
+    const tl = nodeLevel[e.target] ?? -1;
+    if (sl !== -1 && tl !== -1 && sl !== tl) crossZone++;
+  });
+  document.getElementById("ot-zone-count").textContent =
+    crossZone > 0 ? `⚠ ${crossZone} cross-zone connection${crossZone !== 1 ? "s" : ""} detected` : "No cross-zone connections detected";
+
+  const ns = "http://www.w3.org/2000/svg";
+
+  // Draw lanes
+  PURDUE_LEVELS.forEach((row, i) => {
+    const y = 20 + i * LANE_H;
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", 0); rect.setAttribute("y", y);
+    rect.setAttribute("width", W); rect.setAttribute("height", LANE_H);
+    rect.setAttribute("fill", LEVEL_COLORS[row.level]); rect.setAttribute("opacity", "0.35");
+    svg.appendChild(rect);
+    const lbl = document.createElementNS(ns, "text");
+    lbl.setAttribute("x", 8); lbl.setAttribute("y", y + 18);
+    lbl.setAttribute("fill", "#ccc"); lbl.setAttribute("font-size", "11");
+    lbl.setAttribute("font-family", "var(--font-mono)");
+    lbl.textContent = row.label;
+    svg.appendChild(lbl);
+  });
+
+  // Position nodes per lane
+  const nodePos = {};
+  PURDUE_LEVELS.forEach((row, i) => {
+    const laneNodes = data.nodes.filter(n => purdueLevel(n.host_type) === row.level);
+    const y = 20 + i * LANE_H + LANE_H / 2;
+    const usableW = W - LABEL_W - 20;
+    laneNodes.forEach((n, j) => {
+      const x = LABEL_W + 20 + (j + 0.5) * (usableW / Math.max(laneNodes.length, 1));
+      nodePos[n.id] = { x, y };
+    });
+  });
+
+  // Draw edges
+  data.edges.forEach(e => {
+    const sp = nodePos[e.source];
+    const tp = nodePos[e.target];
+    if (!sp || !tp) return;
+    const sl = nodeLevel[e.source] ?? -1;
+    const tl = nodeLevel[e.target] ?? -1;
+    const isCross = sl !== -1 && tl !== -1 && sl !== tl;
+    const line = document.createElementNS(ns, "line");
+    line.setAttribute("x1", sp.x); line.setAttribute("y1", sp.y);
+    line.setAttribute("x2", tp.x); line.setAttribute("y2", tp.y);
+    line.setAttribute("stroke", isCross ? "#ff8c00" : "#555");
+    line.setAttribute("stroke-width", isCross ? "2" : "1");
+    if (isCross) line.setAttribute("stroke-dasharray", "5,3");
+    line.setAttribute("opacity", "0.7");
+    svg.appendChild(line);
+  });
+
+  // Draw nodes
+  data.nodes.forEach(n => {
+    const pos = nodePos[n.id];
+    if (!pos) return;
+    const g = document.createElementNS(ns, "g");
+    g.setAttribute("transform", `translate(${pos.x},${pos.y})`);
+    const circle = document.createElementNS(ns, "circle");
+    circle.setAttribute("r", nodeR);
+    circle.setAttribute("fill", hostColor(n.host_type));
+    circle.setAttribute("stroke", "#fff"); circle.setAttribute("stroke-width", "1");
+    g.appendChild(circle);
+    const icon = document.createElementNS(ns, "text");
+    icon.setAttribute("text-anchor", "middle"); icon.setAttribute("dy", "0.35em");
+    icon.setAttribute("font-size", "12");
+    icon.textContent = hostIcon(n.host_type);
+    g.appendChild(icon);
+    const lbl = document.createElementNS(ns, "text");
+    lbl.setAttribute("text-anchor", "middle"); lbl.setAttribute("dy", nodeR + 11);
+    lbl.setAttribute("fill", "#ccc"); lbl.setAttribute("font-size", "9");
+    lbl.setAttribute("font-family", "var(--font-mono)");
+    lbl.textContent = n.hostname || n.ip;
+    g.appendChild(lbl);
+    g.style.cursor = "pointer";
+    g.addEventListener("click", () => { selectedNode = n; showDetailPanel(n); detailPanel.classList.add("open"); });
+    svg.appendChild(g);
+  });
+}
 
 /* ── DNS Map View ────────────────────────────────────────────────────────── */
 function renderDnsMap() {
