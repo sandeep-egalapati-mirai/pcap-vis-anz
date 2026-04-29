@@ -2,11 +2,15 @@ import os
 import tempfile
 import statistics
 from collections import defaultdict, Counter
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from flask import Flask, request, jsonify, render_template
+from flask_compress import Compress
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
+Compress(app)
 
 ALLOWED_EXTENSIONS = {"pcap", "pcapng", "cap"}
 
@@ -170,6 +174,9 @@ PORT_MAP = {
     4059:  ("DLMS",          "Smart Meter"),
 }
 
+# Pre-built reverse lookup: port -> (proto, svc). O(1) per-packet lookup.
+PORT_LOOKUP = dict(PORT_MAP)
+
 HOST_TYPE_PRIORITY = [
     "PLC", "RTU", "IED", "HMI", "SCADA Server", "DCS",
     "Historian", "Engineering Workstation", "Building Controller",
@@ -242,6 +249,7 @@ def _get_geoip_reader():
     return _geoip_reader
 
 
+@lru_cache(maxsize=4096)
 def geo_lookup(ip):
     reader = _get_geoip_reader()
     if reader is None:
@@ -998,13 +1006,26 @@ def analyze_anomalies(hosts, connections, packet_store):
                         pass
                 break
 
+    # ── Connection index: ip -> list of (a, b) keys (avoids O(h*c) scans) ──────
+    src_conn_index = defaultdict(list)
+    dst_conn_index = defaultdict(list)
+    for (a, b) in connections:
+        src_conn_index[a].append((a, b))
+        dst_conn_index[b].append((a, b))
+
+    def _peers_of(ip):
+        """Yield (conn_key, peer_ip) for every connection involving ip."""
+        for key in src_conn_index[ip]:
+            yield key, key[1]
+        for key in dst_conn_index[ip]:
+            yield key, key[0]
+
     # ── OT: IT host communicating directly with OT device ─────────────────────
     ot_types = {"PLC", "RTU", "IED", "DCS", "SCADA Server", "Building Controller", "Field Device"}
     for ip, h in hosts.items():
         if h["host_type"] in ot_types:
-            for (a, b) in connections:
-                peer = b if a == ip else (a if b == ip else None)
-                if peer and not is_private(peer):
+            for _, peer in _peers_of(ip):
+                if not is_private(peer):
                     anomalies.append({
                         "type": "ot_internet_exposure",
                         "severity": "high",
@@ -1045,10 +1066,8 @@ def analyze_anomalies(hosts, connections, packet_store):
     iot_types = {"IP Camera", "Smart Home Hub", "Smart Meter", "IoT Sensor", "Smart Speaker", "IoT Gateway"}
     for ip, h in hosts.items():
         if h["host_type"] in iot_types:
-            for (a, b), conn in connections.items():
-                if ip not in (a, b):
-                    continue
-                peer = b if a == ip else a
+            for conn_key, peer in _peers_of(ip):
+                conn = connections[conn_key]
                 if 23 in conn.get("dst_ports", set()):
                     anomalies.append({
                         "type": "iot_telnet",
@@ -1061,9 +1080,8 @@ def analyze_anomalies(hosts, connections, packet_store):
     # ── IoT: IP Camera sending data to internet ────────────────────────────────
     for ip, h in hosts.items():
         if h["host_type"] == "IP Camera":
-            for (a, b) in connections:
-                peer = b if a == ip else (a if b == ip else None)
-                if peer and not is_private(peer):
+            for _, peer in _peers_of(ip):
+                if not is_private(peer):
                     anomalies.append({
                         "type": "iot_camera_exfil",
                         "severity": "high",
@@ -1304,19 +1322,18 @@ def analyze_pcap(filepath):
                     dport = pkt[TCP].dport
                     protocol = "TCP"
 
-                    for port, (proto, svc) in PORT_MAP.items():
-                        if dport == port:
-                            protocol = proto
-                            dh["dst_ports"].add(port)
-                            dh["services"].add(svc)
-                            dh["host_type_hints"][svc] += 1
-                            break
-                        if sport == port:
-                            protocol = proto
-                            sh["dst_ports"].add(port)
-                            sh["services"].add(svc)
-                            sh["host_type_hints"][svc] += 1
-                            break
+                    if dport in PORT_LOOKUP:
+                        proto, svc = PORT_LOOKUP[dport]
+                        protocol = proto
+                        dh["dst_ports"].add(dport)
+                        dh["services"].add(svc)
+                        dh["host_type_hints"][svc] += 1
+                    elif sport in PORT_LOOKUP:
+                        proto, svc = PORT_LOOKUP[sport]
+                        protocol = proto
+                        sh["dst_ports"].add(sport)
+                        sh["services"].add(svc)
+                        sh["host_type_hints"][svc] += 1
                     else:
                         dh["dst_ports"].add(dport)
 
@@ -1328,19 +1345,18 @@ def analyze_pcap(filepath):
                     dport = pkt[UDP].dport
                     protocol = "UDP"
 
-                    for port, (proto, svc) in PORT_MAP.items():
-                        if dport == port:
-                            protocol = proto
-                            dh["dst_ports"].add(port)
-                            dh["services"].add(svc)
-                            dh["host_type_hints"][svc] += 1
-                            break
-                        if sport == port:
-                            protocol = proto
-                            sh["dst_ports"].add(port)
-                            sh["services"].add(svc)
-                            sh["host_type_hints"][svc] += 1
-                            break
+                    if dport in PORT_LOOKUP:
+                        proto, svc = PORT_LOOKUP[dport]
+                        protocol = proto
+                        dh["dst_ports"].add(dport)
+                        dh["services"].add(svc)
+                        dh["host_type_hints"][svc] += 1
+                    elif sport in PORT_LOOKUP:
+                        proto, svc = PORT_LOOKUP[sport]
+                        protocol = proto
+                        sh["dst_ports"].add(sport)
+                        sh["services"].add(svc)
+                        sh["host_type_hints"][svc] += 1
                     else:
                         dh["dst_ports"].add(dport)
 
@@ -1820,7 +1836,9 @@ def upload():
             f.save(tmp.name)
             tmp.close()
             tmp_paths.append(tmp.name)
-            results.append(analyze_pcap(tmp.name))
+
+        with ThreadPoolExecutor() as ex:
+            results = list(ex.map(analyze_pcap, tmp_paths))
 
         if not results:
             return jsonify({"error": "No valid files processed"}), 400

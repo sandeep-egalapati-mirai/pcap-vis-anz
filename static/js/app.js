@@ -627,10 +627,10 @@ function renderGraph(data) {
 function buildSimulation(nodes, links, cx, cy, layout) {
   if (simulation) simulation.stop();
 
+  const _maxPkt = Math.max(...nodes.map(n => n.packet_count), 1);
   const sim = d3.forceSimulation(nodes)
     .force("collide", d3.forceCollide().radius(d => {
-      const maxPkt = Math.max(...nodes.map(n => n.packet_count), 1);
-      return 6 + Math.log1p(d.packet_count / maxPkt * 200) * 3 + 12;
+      return 6 + Math.log1p(d.packet_count / _maxPkt * 200) * 3 + 12;
     }));
 
   if (layout === "force") {
@@ -941,21 +941,25 @@ document.getElementById("detail-close").addEventListener("click", () => {
 });
 
 /* ── Search ──────────────────────────────────────────────────────────────── */
+let _searchTimer;
 searchBox.addEventListener("input", () => {
-  searchTerm = searchBox.value.trim().toLowerCase();
-  applyFilters();
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(() => {
+    searchTerm = searchBox.value.trim().toLowerCase();
+    applyFilters();
 
-  if (searchTerm && graphData) {
-    const match = graphData.nodes.find(n =>
-      n.ip.includes(searchTerm) ||
-      (n.hostname && n.hostname.toLowerCase().includes(searchTerm))
-    );
-    if (match) {
-      selectedNode = match;
-      showDetailPanel(match);
-      detailPanel.classList.add("open");
+    if (searchTerm && graphData) {
+      const match = graphData.nodes.find(n =>
+        n.ip.includes(searchTerm) ||
+        (n.hostname && n.hostname.toLowerCase().includes(searchTerm))
+      );
+      if (match) {
+        selectedNode = match;
+        showDetailPanel(match);
+        detailPanel.classList.add("open");
+      }
     }
-  }
+  }, 300);
 });
 
 /* ── Zoom controls ────────────────────────────────────────────────────────── */
@@ -1095,19 +1099,13 @@ function closePktInspector() {
   pktHexEmpty.style.display = "block";
 }
 
-function renderPktTable(pkts) {
-  pktTbody.innerHTML = "";
-  pktTree.innerHTML = "";
-  pktHex.innerHTML = "";
-  pktTreeEmpty.style.display = "block";
-  pktHexEmpty.style.display = "block";
+const PKT_PAGE_SIZE = 20;
 
-  const t0 = pkts.length ? pkts[0].time : 0;
-
-  pkts.forEach((p, i) => {
+function _appendPktRows(pkts, t0, start, end) {
+  for (let i = start; i < end && i < pkts.length; i++) {
+    const p = pkts[i];
     const tr = document.createElement("tr");
     tr.className = protoRowClass(p.protocol);
-
     const srcStr = p.src + (p.sport != null ? ":" + p.sport : "");
     const dstStr = p.dst + (p.dport != null ? ":" + p.dport : "");
     tr.innerHTML = `
@@ -1125,7 +1123,28 @@ function renderPktTable(pkts) {
       renderPktDetail(p);
     });
     pktTbody.appendChild(tr);
-  });
+  }
+}
+
+function renderPktTable(pkts) {
+  pktTbody.innerHTML = "";
+  pktTree.innerHTML = "";
+  pktHex.innerHTML = "";
+  pktTreeEmpty.style.display = "block";
+  pktHexEmpty.style.display = "block";
+
+  const t0 = pkts.length ? pkts[0].time : 0;
+  _appendPktRows(pkts, t0, 0, PKT_PAGE_SIZE);
+
+  if (pkts.length > PKT_PAGE_SIZE) {
+    const moreRow = document.createElement("tr");
+    moreRow.innerHTML = `<td colspan="7" style="text-align:center;cursor:pointer;color:var(--accent)">Load ${pkts.length - PKT_PAGE_SIZE} more packets…</td>`;
+    moreRow.addEventListener("click", () => {
+      moreRow.remove();
+      _appendPktRows(pkts, t0, PKT_PAGE_SIZE, pkts.length);
+    });
+    pktTbody.appendChild(moreRow);
+  }
 }
 
 function protoRowClass(proto) {
@@ -1892,20 +1911,26 @@ function buildTimeline(data) {
   timeLabel.textContent = "All time";
   tlWindowPct = 100;
 
+  let _tlRafPending = false;
   slider.oninput = () => {
-    const pct = parseInt(slider.value) / 100;
-    tlWindowPct = parseInt(slider.value);
-    if (pct >= 1.0) {
-      timeLabel.textContent = "All time";
-      applyTimelineFilter(null, null);
-    } else {
-      const windowSize = span * 0.15; // 15% window
-      const center = minT + pct * span;
-      const tStart = center - windowSize / 2;
-      const tEnd   = center + windowSize / 2;
-      timeLabel.textContent = center.toFixed(2) + "s";
-      applyTimelineFilter(tStart, tEnd);
-    }
+    if (_tlRafPending) return;
+    _tlRafPending = true;
+    requestAnimationFrame(() => {
+      _tlRafPending = false;
+      const pct = parseInt(slider.value) / 100;
+      tlWindowPct = parseInt(slider.value);
+      if (pct >= 1.0) {
+        timeLabel.textContent = "All time";
+        applyTimelineFilter(null, null);
+      } else {
+        const windowSize = span * 0.15; // 15% window
+        const center = minT + pct * span;
+        const tStart = center - windowSize / 2;
+        const tEnd   = center + windowSize / 2;
+        timeLabel.textContent = center.toFixed(2) + "s";
+        applyTimelineFilter(tStart, tEnd);
+      }
+    });
   };
 }
 
