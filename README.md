@@ -17,7 +17,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Search** — Find nodes by IP address or hostname (300ms debounce)
 - **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, anomalies, OT analysis, conversations)
 - **Four views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout)
-- **OT Map** — Purdue Model swimlane view (L0 Field → L4 Enterprise) with cross-zone connection count and orange edge highlighting
+- **OT Map** — Full Purdue Model swimlane view (L0 Field → L5 Enterprise/Internet) with zone grouping brackets (OT Zone / Industrial DMZ / IT Zone), IT/OT demarcation line, device counts per lane, bridge-node detection, cross-zone connection count, and Purdue level badge in the node detail panel
 - **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap (rAF-throttled for smooth playback)
 - **Packet inspector** — Click any edge or node to open a Wireshark-style panel showing per-packet protocol trees and hex dumps
 - **OT Command Log** — Dedicated tab in the packet inspector showing a chronological OT command history (protocol, direction, function code, result)
@@ -84,7 +84,17 @@ The visualizer detects and classifies industrial control system devices and prot
 - Cleartext OT protocols (Modbus, DNP3, S7, BACnet have no encryption)
 
 **OT Topology:**
-- **OT Map view** — Purdue Model swimlane layout (L0 Field → L4 Enterprise) placing each device in its correct zone; cross-zone connections counted and highlighted in orange
+- **OT Map view** — Full Purdue Reference Model swimlane layout (L0 Field → L5 Enterprise/Internet) with:
+  - Zone grouping brackets: **OT Zone** (L0–L3), **Industrial DMZ** (L3.5), **IT Zone** (L4–L5)
+  - IT/OT demarcation line between L3.5 and L4
+  - Level subtitles describing what each Purdue level represents
+  - Device counts per lane
+  - **Unclassified lane** for devices that don't map to a known Purdue level
+  - **Bridge-node detection**: devices spanning OT↔IT zones highlighted with orange pulsing rings
+  - Cross-zone edge highlighting (orange dashed lines)
+  - Hover tooltips showing IP, type, Purdue level, protocols, and connection count
+  - `purdue_level` field on every node in the `/upload` JSON response
+- **Purdue level badge** — shown in the node detail panel for every device
 - **Cross-zone edge highlighting** — dashed orange edges in the graph view for any connection spanning Purdue levels
 - **Engineering Workstation auto-detection** — hosts that initiate S7 Download sessions are automatically reclassified from unknown to Engineering Workstation
 

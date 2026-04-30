@@ -1,0 +1,57 @@
+"""Unit tests for helper functions in app.py."""
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app import purdue_level_py
+
+
+# ── purdue_level_py ───────────────────────────────────────────────────────────
+
+def test_purdue_level_field_devices():
+    assert purdue_level_py("Field Device") == 0
+    assert purdue_level_py("IoT Sensor") == 0
+    assert purdue_level_py("Smart Meter") == 0
+
+def test_purdue_level_plc_rtu():
+    assert purdue_level_py("PLC") == 1
+    assert purdue_level_py("RTU") == 1
+    assert purdue_level_py("IED") == 1
+    assert purdue_level_py("Building Controller") == 1
+
+def test_purdue_level_control():
+    assert purdue_level_py("HMI") == 2
+    assert purdue_level_py("DCS") == 2
+
+def test_purdue_level_supervisory():
+    assert purdue_level_py("SCADA Server") == 3
+    assert purdue_level_py("Historian") == 3
+    assert purdue_level_py("Engineering Workstation") == 3
+
+def test_purdue_level_dmz():
+    assert purdue_level_py("VPN Gateway") == 3.5
+    assert purdue_level_py("Security Tool") == 3.5
+    assert purdue_level_py("Remote Desktop") == 3.5
+
+def test_purdue_level_enterprise():
+    assert purdue_level_py("Windows Host") == 4
+    assert purdue_level_py("Web Server") == 4
+    assert purdue_level_py("Mail Server") == 4
+    assert purdue_level_py("Directory Server") == 4
+    assert purdue_level_py("Database Server") == 4
+
+def test_purdue_level_external_host_via_country():
+    # External hosts (with country code) map to L5 regardless of type
+    assert purdue_level_py("Windows Host", country="US") == 5
+    assert purdue_level_py("Unknown", country="DE") == 5
+    assert purdue_level_py("PLC", country="CN") == 5  # country overrides type
+
+def test_purdue_level_unclassified():
+    assert purdue_level_py("Router") == -1
+    assert purdue_level_py("IoT Gateway") == -1
+    assert purdue_level_py("Unknown Type") == -1
+    assert purdue_level_py("") == -1
+
+def test_purdue_level_no_country_is_not_l5():
+    assert purdue_level_py("Windows Host") == 4  # no country → L4, not L5
+    assert purdue_level_py("Windows Host", country=None) == 4

@@ -192,6 +192,33 @@ HOST_TYPE_PRIORITY = [
 
 SUSPICIOUS_PORTS = {4444, 1337, 31337, 6666, 6667, 6668}
 
+# Purdue model level mapping (mirrors JS purdueLevel())
+_PURDUE_L5_TYPES: set[str] = set()  # external hosts determined by country field
+_PURDUE_L4_TYPES = {"Windows Host", "Web Server", "Mail Server", "Directory Server", "Database Server"}
+_PURDUE_L35_TYPES = {"VPN Gateway", "Security Tool", "Remote Desktop"}
+_PURDUE_L3_TYPES = {"SCADA Server", "Historian", "Engineering Workstation"}
+_PURDUE_L2_TYPES = {"HMI", "DCS"}
+_PURDUE_L1_TYPES = {"PLC", "RTU", "IED", "Building Controller"}
+_PURDUE_L0_TYPES = {"Field Device", "IoT Sensor", "Smart Meter"}
+
+def purdue_level_py(host_type: str, country: str | None = None) -> float:
+    """Return the Purdue Model level for a host (5, 4, 3.5, 3, 2, 1, 0, or -1)."""
+    if country:
+        return 5
+    if host_type in _PURDUE_L4_TYPES:
+        return 4
+    if host_type in _PURDUE_L35_TYPES:
+        return 3.5
+    if host_type in _PURDUE_L3_TYPES:
+        return 3
+    if host_type in _PURDUE_L2_TYPES:
+        return 2
+    if host_type in _PURDUE_L1_TYPES:
+        return 1
+    if host_type in _PURDUE_L0_TYPES:
+        return 0
+    return -1
+
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -1791,6 +1818,7 @@ def analyze_pcap(filepath):
             "ot_role": h.get("ot_role", "unknown"),
             "modbus_unit_ids": sorted(h.get("modbus_unit_ids", set())),
             "dnp3_addresses": sorted(h.get("dnp3_addresses", set())),
+            "purdue_level": purdue_level_py(h["host_type"], geo.get("country_code") if geo else None),
         })
 
     edges = []

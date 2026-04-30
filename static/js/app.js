@@ -821,6 +821,14 @@ function showDetailPanel(d) {
   if (OT_TYPES.has(d.host_type)) {
     rows.push(`<div class="ot-device-badge">&#9881; OT/ICS Device</div>`);
   }
+  // Purdue level badge
+  {
+    const lvl = (d.purdue_level !== undefined) ? d.purdue_level : purdueLevel(d);
+    const levelRow = PURDUE_LEVELS.find(r => r.level === lvl);
+    const levelLabel = levelRow ? levelRow.label : "? Unclassified";
+    const levelColor = LEVEL_COLORS[lvl] ? LEVEL_COLORS[lvl] : "#444";
+    rows.push(`<div style="margin-top:4px"><span style="background:${levelColor}55;border:1px solid ${levelColor}99;color:#ccc;padding:2px 8px;border-radius:10px;font-size:10px;font-family:var(--font-mono)">Purdue ${levelLabel}</span></div>`);
+  }
   if (IOT_TYPES.has(d.host_type)) {
     rows.push(`<div class="iot-device-badge">&#128267; IoT Device</div>`);
   }
@@ -1786,19 +1794,43 @@ document.querySelectorAll("#conn-table th.sortable").forEach(th => {
 
 /* ── OT Map View (Purdue Model) ──────────────────────────────────────────── */
 const PURDUE_LEVELS = [
-  { level: 4, label: "L4 — Enterprise",    types: new Set(["Windows Host","Web Server","Mail Server","Directory Server","Database Server"]) },
-  { level: 3, label: "L3 — Supervisory",   types: new Set(["SCADA Server","Historian","Engineering Workstation"]) },
-  { level: 2, label: "L2 — Control / HMI", types: new Set(["HMI","DCS"]) },
-  { level: 1, label: "L1 — PLC / RTU",     types: new Set(["PLC","RTU","IED","Building Controller"]) },
-  { level: 0, label: "L0 — Field",         types: new Set(["Field Device","IoT Sensor","Smart Meter"]) },
+  { level: 5,   label: "L5 — Enterprise/Internet", types: new Set([]) /* external IPs via country */ },
+  { level: 4,   label: "L4 — Business Logistics",  types: new Set(["Windows Host","Web Server","Mail Server","Directory Server","Database Server"]) },
+  { level: 3.5, label: "L3.5 — Industrial DMZ",    types: new Set(["VPN Gateway","Security Tool","Remote Desktop"]) },
+  { level: 3,   label: "L3 — Supervisory / Ops",   types: new Set(["SCADA Server","Historian","Engineering Workstation"]) },
+  { level: 2,   label: "L2 — Control / HMI",       types: new Set(["HMI","DCS"]) },
+  { level: 1,   label: "L1 — PLC / RTU",           types: new Set(["PLC","RTU","IED","Building Controller"]) },
+  { level: 0,   label: "L0 — Field Devices",       types: new Set(["Field Device","IoT Sensor","Smart Meter"]) },
+  { level: -1,  label: "? — Unclassified",          types: new Set([]) /* catch-all */ },
 ];
-const LEVEL_COLORS = { 4:"#1f3a5f", 3:"#2d5a27", 2:"#5a4a00", 1:"#5a1a00", 0:"#2a1a3a" };
+const LEVEL_COLORS = {
+  5: "#1a2a4a", 4: "#1f3a5f", 3.5: "#3a2800",
+  3: "#2d5a27", 2: "#5a4a00", 1: "#5a1a00", 0: "#2a1a3a", [-1]: "#2a2a2a",
+};
+const PURDUE_DESC = {
+  5:   "Corporate network, internet, cloud services",
+  4:   "ERP, business servers, IT management",
+  3.5: "Firewall/gateway buffer between OT and IT",
+  3:   "Historians, SCADA servers, engineering workstations",
+  2:   "HMI, DCS operator consoles",
+  1:   "PLCs, RTUs, safety controllers",
+  0:   "Sensors, actuators, field instruments",
+  [-1]: "Devices not yet classified to a Purdue level",
+};
 
-function purdueLevel(hostType) {
+// Zone groupings for the left-margin bracket labels
+const PURDUE_ZONES = [
+  { name: "IT Zone",        levels: new Set([5, 4]),    color: "#2a6aac" },
+  { name: "Industrial DMZ", levels: new Set([3.5]),     color: "#c87000" },
+  { name: "OT Zone",        levels: new Set([3,2,1,0]), color: "#4a8a1a" },
+];
+
+function purdueLevel(node) {
+  if (node.country || (node.geo && node.geo.country_code)) return 5;
   for (const row of PURDUE_LEVELS) {
-    if (row.types.has(hostType)) return row.level;
+    if (row.types.has(node.host_type)) return row.level;
   }
-  return -1; // unclassified
+  return -1;
 }
 
 function renderOTMap(data) {
@@ -1807,18 +1839,37 @@ function renderOTMap(data) {
   svg.innerHTML = "";
 
   const W = svg.parentElement.clientWidth || 900;
-  const H = svg.parentElement.clientHeight || 560;
+  const LANE_H = 68;
+  const H = LANE_H * PURDUE_LEVELS.length + 10;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("width", W);
   svg.setAttribute("height", H);
+  svg.style.height = H + "px";
 
-  const LANE_H = Math.floor((H - 40) / PURDUE_LEVELS.length);
-  const LABEL_W = 160;
-  const nodeR = 16;
+  const LABEL_W = 210;
+  const ZONE_W  = 18;
+  const nodeR   = 16;
+  const ns = "http://www.w3.org/2000/svg";
 
-  // Build node → level map
+  // Build node → level map using backend purdue_level if available, else recompute
   const nodeLevel = {};
-  data.nodes.forEach(n => { nodeLevel[n.id] = purdueLevel(n.host_type); });
+  data.nodes.forEach(n => {
+    nodeLevel[n.id] = (n.purdue_level !== undefined) ? n.purdue_level : purdueLevel(n);
+  });
+
+  // Identify bridge nodes (connect to both OT L0-L3 and IT L4-L5)
+  const bridgeIds = new Set();
+  data.nodes.forEach(n => {
+    const myLvl = nodeLevel[n.id];
+    const peerLevels = new Set();
+    data.edges.forEach(e => {
+      if (e.source === n.id) peerLevels.add(nodeLevel[e.target]);
+      if (e.target === n.id) peerLevels.add(nodeLevel[e.source]);
+    });
+    const hasOT = [...peerLevels].some(l => l >= 0 && l <= 3);
+    const hasIT = [...peerLevels].some(l => l >= 4 && l <= 5);
+    if (hasOT && hasIT) bridgeIds.add(n.id);
+  });
 
   // Count cross-zone edges
   let crossZone = 0;
@@ -1827,40 +1878,101 @@ function renderOTMap(data) {
     const tl = nodeLevel[e.target] ?? -1;
     if (sl !== -1 && tl !== -1 && sl !== tl) crossZone++;
   });
-  document.getElementById("ot-zone-count").textContent =
-    crossZone > 0 ? `⚠ ${crossZone} cross-zone connection${crossZone !== 1 ? "s" : ""} detected` : "No cross-zone connections detected";
+  const bridgeCount = bridgeIds.size;
+  let headerText = crossZone > 0
+    ? `⚠ ${crossZone} cross-zone connection${crossZone !== 1 ? "s" : ""} detected`
+    : "No cross-zone connections detected";
+  if (bridgeCount > 0)
+    headerText += ` · ⚠ ${bridgeCount} bridge node${bridgeCount !== 1 ? "s" : ""} (span OT↔IT)`;
+  document.getElementById("ot-zone-count").textContent = headerText;
 
-  const ns = "http://www.w3.org/2000/svg";
-
-  // Draw lanes
-  PURDUE_LEVELS.forEach((row, i) => {
-    const y = 20 + i * LANE_H;
-    const rect = document.createElementNS(ns, "rect");
-    rect.setAttribute("x", 0); rect.setAttribute("y", y);
-    rect.setAttribute("width", W); rect.setAttribute("height", LANE_H);
-    rect.setAttribute("fill", LEVEL_COLORS[row.level]); rect.setAttribute("opacity", "0.35");
-    svg.appendChild(rect);
-    const lbl = document.createElementNS(ns, "text");
-    lbl.setAttribute("x", 8); lbl.setAttribute("y", y + 18);
-    lbl.setAttribute("fill", "#ccc"); lbl.setAttribute("font-size", "11");
-    lbl.setAttribute("font-family", "var(--font-mono)");
-    lbl.textContent = row.label;
-    svg.appendChild(lbl);
+  // ── Draw zone bracket backgrounds (left margin) ────────────────────────────
+  PURDUE_ZONES.forEach(zone => {
+    const rowIndices = PURDUE_LEVELS
+      .map((r, i) => zone.levels.has(r.level) ? i : -1)
+      .filter(i => i >= 0);
+    if (!rowIndices.length) return;
+    const yTop = rowIndices[0] * LANE_H;
+    const yBot = (rowIndices[rowIndices.length - 1] + 1) * LANE_H;
+    const zoneRect = document.createElementNS(ns, "rect");
+    zoneRect.setAttribute("x", 0); zoneRect.setAttribute("y", yTop);
+    zoneRect.setAttribute("width", ZONE_W); zoneRect.setAttribute("height", yBot - yTop);
+    zoneRect.setAttribute("fill", zone.color); zoneRect.setAttribute("opacity", "0.5");
+    svg.appendChild(zoneRect);
+    const zoneLabel = document.createElementNS(ns, "text");
+    zoneLabel.setAttribute("x", ZONE_W / 2); zoneLabel.setAttribute("y", yTop + (yBot - yTop) / 2);
+    zoneLabel.setAttribute("fill", "#fff"); zoneLabel.setAttribute("font-size", "9");
+    zoneLabel.setAttribute("font-family", "var(--font-mono)");
+    zoneLabel.setAttribute("text-anchor", "middle");
+    zoneLabel.setAttribute("dominant-baseline", "middle");
+    zoneLabel.setAttribute("transform", `rotate(-90, ${ZONE_W / 2}, ${yTop + (yBot - yTop) / 2})`);
+    zoneLabel.textContent = zone.name;
+    svg.appendChild(zoneLabel);
   });
 
-  // Position nodes per lane
+  // ── Draw IT/OT demarcation line (between L3.5 and L4) ────────────────────
+  const dmzIdx = PURDUE_LEVELS.findIndex(r => r.level === 3.5);
+  const itOtY = (dmzIdx + 1) * LANE_H;
+  const sep = document.createElementNS(ns, "line");
+  sep.setAttribute("x1", ZONE_W); sep.setAttribute("y1", itOtY);
+  sep.setAttribute("x2", W); sep.setAttribute("y2", itOtY);
+  sep.setAttribute("stroke", "#c87000"); sep.setAttribute("stroke-width", "2");
+  sep.setAttribute("stroke-dasharray", "8,4");
+  svg.appendChild(sep);
+
+  // ── Draw lane backgrounds + headers ───────────────────────────────────────
+  PURDUE_LEVELS.forEach((row, i) => {
+    const y = i * LANE_H;
+    const laneNodes = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) === row.level);
+
+    // Lane background
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", ZONE_W); rect.setAttribute("y", y);
+    rect.setAttribute("width", W - ZONE_W); rect.setAttribute("height", LANE_H);
+    rect.setAttribute("fill", LEVEL_COLORS[row.level]); rect.setAttribute("opacity", "0.35");
+    svg.appendChild(rect);
+
+    // Level label
+    const lbl = document.createElementNS(ns, "text");
+    lbl.setAttribute("x", ZONE_W + 6); lbl.setAttribute("y", y + 16);
+    lbl.setAttribute("fill", "#ddd"); lbl.setAttribute("font-size", "11");
+    lbl.setAttribute("font-family", "var(--font-mono)"); lbl.setAttribute("font-weight", "600");
+    lbl.textContent = row.label;
+    svg.appendChild(lbl);
+
+    // Description subtitle
+    const desc = document.createElementNS(ns, "text");
+    desc.setAttribute("x", ZONE_W + 6); desc.setAttribute("y", y + 29);
+    desc.setAttribute("fill", "#888"); desc.setAttribute("font-size", "8.5");
+    desc.setAttribute("font-family", "var(--font-mono)");
+    desc.textContent = PURDUE_DESC[row.level] || "";
+    svg.appendChild(desc);
+
+    // Device count badge (right-aligned in label area)
+    if (laneNodes.length > 0) {
+      const countLbl = document.createElementNS(ns, "text");
+      countLbl.setAttribute("x", LABEL_W - 4); countLbl.setAttribute("y", y + 16);
+      countLbl.setAttribute("fill", "#8b949e"); countLbl.setAttribute("font-size", "9");
+      countLbl.setAttribute("font-family", "var(--font-mono)");
+      countLbl.setAttribute("text-anchor", "end");
+      countLbl.textContent = `${laneNodes.length} device${laneNodes.length !== 1 ? "s" : ""}`;
+      svg.appendChild(countLbl);
+    }
+  });
+
+  // ── Position nodes per lane ────────────────────────────────────────────────
   const nodePos = {};
   PURDUE_LEVELS.forEach((row, i) => {
-    const laneNodes = data.nodes.filter(n => purdueLevel(n.host_type) === row.level);
-    const y = 20 + i * LANE_H + LANE_H / 2;
+    const laneNodes = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) === row.level);
+    const cy = i * LANE_H + LANE_H / 2 + 4;
     const usableW = W - LABEL_W - 20;
     laneNodes.forEach((n, j) => {
       const x = LABEL_W + 20 + (j + 0.5) * (usableW / Math.max(laneNodes.length, 1));
-      nodePos[n.id] = { x, y };
+      nodePos[n.id] = { x, y: cy };
     });
   });
 
-  // Draw edges
+  // ── Draw edges ────────────────────────────────────────────────────────────
   data.edges.forEach(e => {
     const sp = nodePos[e.source];
     const tp = nodePos[e.target];
@@ -1878,28 +1990,61 @@ function renderOTMap(data) {
     svg.appendChild(line);
   });
 
-  // Draw nodes
+  // ── Draw nodes ────────────────────────────────────────────────────────────
   data.nodes.forEach(n => {
     const pos = nodePos[n.id];
     if (!pos) return;
+    const lvl = nodeLevel[n.id] ?? -1;
+    const levelRow = PURDUE_LEVELS.find(r => r.level === lvl);
+    const isBridge = bridgeIds.has(n.id);
+    const connCount = data.edges.filter(e => e.source === n.id || e.target === n.id).length;
+
     const g = document.createElementNS(ns, "g");
     g.setAttribute("transform", `translate(${pos.x},${pos.y})`);
+
+    // Tooltip
+    const title = document.createElementNS(ns, "title");
+    title.textContent = [
+      `${n.ip}${n.hostname ? " (" + n.hostname + ")" : ""}`,
+      `Type: ${n.host_type}`,
+      `Purdue: ${levelRow ? levelRow.label : "Unclassified"}`,
+      n.protocols.length ? `Protocols: ${n.protocols.join(", ")}` : null,
+      `Connections: ${connCount}`,
+      isBridge ? "⚠ Bridge node: spans OT↔IT zones" : null,
+    ].filter(Boolean).join("\n");
+    g.appendChild(title);
+
+    // Bridge ring
+    if (isBridge) {
+      const ring = document.createElementNS(ns, "circle");
+      ring.setAttribute("r", nodeR + 5);
+      ring.setAttribute("fill", "none");
+      ring.setAttribute("stroke", "#ff8c00");
+      ring.setAttribute("stroke-width", "2.5");
+      ring.setAttribute("opacity", "0.8");
+      ring.setAttribute("class", "bridge-ring");
+      g.appendChild(ring);
+    }
+
     const circle = document.createElementNS(ns, "circle");
     circle.setAttribute("r", nodeR);
     circle.setAttribute("fill", hostColor(n.host_type));
     circle.setAttribute("stroke", "#fff"); circle.setAttribute("stroke-width", "1");
     g.appendChild(circle);
+
     const icon = document.createElementNS(ns, "text");
     icon.setAttribute("text-anchor", "middle"); icon.setAttribute("dy", "0.35em");
     icon.setAttribute("font-size", "12");
     icon.textContent = hostIcon(n.host_type);
     g.appendChild(icon);
+
     const lbl = document.createElementNS(ns, "text");
     lbl.setAttribute("text-anchor", "middle"); lbl.setAttribute("dy", nodeR + 11);
     lbl.setAttribute("fill", "#ccc"); lbl.setAttribute("font-size", "9");
     lbl.setAttribute("font-family", "var(--font-mono)");
     lbl.textContent = n.hostname || n.ip;
     g.appendChild(lbl);
+
     g.style.cursor = "pointer";
     g.addEventListener("click", () => { selectedNode = n; showDetailPanel(n); detailPanel.classList.add("open"); });
     svg.appendChild(g);
