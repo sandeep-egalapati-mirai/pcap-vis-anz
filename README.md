@@ -14,20 +14,23 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **MAC vendor lookup** — OUI lookup covering IT, OT, and IoT vendors (VMware, Cisco, Siemens, Amazon Echo, …)
 - **DNS name resolution** — Extracts hostnames and query logs from captured DNS traffic
 - **Filtering** — Filter graph by protocol or host type via sidebar checkboxes
-- **Search** — Find nodes by IP address or hostname
-- **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, anomalies, conversations)
-- **Three views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer)
-- **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap
+- **Search** — Find nodes by IP address or hostname (300ms debounce)
+- **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, anomalies, OT analysis, conversations)
+- **Four views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout)
+- **OT Map** — Purdue Model swimlane view (L0 Field → L4 Enterprise) with cross-zone connection count and orange edge highlighting
+- **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap (rAF-throttled for smooth playback)
 - **Packet inspector** — Click any edge or node to open a Wireshark-style panel showing per-packet protocol trees and hex dumps
+- **OT Command Log** — Dedicated tab in the packet inspector showing a chronological OT command history (protocol, direction, function code, result)
+- **OT Analysis panel** — Per-node read/write/error ratio bar, master/outstation role badge, Modbus unit IDs, DNP3 link addresses
 - **Exports** — PNG graph screenshot, connections CSV, anomalies CSV
 - **Session save / load** — Export full analysis to JSON and reload without re-uploading the capture file
 - **Node annotations** — Right-click any node to attach a persistent note (stored in browser localStorage)
-- **Anomaly detection** — 18 detection rules across general network, OT/ICS, and IoT threat categories
-- **Large capture support** — Streams up to 1,000,000 packets without loading into memory (up to 1 GB upload)
+- **Anomaly detection** — 23 detection rules across general network, OT/ICS, and IoT threat categories
+- **Large capture support** — Streams up to 1,000,000 packets without loading into memory (up to 1 GB upload); multi-file uploads processed in parallel
 
 ## Anomaly Detection
 
-18 detection rules fire automatically after analysis:
+23 detection rules fire automatically after analysis:
 
 **General network**
 - Port scan — single source contacting >5 IPs across >15 unique ports
@@ -38,13 +41,19 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 
 **OT / ICS**
 - Modbus write commands (FC 5/6/15/16) — unauthorized PLC writes
+- **Modbus bulk register read** (FC 3/4 with quantity >100) — large scan indicates reconnaissance
+- **Modbus broadcast** (unit_id=0) — command targets every PLC on the segment
+- **Modbus exception response** — illegal function/address errors indicate bad commands or failed access attempts
 - DNP3 control/operate commands (Direct Operate, Select-Before-Operate, Cold/Warm Restart)
+- **DNP3 unusual function codes** (FC 4 Immediate Freeze Without Reply, FC 14 Warm Restart) — evasion/persistence patterns
 - S7comm Write Variable and PLC Stop / PI Service commands
+- **S7 code download** (Request Download FC) — PLC logic is being modified; block type and number extracted
 - EtherNet/IP CIP Write Tag / Set Attribute operations
 - IEC 60870-5-104 command activation (Type IDs 45–50 with COT=Activation)
 - BACnet writeProperty / reinitializeDevice / deviceCommunicationControl
 - OT device communicating with an internet host
 - Cleartext OT protocols (Modbus, DNP3, S7, BACnet have no encryption)
+- **Multi-unit Modbus polling** (≥5 distinct unit IDs from one host) — network mapping of PLC segments
 
 **IoT**
 - Cleartext MQTT (port 1883) — credentials and sensor data unencrypted
@@ -74,13 +83,26 @@ The visualizer detects and classifies industrial control system devices and prot
 - OT device exposed to internet traffic
 - Cleartext OT protocols (Modbus, DNP3, S7, BACnet have no encryption)
 
-**Protocol deep inspection (packet detail panel):**
-- **Modbus TCP**: Function codes, unit ID, register addresses; write commands flagged in red
-- **DNP3**: Link-layer src/dst addresses, application function code, direction (master↔RTU)
-- **S7comm**: ROSCTR message type, PDU reference, function code (over TPKT+COTP)
+**OT Topology:**
+- **OT Map view** — Purdue Model swimlane layout (L0 Field → L4 Enterprise) placing each device in its correct zone; cross-zone connections counted and highlighted in orange
+- **Cross-zone edge highlighting** — dashed orange edges in the graph view for any connection spanning Purdue levels
+- **Engineering Workstation auto-detection** — hosts that initiate S7 Download sessions are automatically reclassified from unknown to Engineering Workstation
+
+**OT Analysis (per-node detail panel):**
+- Role badge — master / outstation / unknown derived from DNP3 direction bits and Modbus traffic patterns
+- Read/Write/Error ratio bar — aggregate OT operation counts across all connected edges
+- Modbus unit IDs polled — reveals which PLC slaves a host queries
+- DNP3 link-layer addresses seen
+
+**Protocol deep inspection (packet detail panel + Command Log tab):**
+- **Modbus TCP**: Function codes, unit ID, register/coil address, quantity, exception code and name; write commands flagged in red
+- **DNP3**: Link-layer src/dst addresses, application function code, explicit master/outstation role, data object group (12 groups: Binary Output Control, Analog Input, Class Objects, …)
+- **S7comm**: ROSCTR message type, PDU reference, function code; block type (OB/DB/FC/FB/SFB/SFC) and block number extracted on Download operations
 - **EtherNet/IP**: Encapsulation command, session handle, CIP service code and name
 - **IEC 60870-5-104**: Frame type (I/S/U), ASDU type ID, Cause of Transmission (COT), common address
 - **BACnet/IP**: BVLC function, APDU PDU type, confirmed/unconfirmed service name
+
+**OT Command Log** — dedicated tab in the packet inspector (visible on OT connections only) showing a compact chronological table: time, protocol, direction arrow, function name, address/block detail, and OK/ERR result
 
 ## IoT Device Support
 
@@ -169,9 +191,18 @@ pcap-vis-anz/
 ├── requirements.txt        # Python dependencies
 ├── templates/
 │   └── index.html          # Single-page app shell
-└── static/
-    ├── css/style.css       # Dark GitHub-style theme
-    └── js/app.js           # D3.js force graph + UI logic
+├── static/
+│   ├── css/style.css       # Dark GitHub-style theme
+│   └── js/app.js           # D3.js force graph + UI logic
+└── tests/
+    └── test_parsers.py     # pytest unit tests for protocol parsers
+```
+
+## Testing
+
+```bash
+pip install pytest
+python -m pytest tests/ -q
 ```
 
 ## Configuration
