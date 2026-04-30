@@ -1839,155 +1839,231 @@ function renderOTMap(data) {
   svg.innerHTML = "";
 
   const W = svg.parentElement.clientWidth || 900;
-  const LANE_H = 68;
-  const H = LANE_H * PURDUE_LEVELS.length + 10;
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  svg.setAttribute("width", W);
-  svg.setAttribute("height", H);
-  svg.style.height = H + "px";
-
-  const LABEL_W = 210;
-  const ZONE_W  = 18;
-  const nodeR   = 16;
   const ns = "http://www.w3.org/2000/svg";
 
-  // Build node → level map using backend purdue_level if available, else recompute
+  // Layout constants
+  const ZONE_HEADER_H = 28;
+  const LANE_H_BASE   = 76;
+  const ROW_H         = 58;
+  const MAX_PER_ROW   = 8;
+  const LABEL_W       = 210;
+  const nodeR         = 16;
+
+  // Zone layout — order defines top-to-bottom rendering
+  const ZONE_LAYOUT = [
+    { name: "IT Zone",        desc: "Enterprise & business network",        color: "#2a6aac", levels: [5, 4]      },
+    { name: "Industrial DMZ", desc: "Firewall/gateway buffer between zones", color: "#c87000", levels: [3.5]      },
+    { name: "OT Zone",        desc: "Operational Technology (ICS / SCADA)", color: "#4a8a1a", levels: [3, 2, 1, 0]},
+    { name: "Unclassified",   desc: "Devices not yet assigned to a level",  color: "#555",    levels: [-1]       },
+  ];
+
+  // ── Compute node levels ────────────────────────────────────────────────────
   const nodeLevel = {};
   data.nodes.forEach(n => {
     nodeLevel[n.id] = (n.purdue_level !== undefined) ? n.purdue_level : purdueLevel(n);
   });
 
-  // Identify bridge nodes (connect to both OT L0-L3 and IT L4-L5)
+  // ── Identify bridge nodes ─────────────────────────────────────────────────
   const bridgeIds = new Set();
   data.nodes.forEach(n => {
-    const myLvl = nodeLevel[n.id];
-    const peerLevels = new Set();
+    const peers = new Set();
     data.edges.forEach(e => {
-      if (e.source === n.id) peerLevels.add(nodeLevel[e.target]);
-      if (e.target === n.id) peerLevels.add(nodeLevel[e.source]);
+      if (e.source === n.id) peers.add(nodeLevel[e.target] ?? -1);
+      if (e.target === n.id) peers.add(nodeLevel[e.source] ?? -1);
     });
-    const hasOT = [...peerLevels].some(l => l >= 0 && l <= 3);
-    const hasIT = [...peerLevels].some(l => l >= 4 && l <= 5);
+    const hasOT = [...peers].some(l => l >= 0 && l <= 3);
+    const hasIT = [...peers].some(l => l >= 4 && l <= 5);
     if (hasOT && hasIT) bridgeIds.add(n.id);
   });
 
-  // Count cross-zone edges
+  // ── Count cross-zone edges ────────────────────────────────────────────────
   let crossZone = 0;
   data.edges.forEach(e => {
-    const sl = nodeLevel[e.source] ?? -1;
-    const tl = nodeLevel[e.target] ?? -1;
+    const sl = nodeLevel[e.source] ?? -1, tl = nodeLevel[e.target] ?? -1;
     if (sl !== -1 && tl !== -1 && sl !== tl) crossZone++;
   });
   const bridgeCount = bridgeIds.size;
-  let headerText = crossZone > 0
-    ? `⚠ ${crossZone} cross-zone connection${crossZone !== 1 ? "s" : ""} detected`
-    : "No cross-zone connections detected";
-  if (bridgeCount > 0)
-    headerText += ` · ⚠ ${bridgeCount} bridge node${bridgeCount !== 1 ? "s" : ""} (span OT↔IT)`;
-  document.getElementById("ot-zone-count").textContent = headerText;
 
-  // ── Draw zone bracket backgrounds (left margin) ────────────────────────────
-  PURDUE_ZONES.forEach(zone => {
-    const rowIndices = PURDUE_LEVELS
-      .map((r, i) => zone.levels.has(r.level) ? i : -1)
-      .filter(i => i >= 0);
-    if (!rowIndices.length) return;
-    const yTop = rowIndices[0] * LANE_H;
-    const yBot = (rowIndices[rowIndices.length - 1] + 1) * LANE_H;
-    const zoneRect = document.createElementNS(ns, "rect");
-    zoneRect.setAttribute("x", 0); zoneRect.setAttribute("y", yTop);
-    zoneRect.setAttribute("width", ZONE_W); zoneRect.setAttribute("height", yBot - yTop);
-    zoneRect.setAttribute("fill", zone.color); zoneRect.setAttribute("opacity", "0.5");
-    svg.appendChild(zoneRect);
-    const zoneLabel = document.createElementNS(ns, "text");
-    zoneLabel.setAttribute("x", ZONE_W / 2); zoneLabel.setAttribute("y", yTop + (yBot - yTop) / 2);
-    zoneLabel.setAttribute("fill", "#fff"); zoneLabel.setAttribute("font-size", "9");
-    zoneLabel.setAttribute("font-family", "var(--font-mono)");
-    zoneLabel.setAttribute("text-anchor", "middle");
-    zoneLabel.setAttribute("dominant-baseline", "middle");
-    zoneLabel.setAttribute("transform", `rotate(-90, ${ZONE_W / 2}, ${yTop + (yBot - yTop) / 2})`);
-    zoneLabel.textContent = zone.name;
-    svg.appendChild(zoneLabel);
+  // ── Stats chips in header ─────────────────────────────────────────────────
+  function chip(text, color) {
+    return `<span class="ot-stat-chip" style="color:${color};border-color:${color}55;background:${color}18">${text}</span>`;
+  }
+  const otNodeCount = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) >= 0).length;
+  const activeLevelSet = new Set(data.nodes.map(n => nodeLevel[n.id] ?? -1).filter(l => l >= 0));
+  document.getElementById("ot-stats-bar").innerHTML = [
+    chip(`${data.nodes.length} devices`, "#58a6ff"),
+    chip(`${activeLevelSet.size} active levels`, "#8b949e"),
+    crossZone > 0 ? chip(`⚠ ${crossZone} cross-zone`, "#ff8c00") : chip("✓ no cross-zone", "#3fb950"),
+    bridgeCount > 0 ? chip(`⚠ ${bridgeCount} bridge node${bridgeCount > 1 ? "s" : ""}`, "#ff6b35") : null,
+  ].filter(Boolean).join("");
+  document.getElementById("ot-zone-count").textContent =
+    crossZone > 0 || bridgeCount > 0
+      ? `Cross-zone edges span multiple security zones — review the highlighted connections below.`
+      : "All connections stay within their security zone.";
+
+  // ── Pre-pass: compute dynamic lane heights and Y positions ────────────────
+  const laneH = {};
+  const laneY = {};
+  const zoneHeaderY = {};
+  let currentY = 0;
+  ZONE_LAYOUT.forEach(zone => {
+    zoneHeaderY[zone.name] = currentY;
+    currentY += ZONE_HEADER_H;
+    zone.levels.forEach(lvl => {
+      const count = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) === lvl).length;
+      const numRows = Math.max(1, Math.ceil(count / MAX_PER_ROW));
+      laneH[lvl] = LANE_H_BASE + (numRows - 1) * ROW_H;
+      laneY[lvl] = currentY;
+      currentY += laneH[lvl];
+    });
+  });
+  const totalH = currentY;
+
+  svg.setAttribute("viewBox", `0 0 ${W} ${totalH}`);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", totalH);
+  svg.style.height = totalH + "px";
+
+  // ── SVG defs: arrow marker for cross-zone edges ───────────────────────────
+  const defs = document.createElementNS(ns, "defs");
+  defs.innerHTML = `<marker id="ot-arrow" markerWidth="7" markerHeight="7" refX="5.5" refY="3.5" orient="auto">
+    <path d="M0,0 L0,7 L7,3.5 z" fill="#ff8c00" opacity="0.9"/>
+  </marker>`;
+  svg.appendChild(defs);
+
+  // ── SVG layers ────────────────────────────────────────────────────────────
+  const bgLayer   = document.createElementNS(ns, "g");
+  const edgeLayer = document.createElementNS(ns, "g");
+  const nodeLayer = document.createElementNS(ns, "g");
+  svg.appendChild(bgLayer);
+  svg.appendChild(edgeLayer);
+  svg.appendChild(nodeLayer);
+
+  // ── Draw zone header strips ───────────────────────────────────────────────
+  ZONE_LAYOUT.forEach(zone => {
+    const y = zoneHeaderY[zone.name];
+
+    const strip = document.createElementNS(ns, "rect");
+    strip.setAttribute("x", 0); strip.setAttribute("y", y);
+    strip.setAttribute("width", W); strip.setAttribute("height", ZONE_HEADER_H);
+    strip.setAttribute("fill", zone.color); strip.setAttribute("opacity", "0.2");
+    bgLayer.appendChild(strip);
+
+    const accent = document.createElementNS(ns, "rect");
+    accent.setAttribute("x", 0); accent.setAttribute("y", y);
+    accent.setAttribute("width", 4); accent.setAttribute("height", ZONE_HEADER_H);
+    accent.setAttribute("fill", zone.color);
+    bgLayer.appendChild(accent);
+
+    const nameEl = document.createElementNS(ns, "text");
+    nameEl.setAttribute("x", 12); nameEl.setAttribute("y", y + 12);
+    nameEl.setAttribute("fill", "#eee"); nameEl.setAttribute("font-size", "11");
+    nameEl.setAttribute("font-weight", "700"); nameEl.setAttribute("font-family", "var(--font-mono)");
+    nameEl.textContent = zone.name.toUpperCase();
+    bgLayer.appendChild(nameEl);
+
+    const descEl = document.createElementNS(ns, "text");
+    descEl.setAttribute("x", 12); descEl.setAttribute("y", y + 23);
+    descEl.setAttribute("fill", "#888"); descEl.setAttribute("font-size", "9");
+    descEl.setAttribute("font-family", "var(--font-mono)");
+    descEl.textContent = zone.desc;
+    bgLayer.appendChild(descEl);
   });
 
-  // ── Draw IT/OT demarcation line (between L3.5 and L4) ────────────────────
-  const dmzIdx = PURDUE_LEVELS.findIndex(r => r.level === 3.5);
-  const itOtY = (dmzIdx + 1) * LANE_H;
-  const sep = document.createElementNS(ns, "line");
-  sep.setAttribute("x1", ZONE_W); sep.setAttribute("y1", itOtY);
-  sep.setAttribute("x2", W); sep.setAttribute("y2", itOtY);
-  sep.setAttribute("stroke", "#c87000"); sep.setAttribute("stroke-width", "2");
-  sep.setAttribute("stroke-dasharray", "8,4");
-  svg.appendChild(sep);
-
   // ── Draw lane backgrounds + headers ───────────────────────────────────────
-  PURDUE_LEVELS.forEach((row, i) => {
-    const y = i * LANE_H;
+  PURDUE_LEVELS.forEach(row => {
+    const y = laneY[row.level];
+    const h = laneH[row.level];
     const laneNodes = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) === row.level);
 
-    // Lane background
-    const rect = document.createElementNS(ns, "rect");
-    rect.setAttribute("x", ZONE_W); rect.setAttribute("y", y);
-    rect.setAttribute("width", W - ZONE_W); rect.setAttribute("height", LANE_H);
-    rect.setAttribute("fill", LEVEL_COLORS[row.level]); rect.setAttribute("opacity", "0.35");
-    svg.appendChild(rect);
+    const bg = document.createElementNS(ns, "rect");
+    bg.setAttribute("x", 0); bg.setAttribute("y", y);
+    bg.setAttribute("width", W); bg.setAttribute("height", h);
+    bg.setAttribute("fill", LEVEL_COLORS[row.level]); bg.setAttribute("opacity", "0.28");
+    bgLayer.appendChild(bg);
+
+    // Vertical divider between label area and node canvas
+    const divider = document.createElementNS(ns, "line");
+    divider.setAttribute("x1", LABEL_W); divider.setAttribute("y1", y);
+    divider.setAttribute("x2", LABEL_W); divider.setAttribute("y2", y + h);
+    divider.setAttribute("stroke", "#333"); divider.setAttribute("stroke-width", "1");
+    bgLayer.appendChild(divider);
 
     // Level label
     const lbl = document.createElementNS(ns, "text");
-    lbl.setAttribute("x", ZONE_W + 6); lbl.setAttribute("y", y + 16);
+    lbl.setAttribute("x", 8); lbl.setAttribute("y", y + 14);
     lbl.setAttribute("fill", "#ddd"); lbl.setAttribute("font-size", "11");
-    lbl.setAttribute("font-family", "var(--font-mono)"); lbl.setAttribute("font-weight", "600");
+    lbl.setAttribute("font-weight", "600"); lbl.setAttribute("font-family", "var(--font-mono)");
     lbl.textContent = row.label;
-    svg.appendChild(lbl);
+    bgLayer.appendChild(lbl);
 
     // Description subtitle
     const desc = document.createElementNS(ns, "text");
-    desc.setAttribute("x", ZONE_W + 6); desc.setAttribute("y", y + 29);
-    desc.setAttribute("fill", "#888"); desc.setAttribute("font-size", "8.5");
+    desc.setAttribute("x", 8); desc.setAttribute("y", y + 27);
+    desc.setAttribute("fill", "#666"); desc.setAttribute("font-size", "8.5");
     desc.setAttribute("font-family", "var(--font-mono)");
     desc.textContent = PURDUE_DESC[row.level] || "";
-    svg.appendChild(desc);
+    bgLayer.appendChild(desc);
 
-    // Device count badge (right-aligned in label area)
+    // Device count
     if (laneNodes.length > 0) {
-      const countLbl = document.createElementNS(ns, "text");
-      countLbl.setAttribute("x", LABEL_W - 4); countLbl.setAttribute("y", y + 16);
-      countLbl.setAttribute("fill", "#8b949e"); countLbl.setAttribute("font-size", "9");
-      countLbl.setAttribute("font-family", "var(--font-mono)");
-      countLbl.setAttribute("text-anchor", "end");
-      countLbl.textContent = `${laneNodes.length} device${laneNodes.length !== 1 ? "s" : ""}`;
-      svg.appendChild(countLbl);
+      const cnt = document.createElementNS(ns, "text");
+      cnt.setAttribute("x", LABEL_W - 6); cnt.setAttribute("y", y + 14);
+      cnt.setAttribute("fill", "#8b949e"); cnt.setAttribute("font-size", "9");
+      cnt.setAttribute("font-family", "var(--font-mono)"); cnt.setAttribute("text-anchor", "end");
+      cnt.textContent = `${laneNodes.length} device${laneNodes.length !== 1 ? "s" : ""}`;
+      bgLayer.appendChild(cnt);
+    }
+
+    // Empty lane placeholder
+    if (laneNodes.length === 0) {
+      const ph = document.createElementNS(ns, "text");
+      ph.setAttribute("x", LABEL_W + (W - LABEL_W) / 2); ph.setAttribute("y", y + h / 2 + 4);
+      ph.setAttribute("fill", "#444"); ph.setAttribute("font-size", "11");
+      ph.setAttribute("font-family", "var(--font-mono)"); ph.setAttribute("text-anchor", "middle");
+      ph.setAttribute("font-style", "italic");
+      ph.textContent = "no devices detected";
+      bgLayer.appendChild(ph);
     }
   });
 
-  // ── Position nodes per lane ────────────────────────────────────────────────
+  // ── Position nodes (multi-row) ────────────────────────────────────────────
   const nodePos = {};
-  PURDUE_LEVELS.forEach((row, i) => {
+  PURDUE_LEVELS.forEach(row => {
     const laneNodes = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) === row.level);
-    const cy = i * LANE_H + LANE_H / 2 + 4;
-    const usableW = W - LABEL_W - 20;
+    const usableW = W - LABEL_W - 24;
+    const yTop = laneY[row.level] + 38;
     laneNodes.forEach((n, j) => {
-      const x = LABEL_W + 20 + (j + 0.5) * (usableW / Math.max(laneNodes.length, 1));
-      nodePos[n.id] = { x, y: cy };
+      const rowIdx = Math.floor(j / MAX_PER_ROW);
+      const colIdx = j % MAX_PER_ROW;
+      const nodesInRow = Math.min(MAX_PER_ROW, laneNodes.length - rowIdx * MAX_PER_ROW);
+      const x = LABEL_W + 12 + (colIdx + 0.5) * (usableW / nodesInRow);
+      const y = yTop + nodeR + rowIdx * ROW_H;
+      nodePos[n.id] = { x, y };
     });
   });
 
-  // ── Draw edges ────────────────────────────────────────────────────────────
+  // ── Draw edges (S-bend bezier curves) ────────────────────────────────────
   data.edges.forEach(e => {
-    const sp = nodePos[e.source];
-    const tp = nodePos[e.target];
+    const sp = nodePos[e.source], tp = nodePos[e.target];
     if (!sp || !tp) return;
-    const sl = nodeLevel[e.source] ?? -1;
-    const tl = nodeLevel[e.target] ?? -1;
+    const sl = nodeLevel[e.source] ?? -1, tl = nodeLevel[e.target] ?? -1;
     const isCross = sl !== -1 && tl !== -1 && sl !== tl;
-    const line = document.createElementNS(ns, "line");
-    line.setAttribute("x1", sp.x); line.setAttribute("y1", sp.y);
-    line.setAttribute("x2", tp.x); line.setAttribute("y2", tp.y);
-    line.setAttribute("stroke", isCross ? "#ff8c00" : "#555");
-    line.setAttribute("stroke-width", isCross ? "2" : "1");
-    if (isCross) line.setAttribute("stroke-dasharray", "5,3");
-    line.setAttribute("opacity", "0.7");
-    svg.appendChild(line);
+
+    // Adjust end point so the path terminates at the circle edge
+    const rawDy = tp.y - sp.y;
+    const sign = rawDy >= 0 ? 1 : -1;
+    const endX = tp.x, endY = tp.y - sign * (nodeR + 3);
+    const midY = (sp.y + endY) / 2;
+
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", `M ${sp.x} ${sp.y} C ${sp.x} ${midY}, ${endX} ${midY}, ${endX} ${endY}`);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", isCross ? "#ff8c00" : "#555");
+    path.setAttribute("stroke-width", isCross ? "2" : "1");
+    path.setAttribute("opacity", isCross ? "0.85" : "0.45");
+    if (isCross) path.setAttribute("marker-end", "url(#ot-arrow)");
+    edgeLayer.appendChild(path);
   });
 
   // ── Draw nodes ────────────────────────────────────────────────────────────
@@ -2001,8 +2077,9 @@ function renderOTMap(data) {
 
     const g = document.createElementNS(ns, "g");
     g.setAttribute("transform", `translate(${pos.x},${pos.y})`);
+    g.style.cursor = "pointer";
 
-    // Tooltip
+    // SVG tooltip
     const title = document.createElementNS(ns, "title");
     title.textContent = [
       `${n.ip}${n.hostname ? " (" + n.hostname + ")" : ""}`,
@@ -2017,11 +2094,10 @@ function renderOTMap(data) {
     // Bridge ring
     if (isBridge) {
       const ring = document.createElementNS(ns, "circle");
-      ring.setAttribute("r", nodeR + 5);
+      ring.setAttribute("r", nodeR + 6);
       ring.setAttribute("fill", "none");
       ring.setAttribute("stroke", "#ff8c00");
       ring.setAttribute("stroke-width", "2.5");
-      ring.setAttribute("opacity", "0.8");
       ring.setAttribute("class", "bridge-ring");
       g.appendChild(ring);
     }
@@ -2029,7 +2105,7 @@ function renderOTMap(data) {
     const circle = document.createElementNS(ns, "circle");
     circle.setAttribute("r", nodeR);
     circle.setAttribute("fill", hostColor(n.host_type));
-    circle.setAttribute("stroke", "#fff"); circle.setAttribute("stroke-width", "1");
+    circle.setAttribute("stroke", "#fff"); circle.setAttribute("stroke-width", "1.5");
     g.appendChild(circle);
 
     const icon = document.createElementNS(ns, "text");
@@ -2039,15 +2115,18 @@ function renderOTMap(data) {
     g.appendChild(icon);
 
     const lbl = document.createElementNS(ns, "text");
-    lbl.setAttribute("text-anchor", "middle"); lbl.setAttribute("dy", nodeR + 11);
-    lbl.setAttribute("fill", "#ccc"); lbl.setAttribute("font-size", "9");
+    lbl.setAttribute("text-anchor", "middle"); lbl.setAttribute("dy", nodeR + 12);
+    lbl.setAttribute("fill", "#bbb"); lbl.setAttribute("font-size", "9");
     lbl.setAttribute("font-family", "var(--font-mono)");
     lbl.textContent = n.hostname || n.ip;
     g.appendChild(lbl);
 
-    g.style.cursor = "pointer";
+    // Hover scale effect
+    g.addEventListener("mouseenter", () => g.setAttribute("transform", `translate(${pos.x},${pos.y}) scale(1.2)`));
+    g.addEventListener("mouseleave", () => g.setAttribute("transform", `translate(${pos.x},${pos.y})`));
     g.addEventListener("click", () => { selectedNode = n; showDetailPanel(n); detailPanel.classList.add("open"); });
-    svg.appendChild(g);
+
+    nodeLayer.appendChild(g);
   });
 }
 

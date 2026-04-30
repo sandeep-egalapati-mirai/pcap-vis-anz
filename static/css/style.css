@@ -1147,26 +1147,43 @@ header h1 span { color: var(--accent); }
 }
 #ot-map-header {
   padding: 8px 16px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #ff8c00;
   border-bottom: 1px solid var(--border);
-  min-height: 30px;
+  flex-shrink: 0;
+}
+#ot-stats-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.ot-stat-chip {
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  border: 1px solid;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+#ot-zone-count {
+  font-size: 11px;
+  color: #8b949e;
+  font-family: var(--font-mono);
 }
 #ot-map-svg {
   flex: 1;
   width: 100%;
-  overflow-y: auto;
+  display: block;
+  overflow: visible;
 }
 .link.cross-zone {
   stroke-dasharray: 6,3;
 }
 @keyframes bridge-pulse {
-  0%, 100% { opacity: 0.9; r: 21; }
-  50%       { opacity: 0.4; r: 24; }
+  0%, 100% { opacity: 0.85; }
+  50%       { opacity: 0.2; }
 }
 .bridge-ring {
-  animation: bridge-pulse 1.6s ease-in-out infinite;
+  animation: bridge-pulse 1.8s ease-in-out infinite;
 }
 
 /* ── Packet inspector tab buttons ────────────────────────────────────────── */
