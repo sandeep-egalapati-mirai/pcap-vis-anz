@@ -486,7 +486,7 @@ def parse_mqtt(payload_bytes):
             proto_name_len = (payload[0] << 8) | payload[1]
             if len(payload) >= 2 + proto_name_len + 4:
                 proto_name = payload[2:2+proto_name_len].decode("utf-8", errors="replace")
-                connect_flags = payload[2 + proto_name_len + 3]
+                connect_flags = payload[2 + proto_name_len + 1]
                 has_username = bool(connect_flags & 0x80)
                 has_password = bool(connect_flags & 0x40)
                 clean_session = bool(connect_flags & 0x02)
