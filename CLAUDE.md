@@ -18,6 +18,10 @@ Major changes include:
 
 Minor changes (typo fixes, constant tweaks, CSS-only edits) can go directly on `main`.
 
+Once a feature is fully implemented and tests pass, ask the user to review and merge the branch into `main`:
+
+> "Feature is complete and tests pass. Please review and merge `feature/<name>` into `main` when ready."
+
 ## Workflow
 
 After completing any change:
