@@ -21,8 +21,59 @@
 - [x] Backend: `merge_results()` now outputs `purdue_level` for merged nodes
 - [x] Frontend: `purdueLevel()` mirrors OT evidence demotion logic
 - [x] OT Map: Public Internet zone (L6) — all non-RFC1918 IPs automatically placed in a top "Public Internet" lane; no GeoIP database required; zone suppressed when only private IPs present; OT→Internet edges flagged as critical cross-zone
+- [x] UI: "Clear all filters" button — one click to reset protocols + host types + search back to defaults
+- [x] UI: Zero-results feedback — inline message when search/filter combination hides all nodes
+- [x] UI: Toast notifications — replaced all `alert()` calls with auto-dismissing toasts (4 s)
+- [x] UI: Active filter count badge on Protocols / Host Types section headers
+- [x] UI: Fit-to-visible after filtering — auto-zoom to visible node set
+- [x] Performance: Progress bar during large PCAP parsing (streaming status instead of blank spinner)
+- [x] Performance: Virtual scrolling in connection table and packet inspector (windowed rendering)
+- [x] Performance: Anomaly deduplication summary — collapses repeated same-source anomalies into one entry
 
-## Known Issues / Ideas
+## Navigation & Discoverability
+
+- [ ] Collapsible sidebar — toggle arrow to collapse the 240 px sidebar to a narrow icon rail
+- [ ] Keyboard shortcuts — F = fit graph, 1–4 = switch views, / = focus search, Escape = close panels; `?` overlay lists all shortcuts
+- [ ] Expanded right-click context menu — Isolate node, Copy IP, Highlight anomalies, Open in Table view
+- [ ] Breadcrumb / back button when jumping from anomaly sidebar → node → packet inspector
+- [ ] View-specific empty states for DNS Map and OT Map before upload (illustrated placeholder)
+
+## Graph View
+
+- [ ] Node pinning toggle — push-pin icon to permanently lock position (d.fx / d.fy)
+- [ ] Minimap — overview thumbnail (bottom-left) with viewport rectangle; essential for large captures
+- [ ] Isolate mode — show only selected node + direct neighbours; second click restores
+- [ ] Edge label on hover — inline packet count label on hovered edge (more glanceable than tooltip)
+- [ ] Cluster expand / collapse — clicking cluster centre collapses all nodes of that type into one summary node
+
+## Packet Inspector & Detail Panel
+
+- [ ] Protocol-coloured hex dump — byte regions highlighted by layer (Ethernet / IP / TCP / payload)
+- [ ] Copy buttons next to IP addresses, hex strings, and field values in detail panel
+- [ ] Floating inspector mode — detach packet inspector into a resizable floating panel
+- [ ] Search within packet list — filter input above packet table to narrow by IP, protocol, or info string
+
+## Timeline
+
+- [ ] Brush selection on minimap — click-drag to select a time window (Wireshark mental model)
+- [ ] Playback speed control — 0.5×, 1×, 2×, 5× selector next to the play button
+- [ ] Timestamp format toggle — switch between absolute (HH:MM:SS) and relative (seconds from first packet)
+
+## Polish & Accessibility
+
+- [ ] Persistent filter state — save last-used filter configuration in localStorage
+- [ ] Light / dark mode toggle (~30 CSS variable overrides)
+- [ ] Stats bar sparklines — tiny inline bar charts next to Hosts / Connections / Packets showing distribution
+- [ ] Colour-blind safe palette option — deuteranopia-safe scheme (blues / oranges + pattern fills) toggle
+
+## Bigger Ideas
+
+- [ ] PCAP diff / comparison mode — upload two files and highlight added hosts, connections, anomalies
+- [ ] Saved filter presets — name and save a filter combination for one-click recall
+- [ ] Inline anomaly explanation panel — contextual explanation of what each anomaly means and why it's suspicious
+- [ ] Dashboard / summary view (5th view) — card-based overview: top talkers, protocol breakdown donut, anomaly severity bar, busiest connections
+
+## Known Issues
 
 - OT Map: PNG export exports the current zoom/pan view; consider a "fit-to-full" export option
 - OT Map: Drag-to-reclassify ghost circle may flicker at extreme zoom levels
