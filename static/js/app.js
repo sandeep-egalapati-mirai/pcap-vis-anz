@@ -415,6 +415,7 @@ function setView(view) {
     dnsView.classList.add("hidden");
     otMapView.classList.remove("hidden");
     renderOTMap(graphData);
+    renderOTTimeline();
   }
 }
 
@@ -1195,6 +1196,32 @@ function showDetailPanel(d) {
         <div style="width:${wPct}%;background:#f85149" title="Writes ${wPct}%"></div>
         <div style="width:${ePct}%;background:#d29922" title="Errors ${ePct}%"></div>
       </div>`);
+    }
+    // Per-function-code breakdown
+    const allFcCounts = {};
+    connEdges.forEach(e => {
+      if (e.fc_counts) {
+        Object.entries(e.fc_counts).forEach(([k, v]) => {
+          allFcCounts[k] = (allFcCounts[k] || 0) + v;
+        });
+      }
+    });
+    const fcEntries = Object.entries(allFcCounts).sort((a, b) => b[1] - a[1]);
+    if (fcEntries.length > 0) {
+      const items = fcEntries.map(([label, count]) =>
+        `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;font-family:var(--font-mono);color:var(--text2)">
+          <span>${escHtml(label)}</span>
+          <span style="color:#58a6ff;margin-left:8px">${fmtNum(count)}×</span>
+        </div>`
+      ).join("");
+      rows.push(`<details style="margin-top:4px;margin-bottom:6px">
+        <summary style="font-size:10px;color:var(--text2);cursor:pointer;user-select:none;list-style:none;padding:2px 0">
+          ▸ Function Code Breakdown (${fcEntries.length} type${fcEntries.length !== 1 ? "s" : ""})
+        </summary>
+        <div style="margin-top:4px;max-height:160px;overflow-y:auto;border-left:2px solid #333;padding-left:8px">
+          ${items}
+        </div>
+      </details>`);
     }
     if (d.modbus_unit_ids && d.modbus_unit_ids.length) {
       rows.push(`<div style="font-size:11px;color:var(--text2)">Modbus unit IDs: <span style="font-family:var(--font-mono)">${d.modbus_unit_ids.join(", ")}</span></div>`);
@@ -2875,22 +2902,133 @@ function showOTRiskPanel(node, nodePos, svgEl) {
 /* ── OT Map export (PNG + JSON) ──────────────────────────────────────────── */
 function exportOTMapPng() {
   if (!graphData) return;
-  const svgEl = document.getElementById("ot-map-svg");
-  const W = parseFloat(svgEl.getAttribute("width"))  || 900;
-  const H = parseFloat(svgEl.getAttribute("height")) || 600;
-  const svgStr = new XMLSerializer().serializeToString(svgEl);
-  const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
+  const DPR      = window.devicePixelRatio || 2;
+  const HEADER_H = 56;
+  const FOOTER_H = 48;
+  const PAD      = 12;
+
+  // Save zoom state; reset zoom group to identity so full diagram is captured
+  const zoomGroup = document.getElementById("ot-zoom-group");
+  const savedTransform = zoomGroup ? zoomGroup.getAttribute("transform") : null;
+  if (zoomGroup) zoomGroup.setAttribute("transform", "translate(0,0) scale(1)");
+
+  // Clone SVG and inject an explicit background rect
+  const svgEl  = document.getElementById("ot-map-svg");
+  const svgW   = parseFloat(svgEl.getAttribute("width"))  || 900;
+  const svgH   = parseFloat(svgEl.getAttribute("height")) || 600;
+  const clone  = svgEl.cloneNode(true);
+  const bgRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  bgRect.setAttribute("width", svgW); bgRect.setAttribute("height", svgH);
+  bgRect.setAttribute("fill", "#0d1117");
+  clone.insertBefore(bgRect, clone.firstChild);
+  const svgStr = new XMLSerializer().serializeToString(clone);
+  const url    = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
+
+  // Restore zoom immediately so the interactive view is not disrupted
+  if (zoomGroup && savedTransform !== null) zoomGroup.setAttribute("transform", savedTransform);
+
+  // Build 2× canvas: header + diagram + footer
+  const totalH = HEADER_H + svgH + FOOTER_H;
+  const canvas  = document.createElement("canvas");
+  canvas.width  = Math.round(svgW   * DPR);
+  canvas.height = Math.round(totalH * DPR);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(DPR, DPR);
+
   const img = new Image();
   img.onload = () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = W; canvas.height = H;
-    const ctx = canvas.getContext("2d");
+    // Background
     ctx.fillStyle = "#0d1117";
-    ctx.fillRect(0, 0, W, H);
-    ctx.drawImage(img, 0, 0, W, H);
+    ctx.fillRect(0, 0, svgW, totalH);
+
+    // ── Diagram ──────────────────────────────────────────────────────────────
+    ctx.drawImage(img, 0, HEADER_H, svgW, svgH);
     URL.revokeObjectURL(url);
+
+    // ── Header strip ─────────────────────────────────────────────────────────
+    ctx.fillStyle = "#161b22";
+    ctx.fillRect(0, 0, svgW, HEADER_H);
+    // Divider line
+    ctx.fillStyle = "#30363d";
+    ctx.fillRect(0, HEADER_H - 1, svgW, 1);
+
+    ctx.fillStyle = "#e6edf3";
+    ctx.font = "bold 15px monospace";
+    ctx.fillText("OT Network Security Map", PAD, 22);
+
+    const statsText = (document.getElementById("ot-stats-bar")?.textContent || "")
+      .replace(/\s+/g, " ").trim().slice(0, 130);
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "10px monospace";
+    ctx.fillText(statsText, PAD, 40);
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#444c56";
+    ctx.font = "10px monospace";
+    ctx.fillText(new Date().toLocaleString(), svgW - PAD, 22);
+    ctx.textAlign = "left";
+
+    // ── Footer legend strip ───────────────────────────────────────────────────
+    const footerY = HEADER_H + svgH;
+    ctx.fillStyle = "#161b22";
+    ctx.fillRect(0, footerY, svgW, FOOTER_H);
+    ctx.fillStyle = "#30363d";
+    ctx.fillRect(0, footerY, svgW, 1);
+
+    ctx.fillStyle = "#555";
+    ctx.font = "9px monospace";
+    ctx.fillText("ZONES:", PAD, footerY + 14);
+
+    let lx = PAD + 50;
+    [
+      { label: "IT Zone",  color: "#2a6aac" },
+      { label: "Ind. DMZ", color: "#c87000" },
+      { label: "OT Zone",  color: "#2d6b2d" },
+    ].forEach(z => {
+      ctx.fillStyle = z.color + "44";
+      ctx.strokeStyle = z.color;
+      ctx.lineWidth = 1;
+      ctx.fillRect(lx, footerY + 5, 13, 9);
+      ctx.strokeRect(lx, footerY + 5, 13, 9);
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "9px monospace";
+      ctx.fillText(z.label, lx + 16, footerY + 14);
+      lx += 16 + ctx.measureText(z.label).width + 10;
+    });
+
+    lx += 8;
+    ctx.fillStyle = "#555";
+    ctx.fillText("RISK:", lx, footerY + 14);
+    lx += ctx.measureText("RISK:").width + 8;
+
+    Object.entries(OT_RISK_COLORS).forEach(([name, color]) => {
+      ctx.beginPath();
+      ctx.arc(lx + 4, footerY + 9, 4, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "9px monospace";
+      ctx.fillText(name, lx + 11, footerY + 13);
+      lx += 11 + ctx.measureText(name).width + 8;
+    });
+
+    // Cross-zone edge indicator
+    lx += 6;
+    ctx.strokeStyle = "#ff8c00";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([3, 2]);
+    ctx.beginPath();
+    ctx.moveTo(lx, footerY + 9);
+    ctx.lineTo(lx + 20, footerY + 9);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "9px monospace";
+    ctx.fillText("cross-zone", lx + 24, footerY + 13);
+
+    // Trigger download
     const a = document.createElement("a");
-    a.download = `ot-map-risk-${new Date().toISOString().slice(0, 10)}.png`;
+    a.download = `ot-map-${new Date().toISOString().slice(0, 10)}.png`;
     a.href = canvas.toDataURL("image/png");
     a.click();
   };
@@ -2941,6 +3079,281 @@ function exportOTMapJson() {
   const a = document.createElement("a");
   a.href = url; a.download = `ot-map-${ts}.json`; a.click();
   URL.revokeObjectURL(url);
+}
+
+/* ── OT Anomaly Timeline ─────────────────────────────────────────────────── */
+function renderOTTimeline() {
+  const strip = document.getElementById("ot-timeline-strip");
+  const svgEl = document.getElementById("ot-timeline-svg");
+  if (!graphData || !strip || !svgEl) return;
+
+  const anomalies  = (graphData.anomalies || []).filter(a => a.first_seen != null);
+  const capStart   = graphData.stats?.capture_start;
+  const capEnd     = graphData.stats?.capture_end;
+
+  if (!capStart || !capEnd || capEnd <= capStart || anomalies.length === 0) {
+    strip.classList.add("hidden");
+    return;
+  }
+  strip.classList.remove("hidden");
+
+  const W = strip.clientWidth || 800;
+  const H = 52;
+  svgEl.setAttribute("width", W);
+  svgEl.setAttribute("height", H);
+  svgEl.innerHTML = "";
+  const ns   = "http://www.w3.org/2000/svg";
+  const LPAD = 52;
+  const RPAD = 10;
+  const span = capEnd - capStart;
+  const xOf  = (ts) => LPAD + ((ts - capStart) / span) * (W - LPAD - RPAD);
+
+  const SEV_COLORS = { high: "#f85149", medium: "#ff8c00", low: "#3fb950" };
+  const axisY = 34;
+
+  // Axis
+  const axisLine = document.createElementNS(ns, "line");
+  axisLine.setAttribute("x1", LPAD); axisLine.setAttribute("x2", W - RPAD);
+  axisLine.setAttribute("y1", axisY); axisLine.setAttribute("y2", axisY);
+  axisLine.setAttribute("stroke", "#333"); axisLine.setAttribute("stroke-width", "1");
+  svgEl.appendChild(axisLine);
+
+  // "Anomaly" label
+  const lbl = document.createElementNS(ns, "text");
+  lbl.setAttribute("x", 4); lbl.setAttribute("y", axisY + 4);
+  lbl.setAttribute("fill", "#555"); lbl.setAttribute("font-size", "9");
+  lbl.setAttribute("font-family", "monospace");
+  lbl.textContent = "Anomaly";
+  svgEl.appendChild(lbl);
+
+  // Start / end time labels
+  const fmt = (ts) => new Date(ts * 1000).toISOString().slice(11, 19);
+  const t1 = document.createElementNS(ns, "text");
+  t1.setAttribute("x", LPAD); t1.setAttribute("y", H - 3);
+  t1.setAttribute("fill", "#444"); t1.setAttribute("font-size", "8");
+  t1.setAttribute("font-family", "monospace");
+  t1.textContent = fmt(capStart);
+  svgEl.appendChild(t1);
+
+  const t2 = document.createElementNS(ns, "text");
+  t2.setAttribute("x", W - RPAD); t2.setAttribute("y", H - 3);
+  t2.setAttribute("fill", "#444"); t2.setAttribute("font-size", "8");
+  t2.setAttribute("font-family", "monospace");
+  t2.setAttribute("text-anchor", "end");
+  t2.textContent = fmt(capEnd);
+  svgEl.appendChild(t2);
+
+  // One tick per anomaly
+  anomalies.forEach(a => {
+    const x     = xOf(a.first_seen);
+    const color = SEV_COLORS[a.severity] || "#58a6ff";
+
+    const tick = document.createElementNS(ns, "line");
+    tick.setAttribute("x1", x); tick.setAttribute("x2", x);
+    tick.setAttribute("y1", axisY - 13); tick.setAttribute("y2", axisY + 3);
+    tick.setAttribute("stroke", color); tick.setAttribute("stroke-width", "2");
+    tick.setAttribute("opacity", "0.85");
+    tick.style.cursor = "pointer";
+
+    tick.addEventListener("mouseenter", (ev) => {
+      const srcStr = a.src || "";
+      const dstStr = a.dst && a.dst !== a.src ? ` → ${a.dst}` : "";
+      tooltip.innerHTML = `
+        <div class="tip-ip">${escHtml(a.type)}</div>
+        <div class="tip-type">${escHtml(srcStr + dstStr)}</div>
+        <div class="tip-type">${escHtml(a.description || "")}</div>
+        <div style="color:${color};font-size:10px;margin-top:3px">${(a.severity || "").toUpperCase()}</div>
+      `;
+      tooltip.classList.add("visible");
+      positionTooltip(ev);
+    });
+    tick.addEventListener("mousemove", positionTooltip);
+    tick.addEventListener("mouseleave", hideTooltip);
+
+    tick.addEventListener("click", () => {
+      if (otMatrixMode) {
+        otMatrixMode = false;
+        document.getElementById("ot-matrix-btn").classList.remove("active");
+        document.getElementById("ot-map-svg").classList.remove("hidden");
+        document.getElementById("ot-matrix-container").classList.add("hidden");
+      }
+      if (a.src) {
+        const node = graphData.nodes.find(n => n.ip === a.src);
+        if (node) showDetailPanel(node);
+      }
+    });
+
+    svgEl.appendChild(tick);
+  });
+}
+
+/* ── OT Communication Matrix ─────────────────────────────────────────────── */
+let otMatrixMode = false;
+
+function renderOTMatrix(data) {
+  if (!data) return;
+
+  // Build the same effective node set as the Purdue view
+  let baseNodes = data.nodes.filter(n => !otRemovedIds.has(n.id));
+  if (!otFilterAll && activeTypes.size > 0)
+    baseNodes = baseNodes.filter(n => activeTypes.has(n.host_type));
+  const effectiveNodes = [...baseNodes, ...otAddedNodes];
+
+  // Sort by connection count, cap at 40
+  const connCount = {};
+  effectiveNodes.forEach(n => { connCount[n.id] = 0; });
+  data.edges.forEach(e => {
+    if (connCount[e.source] !== undefined) connCount[e.source]++;
+    if (connCount[e.target] !== undefined) connCount[e.target]++;
+  });
+  const matrixNodes = [...effectiveNodes]
+    .sort((a, b) => (connCount[b.id] || 0) - (connCount[a.id] || 0))
+    .slice(0, 40);
+  const N = matrixNodes.length;
+  if (N === 0) return;
+
+  // Edge and anomaly lookup maps
+  const edgeMap = {};
+  data.edges.forEach(e => {
+    edgeMap[`${e.source}|${e.target}`] = e;
+    edgeMap[`${e.target}|${e.source}`] = e;
+  });
+  const anomalyEdgeSet = new Set();
+  (data.anomalies || []).forEach(a => {
+    if (a.src && a.dst) anomalyEdgeSet.add(`${a.src}|${a.dst}`);
+  });
+
+  // Zone helper
+  const nodeZone = (n) => {
+    const lvl = (otOverrides && otOverrides[n.id] !== undefined) ? otOverrides[n.id] : n.purdue_level;
+    if (lvl === 6) return "Internet";
+    if (lvl >= 4)  return "IT";
+    if (lvl === 3.5) return "DMZ";
+    if (lvl >= 0)  return "OT";
+    return null;
+  };
+
+  // Dominant OT protocol helper
+  const OT_PROTO_ORDER = ["Modbus","DNP3","S7comm","EtherNet/IP","IEC-104","BACnet","CoAP","MQTT"];
+  const dominantProto = (e) => {
+    if (!e) return null;
+    for (const p of OT_PROTO_ORDER) if (e.protocols.includes(p)) return p;
+    return e.protocols[0] || null;
+  };
+
+  // Layout constants
+  const CELL    = 20;
+  const LABEL_W = 96;
+  const LABEL_H = 96;
+  const ns      = "http://www.w3.org/2000/svg";
+  const svgW    = LABEL_W + N * CELL + 16;
+  const svgH    = LABEL_H + N * CELL + 20;
+
+  const svgEl = document.getElementById("ot-matrix-svg");
+  svgEl.setAttribute("width",   svgW);
+  svgEl.setAttribute("height",  svgH);
+  svgEl.setAttribute("viewBox", `0 0 ${svgW} ${svgH}`);
+  svgEl.innerHTML = "";
+
+  // Column headers (rotated)
+  matrixNodes.forEach((n, j) => {
+    const x   = LABEL_W + j * CELL + CELL / 2;
+    const lbl = (n.hostname || n.ip);
+    const txt = document.createElementNS(ns, "text");
+    txt.setAttribute("x", x);
+    txt.setAttribute("y", LABEL_H - 4);
+    txt.setAttribute("transform", `rotate(-55,${x},${LABEL_H - 4})`);
+    txt.setAttribute("fill", "#8b949e");
+    txt.setAttribute("font-size", "9");
+    txt.setAttribute("font-family", "monospace");
+    txt.setAttribute("text-anchor", "end");
+    txt.textContent = lbl.length > 14 ? lbl.slice(-14) : lbl;
+    svgEl.appendChild(txt);
+  });
+
+  // Rows
+  matrixNodes.forEach((rowNode, i) => {
+    const y   = LABEL_H + i * CELL;
+    const lbl = (rowNode.hostname || rowNode.ip);
+
+    // Row label
+    const txt = document.createElementNS(ns, "text");
+    txt.setAttribute("x", LABEL_W - 4);
+    txt.setAttribute("y", y + CELL / 2 + 3);
+    txt.setAttribute("fill", "#8b949e");
+    txt.setAttribute("font-size", "9");
+    txt.setAttribute("font-family", "monospace");
+    txt.setAttribute("text-anchor", "end");
+    txt.textContent = lbl.length > 15 ? lbl.slice(-15) : lbl;
+    svgEl.appendChild(txt);
+
+    matrixNodes.forEach((colNode, j) => {
+      const x    = LABEL_W + j * CELL;
+      const edge = edgeMap[`${rowNode.id}|${colNode.id}`];
+      const rzn  = nodeZone(rowNode);
+      const czn  = nodeZone(colNode);
+      const isCrossZone = edge && rzn && czn && rzn !== czn;
+      const isAnomaly   = anomalyEdgeSet.has(`${rowNode.id}|${colNode.id}`)
+                       || anomalyEdgeSet.has(`${colNode.id}|${rowNode.id}`);
+
+      const proto   = dominantProto(edge);
+      let   fill    = edge ? (PROTO_COLORS[proto] || "#555") : "#161b22";
+      let   opacity = edge ? "0.8" : "0.15";
+      if (isCrossZone) { fill = "#ff8c00"; opacity = "0.7"; }
+
+      const rect = document.createElementNS(ns, "rect");
+      rect.setAttribute("x",       x + 1);
+      rect.setAttribute("y",       y + 1);
+      rect.setAttribute("width",   CELL - 2);
+      rect.setAttribute("height",  CELL - 2);
+      rect.setAttribute("rx",      "2");
+      rect.setAttribute("fill",    fill);
+      rect.setAttribute("opacity", opacity);
+      if (isAnomaly) {
+        rect.setAttribute("stroke",       "#f85149");
+        rect.setAttribute("stroke-width", "1.5");
+      }
+      if (edge) rect.style.cursor = "pointer";
+
+      if (edge) {
+        rect.addEventListener("mouseenter", (ev) => {
+          const otR = edge.ot_reads || 0, otW = edge.ot_writes || 0;
+          tooltip.innerHTML = `
+            <div class="tip-ip" style="font-size:11px">${escHtml(rowNode.ip)} → ${escHtml(colNode.ip)}</div>
+            <div class="tip-type">${fmtNum(edge.packet_count)} pkts · ${fmtBytes(edge.bytes)}</div>
+            <div class="tip-proto">${edge.protocols.slice(0, 5).map(escHtml).join(" · ")}</div>
+            ${otR || otW ? `<div class="tip-type">OT reads: ${otR} · writes: ${otW}</div>` : ""}
+            ${isCrossZone ? `<div style="color:#ff8c00;font-size:10px">⚠ Cross-zone</div>` : ""}
+            ${isAnomaly   ? `<div style="color:#f85149;font-size:10px">⚠ Anomaly detected</div>` : ""}
+          `;
+          tooltip.classList.add("visible");
+          positionTooltip(ev);
+        });
+        rect.addEventListener("mousemove", positionTooltip);
+        rect.addEventListener("mouseleave", hideTooltip);
+
+        // Click: flip back to Purdue view
+        rect.addEventListener("click", () => {
+          otMatrixMode = false;
+          document.getElementById("ot-matrix-btn").classList.remove("active");
+          document.getElementById("ot-map-svg").classList.remove("hidden");
+          document.getElementById("ot-matrix-container").classList.add("hidden");
+          renderOTMap(data);
+        });
+      }
+      svgEl.appendChild(rect);
+    });
+  });
+
+  // Legend note
+  const legTxt = document.createElementNS(ns, "text");
+  legTxt.setAttribute("x", LABEL_W);
+  legTxt.setAttribute("y", LABEL_H + N * CELL + 14);
+  legTxt.setAttribute("fill", "#555");
+  legTxt.setAttribute("font-size", "9");
+  legTxt.setAttribute("font-family", "monospace");
+  legTxt.textContent = "Cell = dominant protocol color · Orange = cross-zone · Red border = anomaly";
+  svgEl.appendChild(legTxt);
 }
 
 /* ── DNS Map View ────────────────────────────────────────────────────────── */
@@ -3098,11 +3511,24 @@ let _otResizeTimer = null;
 new ResizeObserver(() => {
   if (currentView !== "ot") return;
   clearTimeout(_otResizeTimer);
-  _otResizeTimer = setTimeout(() => { if (graphData) renderOTMap(graphData); }, 150);
+  _otResizeTimer = setTimeout(() => {
+    if (graphData) {
+      if (!otMatrixMode) renderOTMap(graphData);
+      renderOTTimeline();
+    }
+  }, 150);
 }).observe(document.getElementById("ot-map-view"));
 
 document.getElementById("ot-export-png-btn").addEventListener("click", exportOTMapPng);
 document.getElementById("ot-export-json-btn").addEventListener("click", exportOTMapJson);
+
+document.getElementById("ot-matrix-btn").addEventListener("click", () => {
+  otMatrixMode = !otMatrixMode;
+  document.getElementById("ot-matrix-btn").classList.toggle("active", otMatrixMode);
+  document.getElementById("ot-map-svg").classList.toggle("hidden", otMatrixMode);
+  document.getElementById("ot-matrix-container").classList.toggle("hidden", !otMatrixMode);
+  if (otMatrixMode && graphData) renderOTMatrix(graphData);
+});
 document.getElementById("exp-csv").addEventListener("click", () => {
   exportCsv();
   document.getElementById("export-menu").classList.add("hidden");

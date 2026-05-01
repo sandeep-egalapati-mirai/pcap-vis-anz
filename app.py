@@ -1411,9 +1411,12 @@ def analyze_pcap(filepath):
         "dst_ports": set(),
         "first_seen": None,
         "last_seen": None,
+        "abs_first_seen": None,
+        "abs_last_seen": None,
         "ot_reads": 0,
         "ot_writes": 0,
         "ot_errors": 0,
+        "fc_counts": defaultdict(int),
     })
 
     def host(ip, mac=None):
@@ -1454,6 +1457,7 @@ def analyze_pcap(filepath):
     packet_store = defaultdict(list)
     MAX_STORED_PER_CONN = 50
     first_pkt_time = None
+    last_pkt_time = None
 
     try:
         with PcapReader(filepath) as reader:
@@ -1519,6 +1523,12 @@ def analyze_pcap(filepath):
                 if conn["first_seen"] is None:
                     conn["first_seen"] = rel_t
                 conn["last_seen"] = rel_t
+                if hasattr(pkt, "time"):
+                    abs_t = float(pkt.time)
+                    last_pkt_time = abs_t
+                    if conn["abs_first_seen"] is None:
+                        conn["abs_first_seen"] = abs_t
+                    conn["abs_last_seen"] = abs_t
 
                 # ── TCP ──────────────────────────────────────────────────────
                 if TCP in pkt:
@@ -1699,6 +1709,9 @@ def analyze_pcap(filepath):
                                     conn["ot_reads"] += 1
                                 if mb["is_error"]:
                                     conn["ot_errors"] += 1
+                                if mb.get("function_code") is not None:
+                                    fc_label = f"Modbus:FC{mb['function_code']} {mb.get('function_name', '')}".rstrip()
+                                    conn["fc_counts"][fc_label] += 1
 
                         # MQTT parsing
                         if payload and (dport_ in (1883, 8883) or sport_ in (1883, 8883)):
@@ -1729,6 +1742,9 @@ def analyze_pcap(filepath):
                                     conn["ot_reads"] += 1
                                 if dn["is_error"]:
                                     conn["ot_errors"] += 1
+                                if dn.get("function_code") is not None:
+                                    fn = dn.get("function_name") or f"FC{dn['function_code']}"
+                                    conn["fc_counts"][f"DNP3:{fn}"] += 1
 
                         # S7comm parsing
                         if payload and (dport_ == 102 or sport_ == 102):
@@ -1743,24 +1759,33 @@ def analyze_pcap(filepath):
                                     conn["ot_reads"] += 1
                                 if s7["is_error"]:
                                     conn["ot_errors"] += 1
+                                if s7.get("function_code") is not None:
+                                    fn = s7.get("function_name") or hex(s7["function_code"])
+                                    conn["fc_counts"][f"S7:{fn}"] += 1
 
                         # EtherNet/IP parsing
                         if payload and (dport_ in (2222, 44818) or sport_ in (2222, 44818)):
                             ei = parse_enip(payload)
                             if ei:
                                 pd["enip"] = ei
+                                if ei.get("cip_service_name"):
+                                    conn["fc_counts"][f"EtherNet/IP:{ei['cip_service_name']}"] += 1
 
                         # IEC 60870-5-104 parsing
                         if payload and (dport_ == 2404 or sport_ == 2404):
                             ic = parse_iec104(payload)
                             if ic:
                                 pd["iec104"] = ic
+                                if ic.get("type_name"):
+                                    conn["fc_counts"][f"IEC-104:{ic['type_name']}"] += 1
 
                         # BACnet parsing
                         if payload and (dport_ == 47808 or sport_ == 47808):
                             bn = parse_bacnet(payload)
                             if bn:
                                 pd["bacnet"] = bn
+                                if bn.get("service_name"):
+                                    conn["fc_counts"][f"BACnet:{bn['service_name']}"] += 1
 
                         # Store hex dump of payload
                         if payload:
@@ -1817,6 +1842,20 @@ def analyze_pcap(filepath):
     # ── Anomaly detection ─────────────────────────────────────────────────────
     anomalies = analyze_anomalies(hosts, connections, packet_store)
 
+    # Attach absolute timestamps to anomalies for the timeline strip
+    for a in anomalies:
+        src, dst = a.get("src"), a.get("dst")
+        key = tuple(sorted([src, dst])) if src and dst and src != dst else None
+        conn = connections.get(key) if key else None
+        if conn is None and src:
+            # src-only anomalies (port_scan, multiunit_poll): find any conn from src
+            for (ca, cb), cv in connections.items():
+                if ca == src or cb == src:
+                    conn = cv
+                    break
+        a["first_seen"] = conn["abs_first_seen"] if conn else None
+        a["last_seen"] = conn["abs_last_seen"] if conn else None
+
     # ── Serialise ─────────────────────────────────────────────────────────────
     nodes = []
     for ip, h in hosts.items():
@@ -1869,6 +1908,7 @@ def analyze_pcap(filepath):
             "ot_reads": c.get("ot_reads", 0),
             "ot_writes": c.get("ot_writes", 0),
             "ot_errors": c.get("ot_errors", 0),
+            "fc_counts": dict(c.get("fc_counts", {})),
         })
 
     all_protocols = sorted({p for n in nodes for p in n["protocols"]})
@@ -1897,6 +1937,8 @@ def analyze_pcap(filepath):
             "protocols": all_protocols,
             "host_types": all_host_types,
             "truncated": processed >= MAX_PACKETS,
+            "capture_start": first_pkt_time,
+            "capture_end": last_pkt_time,
         },
     }
 
@@ -1910,6 +1952,8 @@ def merge_results(results):
     anomaly_keys = set()
     total_packets = 0
     truncated = False
+    capture_start = None
+    capture_end = None
 
     for result in results:
         if "error" in result:
@@ -1917,6 +1961,12 @@ def merge_results(results):
         total_packets += result["stats"]["total_packets"]
         if result["stats"]["truncated"]:
             truncated = True
+        cs = result["stats"].get("capture_start")
+        ce = result["stats"].get("capture_end")
+        if cs is not None:
+            capture_start = cs if capture_start is None else min(capture_start, cs)
+        if ce is not None:
+            capture_end = ce if capture_end is None else max(capture_end, ce)
 
         # Merge nodes
         for n in result["nodes"]:
@@ -1965,6 +2015,7 @@ def merge_results(results):
                     "ot_reads": e.get("ot_reads", 0),
                     "ot_writes": e.get("ot_writes", 0),
                     "ot_errors": e.get("ot_errors", 0),
+                    "fc_counts": dict(e.get("fc_counts", {})),
                 }
             else:
                 me = merged_edges[key]
@@ -1975,6 +2026,8 @@ def merge_results(results):
                 me["ot_reads"] += e.get("ot_reads", 0)
                 me["ot_writes"] += e.get("ot_writes", 0)
                 me["ot_errors"] += e.get("ot_errors", 0)
+                for k, v in e.get("fc_counts", {}).items():
+                    me["fc_counts"][k] = me["fc_counts"].get(k, 0) + v
                 if e.get("last_seen") is not None:
                     if me["last_seen"] is None or e["last_seen"] > me["last_seen"]:
                         me["last_seen"] = e["last_seen"]
@@ -2045,6 +2098,7 @@ def merge_results(results):
             "ot_reads": me.get("ot_reads", 0),
             "ot_writes": me.get("ot_writes", 0),
             "ot_errors": me.get("ot_errors", 0),
+            "fc_counts": me.get("fc_counts", {}),
         })
 
     all_protocols = sorted({p for n in nodes_out for p in n["protocols"]})
@@ -2063,6 +2117,8 @@ def merge_results(results):
             "host_types": all_host_types,
             "truncated": truncated,
             "gpu": GPU_AVAILABLE,
+            "capture_start": capture_start,
+            "capture_end": capture_end,
         },
     }
 

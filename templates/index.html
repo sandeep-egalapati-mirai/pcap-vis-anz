@@ -241,6 +241,8 @@
         <button id="ot-zoom-out-btn"    class="ot-tb-btn" title="Zoom out">−</button>
         <button id="ot-zoom-fit-btn"    class="ot-tb-btn" title="Fit to view">⊡</button>
         <div class="ot-tb-sep"></div>
+        <button id="ot-matrix-btn"      class="ot-tb-btn" title="Toggle device×device communication matrix">⊞ Matrix</button>
+        <div class="ot-tb-sep"></div>
         <button id="ot-export-png-btn"  class="ot-tb-btn">⬇ PNG</button>
         <button id="ot-export-json-btn" class="ot-tb-btn">⬇ JSON</button>
       </div>
@@ -251,6 +253,14 @@
       </div>
 
       <svg id="ot-map-svg"></svg>
+
+      <div id="ot-matrix-container" class="hidden">
+        <svg id="ot-matrix-svg"></svg>
+      </div>
+
+      <div id="ot-timeline-strip" class="hidden">
+        <svg id="ot-timeline-svg" height="52"></svg>
+      </div>
 
       <div id="ot-risk-panel" class="hidden">
         <div class="ot-rp-hdr">
