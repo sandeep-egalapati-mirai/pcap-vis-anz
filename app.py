@@ -203,11 +203,17 @@ SUSPICIOUS_PORTS = {4444, 1337, 31337, 6666, 6667, 6668}
 
 # Purdue model level mapping (mirrors JS purdueLevel())
 _PURDUE_L5_TYPES: set[str] = set()  # external hosts determined by country field
-_PURDUE_L4_TYPES = {"Windows Host", "Web Server", "Mail Server", "Directory Server", "Database Server"}
+_PURDUE_L4_TYPES = {
+    "Windows Host", "Web Server", "Mail Server", "Directory Server", "Database Server",
+    "Router", "Network Device", "DNS Server", "DHCP Server", "DHCP Client", "NTP Server",
+    "SSH Server", "FTP Server", "Telnet Server", "Container Host",
+    "Log Server", "Print Server", "Cache Server", "Search Server",
+    "IoT Gateway", "Smart Home Hub", "Smart Speaker", "CPE Device", "Discovery",
+}
 _PURDUE_L35_TYPES = {"VPN Gateway", "Security Tool", "Remote Desktop"}
 _PURDUE_L3_TYPES = {"SCADA Server", "Historian", "Engineering Workstation"}
 _PURDUE_L2_TYPES = {"HMI", "DCS"}
-_PURDUE_L1_TYPES = {"PLC", "RTU", "IED", "Building Controller"}
+_PURDUE_L1_TYPES = {"PLC", "RTU", "IED", "Building Controller", "IP Camera"}
 _PURDUE_L0_TYPES = {"Field Device", "IoT Sensor", "Smart Meter"}
 
 def purdue_level_py(
@@ -598,12 +604,16 @@ def parse_coap(payload_bytes):
             opt_len   = payload_bytes[idx] & 0x0F
             idx += 1
             if opt_delta == 13:
+                if idx >= len(payload_bytes): break
                 opt_delta = payload_bytes[idx] + 13; idx += 1
             elif opt_delta == 14:
+                if idx + 1 >= len(payload_bytes): break
                 opt_delta = ((payload_bytes[idx] << 8) | payload_bytes[idx+1]) + 269; idx += 2
             if opt_len == 13:
+                if idx >= len(payload_bytes): break
                 opt_len = payload_bytes[idx] + 13; idx += 1
             elif opt_len == 14:
+                if idx + 1 >= len(payload_bytes): break
                 opt_len = ((payload_bytes[idx] << 8) | payload_bytes[idx+1]) + 269; idx += 2
             opt_num = prev_opt + opt_delta
             prev_opt = opt_num
@@ -1002,7 +1012,6 @@ def analyze_anomalies(hosts, connections, packet_store):
         src_dst_ips[b].add(a)
         for p in conn["dst_ports"]:
             src_dst_ports[a].add(p)
-            src_dst_ports[b].add(p)
 
     for ip, dst_ips in src_dst_ips.items():
         if len(dst_ips) > 5 and len(src_dst_ports.get(ip, set())) > 15:
@@ -1644,18 +1653,31 @@ def analyze_pcap(filepath):
                                 {"k": "Src MAC", "v": e_.src},
                                 {"k": "Type",    "v": hex(e_.type)},
                             ]})
-                        ip_ = pkt[IP]
-                        pd["layers"].append({"name": "Internet Protocol", "fields": [
-                            {"k": "Version",     "v": ip_.version},
-                            {"k": "Hdr Length",  "v": f"{ip_.ihl * 4} bytes"},
-                            {"k": "Total Len",   "v": ip_.len},
-                            {"k": "ID",          "v": hex(ip_.id)},
-                            {"k": "Flags",       "v": str(ip_.flags)},
-                            {"k": "TTL",         "v": ip_.ttl},
-                            {"k": "Protocol",    "v": ip_.proto},
-                            {"k": "Src",         "v": ip_.src},
-                            {"k": "Dst",         "v": ip_.dst},
-                        ]})
+                        if IP in pkt:
+                            ip_ = pkt[IP]
+                            pd["layers"].append({"name": "Internet Protocol", "fields": [
+                                {"k": "Version",     "v": ip_.version},
+                                {"k": "Hdr Length",  "v": f"{ip_.ihl * 4} bytes"},
+                                {"k": "Total Len",   "v": ip_.len},
+                                {"k": "ID",          "v": hex(ip_.id)},
+                                {"k": "Flags",       "v": str(ip_.flags)},
+                                {"k": "TTL",         "v": ip_.ttl},
+                                {"k": "Protocol",    "v": ip_.proto},
+                                {"k": "Src",         "v": ip_.src},
+                                {"k": "Dst",         "v": ip_.dst},
+                            ]})
+                        elif IPv6 in pkt:
+                            ip6_ = pkt[IPv6]
+                            pd["layers"].append({"name": "Internet Protocol Version 6", "fields": [
+                                {"k": "Version",      "v": ip6_.version},
+                                {"k": "Traffic Class","v": ip6_.tc},
+                                {"k": "Flow Label",   "v": hex(ip6_.fl)},
+                                {"k": "Payload Len",  "v": ip6_.plen},
+                                {"k": "Next Header",  "v": ip6_.nh},
+                                {"k": "Hop Limit",    "v": ip6_.hlim},
+                                {"k": "Src",          "v": ip6_.src},
+                                {"k": "Dst",          "v": ip6_.dst},
+                            ]})
                         payload = b""
                         if TCP in pkt:
                             t_ = pkt[TCP]

@@ -77,6 +77,19 @@
 
 - OT Map: PNG export exports the current zoom/pan view; consider a "fit-to-full" export option
 - OT Map: Drag-to-reclassify ghost circle may flicker at extreme zoom levels
-- OT Map: Add a "Show all" toggle button to `#ot-toolbar` to override `activeTypes` filter (groundwork wired, button not yet in HTML)
 - General: GeoIP lookup is optional and silently skipped if MMDB absent; consider a warning banner
 - General: Test coverage for `analyze_pcap` and `merge_results` is thin — add integration tests with sample PCAPs
+
+## Completed (Bug Fixes)
+
+- [x] Backend: IPv6 packet inspector crash — packet-inspector block unconditionally accessed `pkt[IP]`; now correctly branches `IP in pkt` / `IPv6 in pkt` and emits IPv6 header fields
+- [x] Backend: CoAP option parser out-of-bounds — missing `idx >= len` guards before extended delta/length field reads; fixed with bounds checks
+- [x] Backend: Port-scan false positives — bidirectional `src_dst_ports` attribution caused servers with many clients to be flagged; now only attributes ports to the connection's smaller-IP key
+- [x] Backend: Purdue level returned -1 for Router, IoT Gateway, DNS Server, and 15 other common host types; added them to `_PURDUE_L4_TYPES` / `_PURDUE_L1_TYPES`
+- [x] Frontend: `fetch("/upload")` did not check `resp.ok` before calling `.json()` — HTTP errors (4xx/5xx) showed a confusing parse error instead of the server message
+- [x] Frontend: 26 protocols in PORT_MAP had no PROTO_COLORS entry and rendered as flat gray (NNTP, NetBIOS-*, LDAP/LDAPS, Docker, K8s-API, VNC, WinRM, IKE/IPsec, OpenVPN, Metasploit, etc.)
+- [x] Frontend: DHCP Client, Discovery, and News Server host types had no HOST_COLORS entry and rendered as default gray
+- [x] Frontend: OT filter toggle button (`#ot-filter-btn`) was wired in JS but missing from `index.html`; `otFilterAll` state was never togglable — added button to OT toolbar
+- [x] Frontend: `d.dns_names[0]` in detail panel had no null guard; now `(d.dns_names && d.dns_names[0])`
+- [x] CSS: Dead `#ot-legend` rule removed (no matching element in HTML; OT map uses class-based selectors)
+- [x] Tests: Added 8 unit tests for `parse_enip` (register session, read/write tag, error status, malformed input)

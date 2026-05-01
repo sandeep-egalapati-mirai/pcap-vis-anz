@@ -202,3 +202,76 @@ def test_modbus_write_multiple_registers():
     assert r["is_write"] is True
     assert r["register_address"] == 50
     assert r["quantity"] == 5
+
+
+# ── EtherNet/IP ───────────────────────────────────────────────────────────────
+
+def _enip_hdr(command, session_handle=0, status=0, data=b""):
+    """Build a minimal EtherNet/IP encapsulation header (24 bytes) + optional data."""
+    length = len(data)
+    sender_context = b"\x00" * 8
+    options = 0
+    hdr = struct.pack("<HHIIQ I",
+        command, length, session_handle, status,
+        int.from_bytes(sender_context, "little"), options)
+    return hdr + data
+
+
+def test_enip_register_session():
+    pkt = _enip_hdr(0x0065, session_handle=0)
+    r = parse_enip(pkt)
+    assert r is not None
+    assert r["command"] == 0x0065
+    assert r["command_name"] == "Register Session"
+    assert r["is_error"] is False
+    assert r["is_write"] is False
+
+
+def _enip_send_rr(cip_service_byte):
+    """Build a Send RR Data payload whose CIP service byte lands at data[10].
+    Parser uses cip_offset=10: interface_handle(4)+timeout(2)+item_count(2)+null_type(2)=10 bytes."""
+    cpf = struct.pack("<IHHH", 0, 0, 2, 0x0000) + bytes([cip_service_byte])
+    return _enip_hdr(0x006F, data=cpf)
+
+
+def test_enip_send_rr_data_read_tag():
+    pkt = _enip_send_rr(0x4C)
+    r = parse_enip(pkt)
+    assert r is not None
+    assert r["command_name"] == "Send RR Data"
+    assert r["cip_service"] == 0x4C
+    assert r["cip_service_name"] == "Read Tag"
+    assert r["is_write"] is False
+    assert r["is_response"] is False
+
+
+def test_enip_send_rr_data_write_tag():
+    pkt = _enip_send_rr(0x4D)
+    r = parse_enip(pkt)
+    assert r is not None
+    assert r["cip_service"] == 0x4D
+    assert r["cip_service_name"] == "Write Tag"
+    assert r["is_write"] is True
+
+
+def test_enip_error_status():
+    pkt = _enip_hdr(0x0065, status=0x0008)  # non-zero status = error
+    r = parse_enip(pkt)
+    assert r is not None
+    assert r["is_error"] is True
+
+
+def test_enip_too_short():
+    assert parse_enip(b"\x65\x00\x04\x00") is None
+
+
+def test_enip_empty():
+    assert parse_enip(b"") is None
+    assert parse_enip(None) is None
+
+
+def test_enip_unknown_command():
+    pkt = _enip_hdr(0x9999)
+    r = parse_enip(pkt)
+    assert r is not None
+    assert "Unknown" in r["command_name"]

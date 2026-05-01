@@ -44,6 +44,9 @@ const HOST_COLORS = {
   "IoT Sensor":       "#03A9F4",
   "Smart Speaker":    "#9C27B0",
   "CPE Device":       "#607D8B",
+  "DHCP Client":      "#81D4FA",
+  "Discovery":        "#4DD0E1",
+  "News Server":      "#BA68C8",
 };
 
 const PROTO_COLORS = {
@@ -108,6 +111,42 @@ const PROTO_COLORS = {
   "Dahua":        "#8D6E63",
   "AMSP":         "#26C6DA",
   "DLMS":         "#F06292",
+  // Windows / NetBIOS
+  "NetBIOS-NS":   "#5C6BC0",
+  "NetBIOS-DGM":  "#5C6BC0",
+  "NetBIOS-SSN":  "#5C6BC0",
+  "LLMNR":        "#7986CB",
+  // Directory / identity
+  "LDAP":         "#EC407A",
+  "LDAPS":        "#EC407A",
+  // Mail / messaging
+  "NNTP":         "#AB47BC",
+  // Print / services
+  "IPP":          "#8D6E63",
+  "Syslog":       "#A1887F",
+  // Databases
+  "MSSQL":        "#FF7043",
+  "Oracle-DB":    "#FF8A65",
+  "Elasticsearch":"#F06292",
+  // Containers / orchestration
+  "Docker":       "#26C6DA",
+  "Docker-TLS":   "#00ACC1",
+  "K8s-API":      "#0097A7",
+  // Remote access
+  "VNC":          "#5C6BC0",
+  "WinRM":        "#3F51B5",
+  "WinRM-S":      "#3949AB",
+  // VPN
+  "IKE/IPsec":    "#7E57C2",
+  "OpenVPN":      "#673AB7",
+  "PPTP":         "#9575CD",
+  "IPsec-NAT":    "#7B1FA2",
+  // Security / C2
+  "Metasploit":   "#EF5350",
+  // OT / IoT misc
+  "Foxboro":      "#FF9800",
+  "XIMSS":        "#4CAF50",
+  "CAP":          "#FFC107",
 };
 
 function protoColor(protocols) {
@@ -305,6 +344,7 @@ async function uploadFiles(files) {
 
   try {
     const resp = await fetch("/upload", { method: "POST", body: form });
+    if (!resp.ok) throw new Error(`Server error ${resp.status}: ${resp.statusText}`);
     const data = await resp.json();
     progress && progress.stop();
     if (data.error) {
@@ -1094,7 +1134,7 @@ function showDetailPanel(d) {
   detailPanel.classList.add("open");
   document.getElementById("dh-ip").textContent = d.ip;
   document.getElementById("dh-hostname").textContent =
-    d.hostname || d.dns_names[0] || "";
+    d.hostname || (d.dns_names && d.dns_names[0]) || "";
 
   const body = document.getElementById("detail-body");
   const rows = [];

@@ -47,10 +47,15 @@ def test_purdue_level_external_host_via_country():
     assert purdue_level_py("PLC", country="CN") == 5  # country overrides type
 
 def test_purdue_level_unclassified():
-    assert purdue_level_py("Router") == -1
-    assert purdue_level_py("IoT Gateway") == -1
     assert purdue_level_py("Unknown Type") == -1
     assert purdue_level_py("") == -1
+
+def test_purdue_level_it_infrastructure():
+    assert purdue_level_py("Router") == 4
+    assert purdue_level_py("IoT Gateway") == 4
+    assert purdue_level_py("DNS Server") == 4
+    assert purdue_level_py("Container Host") == 4
+    assert purdue_level_py("Discovery") == 4
 
 def test_purdue_level_no_country_is_not_l5():
     assert purdue_level_py("Windows Host") == 4  # no country → L4, not L5
