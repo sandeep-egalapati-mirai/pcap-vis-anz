@@ -156,6 +156,14 @@ let currentLayout = "force"; // "force" | "radial" | "cluster"
 let anomalyNodeIps = {};     // ip → highest severity
 let tableSort = { col: "packet_count", dir: "desc" };
 
+// Canvas edge rendering (GPU-composited, activated for large graphs)
+const CANVAS_THRESHOLD = 150;  // node count above which canvas edges are used
+let useCanvasEdges = false;
+let currentZoomTransform = d3.zoomIdentity;
+let _canvasLinks = [];
+let _canvasPLevel = {};
+let _canvasMaxEdgePkt = 1;
+
 // Timeline state
 let tlPlaying = false;
 let tlTimer = null;
@@ -185,7 +193,11 @@ const nodesGroup = zoomGroup.append("g").attr("id", "nodes-layer");
 
 const zoom = d3.zoom()
   .scaleExtent([0.05, 8])
-  .on("zoom", (e) => zoomGroup.attr("transform", e.transform));
+  .on("zoom", (e) => {
+    zoomGroup.attr("transform", e.transform);
+    currentZoomTransform = e.transform;
+    if (useCanvasEdges) drawCanvasEdges();
+  });
 svg.call(zoom);
 
 /* ── Upload modal ─────────────────────────────────────────────────────────── */
@@ -272,6 +284,15 @@ function loadGraph(data) {
   document.getElementById("stat-hosts").textContent = fmtNum(data.stats.total_hosts);
   document.getElementById("stat-conns").textContent = fmtNum(data.stats.total_connections);
   document.getElementById("stat-pkts").textContent  = fmtNum(data.stats.total_packets);
+
+  // GPU badge
+  const gpuBadge = document.getElementById("gpu-badge");
+  if (gpuBadge) {
+    const hasGpu = !!data.stats.gpu;
+    gpuBadge.textContent = hasGpu ? "⚡ GPU" : "CPU";
+    gpuBadge.className = hasGpu ? "stat gpu-active" : "stat gpu-inactive";
+    gpuBadge.style.display = "";
+  }
 
   // Build filter sets
   activeProtos = new Set(data.stats.protocols);
@@ -402,6 +423,8 @@ function applyFilters() {
     const visible = protoOk && visibleNodeIds.has(sid) && visibleNodeIds.has(tid);
     d3.select(this).classed("faded", !visible);
   });
+
+  if (useCanvasEdges) drawCanvasEdges();
 }
 
 /* ── Anomaly sidebar ─────────────────────────────────────────────────────── */
@@ -456,6 +479,58 @@ function buildAnomalySidebar(anomalies) {
   });
 }
 
+/* ── Canvas edge rendering (GPU-composited) ──────────────────────────────── */
+function resizeEdgeCanvas() {
+  const canvas = document.getElementById("edge-canvas");
+  const svgEl  = document.getElementById("graph-svg");
+  canvas.width  = svgEl.clientWidth;
+  canvas.height = svgEl.clientHeight;
+}
+
+function drawCanvasEdges() {
+  const canvas = document.getElementById("edge-canvas");
+  if (!canvas || !useCanvasEdges) return;
+  const ctx = canvas.getContext("2d");
+  const t = currentZoomTransform;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Collect visible node IDs from the SVG node selection
+  const visibleNodeIds = new Set();
+  nodesGroup.selectAll(".node").each(function(d) {
+    if (!d3.select(this).classed("faded")) visibleNodeIds.add(d.id);
+  });
+
+  ctx.save();
+  ctx.translate(t.x, t.y);
+  ctx.scale(t.k, t.k);
+
+  for (const d of _canvasLinks) {
+    const protoOk = d.protocols.some(p => activeProtos.has(p));
+    const sid = typeof d.source === "object" ? d.source.id : d.source;
+    const tid = typeof d.target === "object" ? d.target.id : d.target;
+    if (!protoOk || !visibleNodeIds.has(sid) || !visibleNodeIds.has(tid)) continue;
+
+    const sx = typeof d.source === "object" ? d.source.x : 0;
+    const sy = typeof d.source === "object" ? d.source.y : 0;
+    const tx = typeof d.target === "object" ? d.target.x : 0;
+    const ty = typeof d.target === "object" ? d.target.y : 0;
+
+    const sl = _canvasPLevel[sid] ?? -1;
+    const tl = _canvasPLevel[tid] ?? -1;
+    const isCross = sl !== -1 && tl !== -1 && sl !== tl;
+
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(tx, ty);
+    ctx.strokeStyle = isCross ? "#ff8c00" : protoColor(d.protocols);
+    ctx.lineWidth = 1 + Math.log1p(d.packet_count / _canvasMaxEdgePkt * 50) * 1.2;
+    ctx.globalAlpha = 0.7;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 /* ── D3 force graph ──────────────────────────────────────────────────────── */
 function renderGraph(data) {
   linksGroup.selectAll("*").remove();
@@ -483,10 +558,22 @@ function renderGraph(data) {
     return 1 + Math.log1p(d.packet_count / maxEdgePkt * 50) * 1.2;
   }
 
+  // ── Canvas edge mode (GPU-composited rendering for large graphs) ──
+  useCanvasEdges = nodes.length > CANVAS_THRESHOLD;
+  _canvasMaxEdgePkt = maxEdgePkt;
+  const edgeCanvas = document.getElementById("edge-canvas");
+  if (useCanvasEdges) {
+    edgeCanvas.style.display = "";
+    resizeEdgeCanvas();
+  } else {
+    edgeCanvas.style.display = "none";
+  }
+
   // ── Links ──
   // Build Purdue level lookup for cross-zone highlighting
   const _pLevel = {};
   nodes.forEach(n => { _pLevel[n.id] = purdueLevel(n.host_type); });
+  _canvasPLevel = _pLevel;
   const _crossCount = links.filter(e => {
     const sl = _pLevel[typeof e.source === "object" ? e.source.id : e.source] ?? -1;
     const tl = _pLevel[typeof e.target === "object" ? e.target.id : e.target] ?? -1;
@@ -520,6 +607,12 @@ function renderGraph(data) {
       const tid = typeof d.target === "object" ? d.target.id : d.target;
       openPktInspector(sid, tid);
     });
+
+  // In canvas mode, hide SVG lines and store link data for canvas drawing
+  if (useCanvasEdges) {
+    _canvasLinks = links;
+    linkSel.style("display", "none");
+  }
 
   // ── Nodes ──
   const nodeSel = nodesGroup.selectAll(".node")
@@ -640,11 +733,15 @@ function renderGraph(data) {
 
   simulation = buildSimulation(nodes, links, cx, cy, currentLayout);
   simulation.on("tick", () => {
-    linkSel
-      .attr("x1", d => d.source.x)
-      .attr("y1", d => d.source.y)
-      .attr("x2", d => d.target.x)
-      .attr("y2", d => d.target.y);
+    if (useCanvasEdges) {
+      drawCanvasEdges();
+    } else {
+      linkSel
+        .attr("x1", d => d.source.x)
+        .attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x)
+        .attr("y2", d => d.target.y);
+    }
     nodeSel.attr("transform", d => `translate(${d.x},${d.y})`);
   });
 
@@ -711,9 +808,13 @@ document.querySelectorAll(".layout-btn").forEach(btn => {
     const cy = svg.node().clientHeight / 2;
     simulation = buildSimulation(nodes, links, cx, cy, currentLayout);
     simulation.on("tick", () => {
-      linkSel
-        .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
-        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+      if (useCanvasEdges) {
+        drawCanvasEdges();
+      } else {
+        linkSel
+          .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+          .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+      }
       nodeSel.attr("transform", d => `translate(${d.x},${d.y})`);
     });
     simulation.alpha(0.8).restart();
@@ -1122,6 +1223,13 @@ function hostIcon(type) {
 window.addEventListener("load", () => {
   loadingOverlay.classList.add("hidden");
   modalOverlay.classList.remove("hidden");
+});
+
+window.addEventListener("resize", () => {
+  if (useCanvasEdges) {
+    resizeEdgeCanvas();
+    drawCanvasEdges();
+  }
 });
 
 /* ── Packet Inspector ─────────────────────────────────────────────────────── */
