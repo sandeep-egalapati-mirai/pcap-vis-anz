@@ -247,6 +247,43 @@ function closeModal() {
   fileInput.value = "";
 }
 
+// Loading progress stages: [threshold_pct, label]
+const LOAD_STAGES = [
+  [0,  "Uploading capture…"],
+  [22, "Parsing packets…"],
+  [52, "Classifying hosts…"],
+  [74, "Detecting anomalies…"],
+  [90, "Building graph…"],
+];
+
+function startLoadingProgress() {
+  const bar   = document.getElementById("loading-bar");
+  const stage = document.getElementById("loading-stage");
+  if (!bar || !stage) return null;
+
+  let pct = 0;
+  bar.style.transition = "none";
+  bar.style.width = "0%";
+
+  const tick = setInterval(() => {
+    // Advance quickly to 20%, then slow to 90%
+    const step = pct < 20 ? 3 : pct < 60 ? 0.8 : pct < 85 ? 0.3 : 0.05;
+    pct = Math.min(90, pct + step);
+    bar.style.transition = "width 0.3s ease";
+    bar.style.width = pct + "%";
+
+    const current = LOAD_STAGES.filter(([t]) => pct >= t).pop();
+    if (current) stage.textContent = current[1];
+  }, 120);
+
+  return { stop() {
+    clearInterval(tick);
+    bar.style.transition = "width 0.2s ease";
+    bar.style.width = "100%";
+    if (stage) stage.textContent = "Done";
+  }};
+}
+
 async function uploadFiles(files) {
   // Copy to array immediately — closeModal() clears the live FileList via fileInput.value=""
   const fileArray = Array.from(files);
@@ -261,6 +298,7 @@ async function uploadFiles(files) {
   modalError.textContent = "";
   closeModal();
   loadingOverlay.classList.remove("hidden");
+  const progress = startLoadingProgress();
 
   const form = new FormData();
   for (const file of fileArray) form.append("file", file);
@@ -268,6 +306,7 @@ async function uploadFiles(files) {
   try {
     const resp = await fetch("/upload", { method: "POST", body: form });
     const data = await resp.json();
+    progress && progress.stop();
     if (data.error) {
       showToast(data.error, "error");
       openModal();
@@ -275,6 +314,7 @@ async function uploadFiles(files) {
     }
     loadGraph(data);
   } catch (err) {
+    progress && progress.stop();
     showToast("Upload failed: " + err.message, "error");
     openModal();
   } finally {
@@ -535,42 +575,97 @@ function buildAnomalySidebar(anomalies) {
 
   // Build lookup: ip → highest severity
   anomalyNodeIps = {};
+  const sevOrder = { high: 3, medium: 2, low: 1 };
   anomalies.forEach(a => {
-    const sevOrder = { high: 3, medium: 2, low: 1 };
-    const ips = [a.src, a.dst].filter(Boolean);
-    ips.forEach(ip => {
+    [a.src, a.dst].filter(Boolean).forEach(ip => {
       const cur = anomalyNodeIps[ip];
-      if (!cur || sevOrder[a.severity] > sevOrder[cur]) {
-        anomalyNodeIps[ip] = a.severity;
-      }
+      if (!cur || sevOrder[a.severity] > sevOrder[cur]) anomalyNodeIps[ip] = a.severity;
     });
   });
 
+  // Group anomalies by type + src so repeated alerts collapse into one entry
+  const groups = new Map();
   anomalies.forEach(a => {
+    const key = `${a.type}|${a.src || ""}`;
+    if (!groups.has(key)) groups.set(key, { rep: a, items: [] });
+    groups.get(key).items.push(a);
+  });
+
+  groups.forEach(({ rep, items }) => {
+    const count   = items.length;
+    const summary = count > 1
+      ? _anomalySummary(rep.type, rep.src, count, items)
+      : rep.description;
+
     const div = document.createElement("div");
-    div.className = `anomaly-badge ${a.severity}`;
-    div.innerHTML = `
-      <span class="ab-sev ${a.severity}">${a.severity}</span>
-      <span class="ab-desc">${escHtml(a.description)}</span>
-    `;
-    div.addEventListener("click", () => {
-      // Highlight relevant nodes
-      if (a.src) {
-        const node = graphData && graphData.nodes.find(n => n.ip === a.src);
-        if (node) {
-          selectedNode = node;
-          showDetailPanel(node);
-          detailPanel.classList.add("open");
-          const linkSel = linksGroup.selectAll(".link");
-          const nodeSel = nodesGroup.selectAll(".node");
-          nodeSel.classed("selected", n => n.id === node.id);
-          highlightNode(node, linkSel, nodeSel);
-          setView("graph");
-        }
-      }
-    });
+    div.className = `anomaly-badge ${rep.severity}`;
+
+    if (count > 1) {
+      div.innerHTML = `
+        <span class="ab-sev ${rep.severity}">${rep.severity}</span>
+        <span class="ab-desc">${escHtml(summary)}</span>
+        <button class="ab-expand" aria-label="Expand">▾ ${count}</button>
+      `;
+      const expandBtn = div.querySelector(".ab-expand");
+      let expanded = false;
+      const childList = document.createElement("div");
+      childList.className = "ab-children hidden";
+      items.forEach(a => {
+        const child = document.createElement("div");
+        child.className = "ab-child";
+        child.textContent = a.description;
+        child.addEventListener("click", (e) => { e.stopPropagation(); _jumpToAnomaly(a); });
+        childList.appendChild(child);
+      });
+      div.appendChild(childList);
+      expandBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        expanded = !expanded;
+        childList.classList.toggle("hidden", !expanded);
+        expandBtn.textContent = (expanded ? "▴" : "▾") + " " + count;
+      });
+    } else {
+      div.innerHTML = `
+        <span class="ab-sev ${rep.severity}">${rep.severity}</span>
+        <span class="ab-desc">${escHtml(summary)}</span>
+      `;
+    }
+
+    div.addEventListener("click", () => _jumpToAnomaly(rep));
     list.appendChild(div);
   });
+}
+
+function _anomalySummary(type, src, count, items) {
+  const dsts = [...new Set(items.map(a => a.dst).filter(Boolean))];
+  switch (type) {
+    case "port_scan":
+      return `Port scan from ${src} → ${count} target${count > 1 ? "s" : ""}`;
+    case "beaconing":
+      return `Beaconing from ${src} to ${count} destination${count > 1 ? "s" : ""}`;
+    case "exfiltration":
+      return `Data exfiltration from ${src} (${count} connections)`;
+    case "suspicious_port":
+      return `Suspicious ports on ${src} (${count} instances)`;
+    case "cleartext_credentials":
+      return `Cleartext credentials on ${count} connection${count > 1 ? "s" : ""}`;
+    default:
+      return `${type.replace(/_/g, " ")} — ${count} instance${count > 1 ? "s" : ""}`;
+  }
+}
+
+function _jumpToAnomaly(a) {
+  if (!a.src) return;
+  const node = graphData && graphData.nodes.find(n => n.ip === a.src);
+  if (!node) return;
+  selectedNode = node;
+  showDetailPanel(node);
+  detailPanel.classList.add("open");
+  const linkSel = linksGroup.selectAll(".link");
+  const nodeSel = nodesGroup.selectAll(".node");
+  nodeSel.classed("selected", n => n.id === node.id);
+  highlightNode(node, linkSel, nodeSel);
+  setView("graph");
 }
 
 /* ── Canvas edge rendering (GPU-composited) ──────────────────────────────── */
@@ -1915,62 +2010,104 @@ function escHtml(s) {
 })();
 
 /* ── Connection Table View ───────────────────────────────────────────────── */
-function renderConnTable() {
-  if (!graphData) return;
-  const tbody = document.getElementById("conn-tbody");
-  tbody.innerHTML = "";
+/* ── Connection table with virtual scrolling ─────────────────────────────── */
+const VT_ROW_H  = 34;   // must match CSS height on tbody tr
+const VT_BUFFER = 8;    // extra rows rendered above and below the viewport
 
-  let edges = [...graphData.edges];
+let _vtRows = [];        // current sorted + decorated edge array
 
-  // Sort
-  edges.sort((a, b) => {
-    const av = a[tableSort.col] || 0;
-    const bv = b[tableSort.col] || 0;
-    if (typeof av === "string") return tableSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
-    return tableSort.dir === "asc" ? av - bv : bv - av;
-  });
-
-  // Apply protocol + host type filters
+function _buildConnRows() {
+  if (!graphData) return [];
   const nodeMap = {};
-  graphData.nodes.forEach(n => nodeMap[n.ip] = n);
+  graphData.nodes.forEach(n => { nodeMap[n.ip] = n; });
 
-  edges.forEach(e => {
-    const srcNode = nodeMap[e.source];
-    const dstNode = nodeMap[e.target];
-    const protoOk = e.protocols.some(p => activeProtos.has(p));
-    const typeOk = (!srcNode || activeTypes.has(srcNode.host_type)) &&
-                   (!dstNode || activeTypes.has(dstNode.host_type));
-    const searchOk = !searchTerm ||
-      e.source.includes(searchTerm) || e.target.includes(searchTerm);
-
-    const tr = document.createElement("tr");
-    if (!protoOk || !typeOk || !searchOk) tr.className = "ct-faded";
-
-    const duration = (e.first_seen != null && e.last_seen != null)
-      ? (e.last_seen - e.first_seen).toFixed(3) + "s"
-      : "—";
-
-    tr.innerHTML = `
-      <td title="${e.source}">${e.source}</td>
-      <td title="${e.target}">${e.target}</td>
-      <td>${e.protocols.join(", ")}</td>
-      <td>${fmtNum(e.packet_count)}</td>
-      <td>${fmtBytes(e.bytes)}</td>
-      <td>${e.ports.slice(0,8).join(", ")}</td>
-      <td>${duration}</td>
-    `;
-    tr.addEventListener("click", () => {
-      if (currentView === "table") {
-        // Switch to graph + open inspector
-        setView("graph");
-        setTimeout(() => openPktInspector(e.source, e.target), 100);
-      } else {
-        openPktInspector(e.source, e.target);
-      }
+  return [...graphData.edges]
+    .sort((a, b) => {
+      const av = a[tableSort.col] || 0, bv = b[tableSort.col] || 0;
+      if (typeof av === "string")
+        return tableSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      return tableSort.dir === "asc" ? av - bv : bv - av;
+    })
+    .map(e => {
+      const srcNode = nodeMap[e.source], dstNode = nodeMap[e.target];
+      const protoOk  = e.protocols.some(p => activeProtos.has(p));
+      const typeOk   = (!srcNode || activeTypes.has(srcNode.host_type)) &&
+                       (!dstNode || activeTypes.has(dstNode.host_type));
+      const searchOk = !searchTerm ||
+        e.source.includes(searchTerm) || e.target.includes(searchTerm);
+      const faded    = !protoOk || !typeOk || !searchOk;
+      const duration = (e.first_seen != null && e.last_seen != null)
+        ? (e.last_seen - e.first_seen).toFixed(3) + "s" : "—";
+      return { e, faded, duration };
     });
-    tbody.appendChild(tr);
-  });
 }
+
+function _buildConnTr({ e, faded, duration }) {
+  const tr = document.createElement("tr");
+  if (faded) tr.className = "ct-faded";
+  tr.innerHTML = `
+    <td title="${e.source}">${e.source}</td>
+    <td title="${e.target}">${e.target}</td>
+    <td>${e.protocols.join(", ")}</td>
+    <td>${fmtNum(e.packet_count)}</td>
+    <td>${fmtBytes(e.bytes)}</td>
+    <td>${e.ports.slice(0, 8).join(", ")}</td>
+    <td>${duration}</td>
+  `;
+  tr.addEventListener("click", () => {
+    setView("graph");
+    setTimeout(() => openPktInspector(e.source, e.target), 100);
+  });
+  return tr;
+}
+
+function _drawConnRows() {
+  const wrap  = document.getElementById("conn-table-wrap");
+  const tbody = document.getElementById("conn-tbody");
+  if (!wrap || !tbody) return;
+
+  const scrollTop     = wrap.scrollTop;
+  const containerH    = wrap.clientHeight;
+  const start         = Math.max(0, Math.floor(scrollTop / VT_ROW_H) - VT_BUFFER);
+  const end           = Math.min(_vtRows.length,
+                          Math.ceil((scrollTop + containerH) / VT_ROW_H) + VT_BUFFER);
+
+  const frag = document.createDocumentFragment();
+
+  if (start > 0) {
+    const s = document.createElement("tr");
+    s.className = "vt-spacer";
+    s.style.height = (start * VT_ROW_H) + "px";
+    s.innerHTML = `<td colspan="7" style="padding:0;border:none"></td>`;
+    frag.appendChild(s);
+  }
+
+  for (let i = start; i < end; i++) frag.appendChild(_buildConnTr(_vtRows[i]));
+
+  const remaining = _vtRows.length - end;
+  if (remaining > 0) {
+    const s = document.createElement("tr");
+    s.className = "vt-spacer";
+    s.style.height = (remaining * VT_ROW_H) + "px";
+    s.innerHTML = `<td colspan="7" style="padding:0;border:none"></td>`;
+    frag.appendChild(s);
+  }
+
+  tbody.innerHTML = "";
+  tbody.appendChild(frag);
+}
+
+function renderConnTable() {
+  _vtRows = _buildConnRows();
+  _drawConnRows();
+}
+
+// Scroll handler — redraws visible slice on scroll
+let _vtScrollTimer = null;
+document.getElementById("conn-table-wrap").addEventListener("scroll", () => {
+  clearTimeout(_vtScrollTimer);
+  _vtScrollTimer = setTimeout(_drawConnRows, 16);
+});
 
 // Table sort click handlers
 document.querySelectorAll("#conn-table th.sortable").forEach(th => {

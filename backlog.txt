@@ -115,15 +115,15 @@ TIMELINE
 PERFORMANCE & LARGE FILES
 ================================================================================
 
-[ ] 23. Progressive loading indicator
+[x] 23. Progressive loading indicator
         Show a progress bar or streaming status while the backend parses a
         large PCAP instead of a blank loading spinner with no feedback.
 
-[ ] 24. Virtual scrolling in tables
+[x] 24. Virtual scrolling in tables
         Connection table and packet inspector render all rows at once. At
         10 K+ rows this hangs. Windowed rendering (only visible rows) fixes it.
 
-[ ] 25. Anomaly deduplication summary
+[x] 25. Anomaly deduplication summary
         If 200 port-scan anomalies share the same source, collapse them into
         one entry ("Port scan from 192.168.1.5 → 47 hosts") rather than 47
         separate badges.
