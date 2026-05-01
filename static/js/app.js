@@ -302,6 +302,7 @@ function setView(view) {
   const pktIns  = document.getElementById("packet-inspector");
 
   if (view === "graph") {
+    graphWrap.style.display = "";
     graphEl.style.display = "";
     tlBar.classList.remove("hidden");
     tableView.classList.add("hidden");
@@ -310,37 +311,29 @@ function setView(view) {
     document.getElementById("graph-controls").style.display = "";
     document.getElementById("legend").style.display = "";
   } else if (view === "table") {
-    graphEl.style.display = "none";
+    graphWrap.style.display = "none";
     tlBar.classList.add("hidden");
     pktIns.classList.add("hidden");
     graphWrap.classList.remove("pkt-open");
     tableView.classList.remove("hidden");
     dnsView.classList.add("hidden");
     otMapView.classList.add("hidden");
-    document.getElementById("graph-controls").style.display = "none";
-    document.getElementById("legend").style.display = "none";
     renderConnTable();
   } else if (view === "dns") {
-    graphEl.style.display = "none";
+    graphWrap.style.display = "none";
     tlBar.classList.add("hidden");
     pktIns.classList.add("hidden");
-    graphWrap.classList.remove("pkt-open");
     tableView.classList.add("hidden");
     dnsView.classList.remove("hidden");
     otMapView.classList.add("hidden");
-    document.getElementById("graph-controls").style.display = "none";
-    document.getElementById("legend").style.display = "none";
     renderDnsMap();
   } else if (view === "ot") {
-    graphEl.style.display = "none";
+    graphWrap.style.display = "none";
     tlBar.classList.add("hidden");
     pktIns.classList.add("hidden");
-    graphWrap.classList.remove("pkt-open");
     tableView.classList.add("hidden");
     dnsView.classList.add("hidden");
     otMapView.classList.remove("hidden");
-    document.getElementById("graph-controls").style.display = "none";
-    document.getElementById("legend").style.display = "none";
     renderOTMap(graphData);
   }
 }
