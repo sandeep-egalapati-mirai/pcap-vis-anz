@@ -137,6 +137,25 @@ function fmtNum(n) {
   return n.toLocaleString();
 }
 
+/* ── Toast notifications ─────────────────────────────────────────────────── */
+function showToast(msg, type = "info", duration = 4000) {
+  const icons = { error: "✕", success: "✓", info: "ℹ" };
+  const container = document.getElementById("toast-container");
+  const el = document.createElement("div");
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span>
+    <span class="toast-msg">${escHtml ? escHtml(msg) : msg}</span>
+    <button class="toast-close" aria-label="Dismiss">×</button>`;
+  container.appendChild(el);
+
+  const remove = () => {
+    el.classList.add("removing");
+    el.addEventListener("animationend", () => el.remove(), { once: true });
+  };
+  el.querySelector(".toast-close").addEventListener("click", remove);
+  if (duration > 0) setTimeout(remove, duration);
+}
+
 function countryFlag(code) {
   if (!code || code.length !== 2) return "";
   const offset = 127397;
@@ -250,13 +269,13 @@ async function uploadFiles(files) {
     const resp = await fetch("/upload", { method: "POST", body: form });
     const data = await resp.json();
     if (data.error) {
-      alert("Error: " + data.error);
+      showToast(data.error, "error");
       openModal();
       return;
     }
     loadGraph(data);
   } catch (err) {
-    alert("Upload failed: " + err.message);
+    showToast("Upload failed: " + err.message, "error");
     openModal();
   } finally {
     loadingOverlay.classList.add("hidden");
@@ -363,6 +382,7 @@ function setView(view) {
 function buildFilters(data) {
   buildFilterList("proto-filters", data.stats.protocols, activeProtos, PROTO_COLORS, "proto");
   buildFilterList("type-filters",  data.stats.host_types, activeTypes,  HOST_COLORS,  "type");
+  updateFilterUI();
 }
 
 function buildFilterList(containerId, items, activeSet, colorMap, kind) {
@@ -397,12 +417,56 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
     cb.addEventListener("change", () => {
       if (cb.checked) activeSet.add(item);
       else activeSet.delete(item);
+      updateFilterUI();
       applyFilters();
       if (currentView === "table") renderConnTable();
     });
     container.appendChild(div);
   });
 }
+
+function updateFilterUI() {
+  if (!graphData) return;
+  const totalProtos = graphData.stats.protocols.length;
+  const totalTypes  = graphData.stats.host_types.length;
+  const hiddenProtos = totalProtos - activeProtos.size;
+  const hiddenTypes  = totalTypes  - activeTypes.size;
+  const hasSearch    = searchTerm.length > 0;
+  const isFiltered   = hiddenProtos > 0 || hiddenTypes > 0 || hasSearch;
+
+  const protoBadge = document.getElementById("proto-badge");
+  const typeBadge  = document.getElementById("type-badge");
+  if (protoBadge) {
+    protoBadge.textContent = hiddenProtos > 0 ? hiddenProtos + " hidden" : "";
+    protoBadge.classList.toggle("visible", hiddenProtos > 0);
+  }
+  if (typeBadge) {
+    typeBadge.textContent = hiddenTypes > 0 ? hiddenTypes + " hidden" : "";
+    typeBadge.classList.toggle("visible", hiddenTypes > 0);
+  }
+
+  const clearSection = document.getElementById("clear-filters-section");
+  if (clearSection) clearSection.style.display = isFiltered ? "" : "none";
+}
+
+document.getElementById("clear-filters-btn").addEventListener("click", () => {
+  searchBox.value = "";
+  searchTerm = "";
+  // Re-check all checkboxes and restore full sets
+  if (graphData) {
+    activeProtos = new Set(graphData.stats.protocols);
+    activeTypes  = new Set(graphData.stats.host_types);
+    document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
+    document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
+  }
+  updateFilterUI();
+  applyFilters();
+  if (currentView === "table") renderConnTable();
+});
+
+document.getElementById("no-results-clear").addEventListener("click", () => {
+  document.getElementById("clear-filters-btn").click();
+});
 
 function applyFilters() {
   if (!graphData) return;
@@ -425,6 +489,36 @@ function applyFilters() {
   });
 
   if (useCanvasEdges) drawCanvasEdges();
+
+  // Zero-results feedback
+  const noResults = document.getElementById("no-results-msg");
+  if (noResults) noResults.classList.toggle("visible", visibleNodeIds.size === 0 && !!graphData);
+
+  // Fit viewport to visible nodes (debounced so it doesn't fire during simulation)
+  if (visibleNodeIds.size > 0 && visibleNodeIds.size < (graphData.nodes || []).length) {
+    clearTimeout(applyFilters._fitTimer);
+    applyFilters._fitTimer = setTimeout(zoomFitVisible, 300);
+  }
+}
+
+function zoomFitVisible() {
+  // Compute bounding box of non-faded nodes only
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodesGroup.selectAll(".node:not(.faded)").each(function(d) {
+    if (d.x == null || d.y == null) return;
+    minX = Math.min(minX, d.x); minY = Math.min(minY, d.y);
+    maxX = Math.max(maxX, d.x); maxY = Math.max(maxY, d.y);
+  });
+  if (!isFinite(minX)) return;
+  const padding = 60;
+  const svgEl = svg.node();
+  const w = svgEl.clientWidth, h = svgEl.clientHeight;
+  const bw = maxX - minX || 1, bh = maxY - minY || 1;
+  const scale = Math.min((w - padding * 2) / bw, (h - padding * 2) / bh, 3);
+  const tx = w / 2 - scale * (minX + bw / 2);
+  const ty = h / 2 - scale * (minY + bh / 2);
+  svg.transition().duration(500)
+    .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
 }
 
 /* ── Anomaly sidebar ─────────────────────────────────────────────────────── */
@@ -1117,6 +1211,7 @@ searchBox.addEventListener("input", () => {
   clearTimeout(_searchTimer);
   _searchTimer = setTimeout(() => {
     searchTerm = searchBox.value.trim().toLowerCase();
+    updateFilterUI();
     applyFilters();
 
     if (searchTerm && graphData) {
@@ -2926,7 +3021,7 @@ function exportCsv() {
 
 function exportAnomalies() {
   if (!graphData || !(graphData.anomalies || []).length) {
-    alert("No anomalies to export.");
+    showToast("No anomalies to export.", "info");
     return;
   }
   const rows = [["Type", "Severity", "Source", "Destination", "Description"]];
@@ -2949,7 +3044,7 @@ function downloadCsv(rows, filename) {
 
 /* ── Sessions ────────────────────────────────────────────────────────────── */
 document.getElementById("save-session-btn").addEventListener("click", () => {
-  if (!graphData) { alert("No data loaded."); return; }
+  if (!graphData) { showToast("No data loaded.", "error"); return; }
   const sessionData = {
     nodes: graphData.nodes,
     edges: graphData.edges,
@@ -2981,7 +3076,7 @@ document.getElementById("session-file-input").addEventListener("change", (e) => 
       if (!data.nodes || !data.edges) throw new Error("Invalid session file");
       loadGraph(data);
     } catch (err) {
-      alert("Failed to load session: " + err.message);
+      showToast("Failed to load session: " + err.message, "error");
     }
   };
   reader.readAsText(file);
