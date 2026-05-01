@@ -17,7 +17,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Search** — Find nodes by IP address or hostname (300ms debounce)
 - **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, anomalies, OT analysis, conversations)
 - **Four views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout)
-- **OT Map** — Full Purdue Model swimlane view (L0 Field → L5 Enterprise/Internet) with zone grouping brackets (OT Zone / Industrial DMZ / IT Zone), IT/OT demarcation line, device counts per lane, bridge-node detection, cross-zone connection count, and Purdue level badge in the node detail panel
+- **OT Map** — Full Purdue Model swimlane view (L0 Field → L5 Enterprise/Internet) with editable mode: drag-to-reclassify, add/remove devices, risk annotation (Critical → Info), and PNG/JSON export
 - **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap (rAF-throttled for smooth playback)
 - **Packet inspector** — Click any edge or node to open a Wireshark-style panel showing per-packet protocol trees and hex dumps
 - **OT Command Log** — Dedicated tab in the packet inspector showing a chronological OT command history (protocol, direction, function code, result)
@@ -94,6 +94,7 @@ The visualizer detects and classifies industrial control system devices and prot
   - Cross-zone edge highlighting (orange dashed lines)
   - Hover tooltips showing IP, type, Purdue level, protocols, and connection count
   - `purdue_level` field on every node in the `/upload` JSON response
+  - **Editable mode** (✎ Edit button) — drag nodes between Purdue lanes to reclassify, add/remove devices manually, annotate nodes with Critical/High/Medium/Low/Info risk labels (colour ring + badge), then export the annotated map as a **PNG** or structured **JSON**
 - **Purdue level badge** — shown in the node detail panel for every device
 - **Cross-zone edge highlighting** — dashed orange edges in the graph view for any connection spanning Purdue levels
 - **Engineering Workstation auto-detection** — hosts that initiate S7 Download sessions are automatically reclassified from unknown to Engineering Workstation

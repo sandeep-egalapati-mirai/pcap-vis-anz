@@ -1792,6 +1792,21 @@ document.querySelectorAll("#conn-table th.sortable").forEach(th => {
   });
 });
 
+/* ── OT Map Edit State ───────────────────────────────────────────────────── */
+let otEditMode  = false;
+let otLaneY     = {};   // level → y start (promoted from renderOTMap)
+let otLaneH     = {};   // level → height  (promoted from renderOTMap)
+
+const otOverrides  = {};        // nodeId → override purdue_level
+const otRiskLabels = {};        // nodeId → { label, note }
+const otAddedNodes = [];        // manually added nodes
+const otRemovedIds = new Set(); // manually removed node IDs
+
+const OT_RISK_COLORS = {
+  Critical: "#f85149", High: "#ff8c00", Medium: "#d29922",
+  Low:      "#3fb950", Info: "#58a6ff",
+};
+
 /* ── OT Map View (Purdue Model) ──────────────────────────────────────────── */
 const PURDUE_LEVELS = [
   { level: 5,   label: "L5 — Enterprise/Internet", types: new Set([]) /* external IPs via country */ },
@@ -1857,15 +1872,23 @@ function renderOTMap(data) {
     { name: "Unclassified",   desc: "Devices not yet assigned to a level",  color: "#555",    levels: [-1]       },
   ];
 
+  // ── Effective node set (edit overrides applied) ───────────────────────────
+  const effectiveNodes = [
+    ...data.nodes.filter(n => !otRemovedIds.has(n.id)),
+    ...otAddedNodes,
+  ];
+
   // ── Compute node levels ────────────────────────────────────────────────────
   const nodeLevel = {};
-  data.nodes.forEach(n => {
-    nodeLevel[n.id] = (n.purdue_level !== undefined) ? n.purdue_level : purdueLevel(n);
+  effectiveNodes.forEach(n => {
+    nodeLevel[n.id] = (otOverrides[n.id] !== undefined)
+      ? otOverrides[n.id]
+      : (n.purdue_level !== undefined ? n.purdue_level : purdueLevel(n));
   });
 
   // ── Identify bridge nodes ─────────────────────────────────────────────────
   const bridgeIds = new Set();
-  data.nodes.forEach(n => {
+  effectiveNodes.forEach(n => {
     const peers = new Set();
     data.edges.forEach(e => {
       if (e.source === n.id) peers.add(nodeLevel[e.target] ?? -1);
@@ -1888,10 +1911,10 @@ function renderOTMap(data) {
   function chip(text, color) {
     return `<span class="ot-stat-chip" style="color:${color};border-color:${color}55;background:${color}18">${text}</span>`;
   }
-  const otNodeCount = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) >= 0).length;
-  const activeLevelSet = new Set(data.nodes.map(n => nodeLevel[n.id] ?? -1).filter(l => l >= 0));
+  const otNodeCount = effectiveNodes.filter(n => (nodeLevel[n.id] ?? -1) >= 0).length;
+  const activeLevelSet = new Set(effectiveNodes.map(n => nodeLevel[n.id] ?? -1).filter(l => l >= 0));
   document.getElementById("ot-stats-bar").innerHTML = [
-    chip(`${data.nodes.length} devices`, "#58a6ff"),
+    chip(`${effectiveNodes.length} devices`, "#58a6ff"),
     chip(`${activeLevelSet.size} active levels`, "#8b949e"),
     crossZone > 0 ? chip(`⚠ ${crossZone} cross-zone`, "#ff8c00") : chip("✓ no cross-zone", "#3fb950"),
     bridgeCount > 0 ? chip(`⚠ ${bridgeCount} bridge node${bridgeCount > 1 ? "s" : ""}`, "#ff6b35") : null,
@@ -1910,7 +1933,7 @@ function renderOTMap(data) {
     zoneHeaderY[zone.name] = currentY;
     currentY += ZONE_HEADER_H;
     zone.levels.forEach(lvl => {
-      const count = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) === lvl).length;
+      const count = effectiveNodes.filter(n => (nodeLevel[n.id] ?? -1) === lvl).length;
       const numRows = Math.max(1, Math.ceil(count / MAX_PER_ROW));
       laneH[lvl] = LANE_H_BASE + (numRows - 1) * ROW_H;
       laneY[lvl] = currentY;
@@ -1918,6 +1941,8 @@ function renderOTMap(data) {
     });
   });
   const totalH = currentY;
+  otLaneY = laneY;   // promote so startOTDrag can read them
+  otLaneH = laneH;
 
   svg.setAttribute("viewBox", `0 0 ${W} ${totalH}`);
   svg.setAttribute("width", W);
@@ -1974,7 +1999,7 @@ function renderOTMap(data) {
   PURDUE_LEVELS.forEach(row => {
     const y = laneY[row.level];
     const h = laneH[row.level];
-    const laneNodes = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) === row.level);
+    const laneNodes = effectiveNodes.filter(n => (nodeLevel[n.id] ?? -1) === row.level);
 
     const bg = document.createElementNS(ns, "rect");
     bg.setAttribute("x", 0); bg.setAttribute("y", y);
@@ -2030,7 +2055,7 @@ function renderOTMap(data) {
   // ── Position nodes (multi-row) ────────────────────────────────────────────
   const nodePos = {};
   PURDUE_LEVELS.forEach(row => {
-    const laneNodes = data.nodes.filter(n => (nodeLevel[n.id] ?? -1) === row.level);
+    const laneNodes = effectiveNodes.filter(n => (nodeLevel[n.id] ?? -1) === row.level);
     const usableW = W - LABEL_W - 24;
     const yTop = laneY[row.level] + 38;
     laneNodes.forEach((n, j) => {
@@ -2067,13 +2092,14 @@ function renderOTMap(data) {
   });
 
   // ── Draw nodes ────────────────────────────────────────────────────────────
-  data.nodes.forEach(n => {
+  effectiveNodes.forEach(n => {
     const pos = nodePos[n.id];
     if (!pos) return;
     const lvl = nodeLevel[n.id] ?? -1;
     const levelRow = PURDUE_LEVELS.find(r => r.level === lvl);
     const isBridge = bridgeIds.has(n.id);
     const connCount = data.edges.filter(e => e.source === n.id || e.target === n.id).length;
+    const risk = otRiskLabels[n.id];
 
     const g = document.createElementNS(ns, "g");
     g.setAttribute("transform", `translate(${pos.x},${pos.y})`);
@@ -2087,9 +2113,21 @@ function renderOTMap(data) {
       `Purdue: ${levelRow ? levelRow.label : "Unclassified"}`,
       n.protocols.length ? `Protocols: ${n.protocols.join(", ")}` : null,
       `Connections: ${connCount}`,
+      risk?.label ? `Risk: ${risk.label}${risk.note ? " — " + risk.note : ""}` : null,
       isBridge ? "⚠ Bridge node: spans OT↔IT zones" : null,
+      otEditMode ? "Click to annotate risk · Drag to reclassify · × to remove" : null,
     ].filter(Boolean).join("\n");
     g.appendChild(title);
+
+    // Risk ring (outermost, behind bridge ring)
+    if (risk?.label) {
+      const rRing = document.createElementNS(ns, "circle");
+      rRing.setAttribute("r", nodeR + (isBridge ? 12 : 6));
+      rRing.setAttribute("fill",          OT_RISK_COLORS[risk.label] + "22");
+      rRing.setAttribute("stroke",        OT_RISK_COLORS[risk.label]);
+      rRing.setAttribute("stroke-width",  "2");
+      g.appendChild(rRing);
+    }
 
     // Bridge ring
     if (isBridge) {
@@ -2105,7 +2143,8 @@ function renderOTMap(data) {
     const circle = document.createElementNS(ns, "circle");
     circle.setAttribute("r", nodeR);
     circle.setAttribute("fill", hostColor(n.host_type));
-    circle.setAttribute("stroke", "#fff"); circle.setAttribute("stroke-width", "1.5");
+    circle.setAttribute("stroke", otEditMode ? "#aaa" : "#fff");
+    circle.setAttribute("stroke-width", "1.5");
     g.appendChild(circle);
 
     const icon = document.createElementNS(ns, "text");
@@ -2121,13 +2160,211 @@ function renderOTMap(data) {
     lbl.textContent = n.hostname || n.ip;
     g.appendChild(lbl);
 
-    // Hover scale effect
-    g.addEventListener("mouseenter", () => g.setAttribute("transform", `translate(${pos.x},${pos.y}) scale(1.2)`));
+    // Risk badge below label
+    if (risk?.label) {
+      const badge = document.createElementNS(ns, "text");
+      badge.setAttribute("text-anchor", "middle"); badge.setAttribute("dy", nodeR + 24);
+      badge.setAttribute("fill", OT_RISK_COLORS[risk.label]);
+      badge.setAttribute("font-size", "8"); badge.setAttribute("font-weight", "700");
+      badge.setAttribute("font-family", "var(--font-mono)");
+      badge.textContent = risk.label.toUpperCase();
+      g.appendChild(badge);
+    }
+
+    // Edit mode: delete "×" button
+    if (otEditMode) {
+      const del = document.createElementNS(ns, "text");
+      del.setAttribute("x", nodeR - 1); del.setAttribute("y", -nodeR + 1);
+      del.setAttribute("fill", "#f85149"); del.setAttribute("font-size", "13");
+      del.setAttribute("font-weight", "700"); del.setAttribute("text-anchor", "middle");
+      del.setAttribute("dominant-baseline", "middle");
+      del.style.cursor = "pointer";
+      del.textContent = "×";
+      del.addEventListener("click", e => {
+        e.stopPropagation();
+        otRemovedIds.add(n.id);
+        // Also remove from otAddedNodes if it was manually added
+        const ai = otAddedNodes.findIndex(a => a.id === n.id);
+        if (ai !== -1) otAddedNodes.splice(ai, 1);
+        renderOTMap(data);
+      });
+      g.appendChild(del);
+    }
+
+    // Hover scale (suppress during drag)
+    g.addEventListener("mouseenter", () => { if (!otEditMode) g.setAttribute("transform", `translate(${pos.x},${pos.y}) scale(1.2)`); });
     g.addEventListener("mouseleave", () => g.setAttribute("transform", `translate(${pos.x},${pos.y})`));
-    g.addEventListener("click", () => { selectedNode = n; showDetailPanel(n); detailPanel.classList.add("open"); });
+
+    // Click: risk panel in edit mode, detail panel otherwise
+    g.addEventListener("click", e => {
+      if (otEditMode) { e.stopPropagation(); showOTRiskPanel(n); }
+      else { selectedNode = n; showDetailPanel(n); detailPanel.classList.add("open"); }
+    });
+
+    // Drag to reclassify (edit mode only)
+    if (otEditMode) {
+      g.addEventListener("mousedown", e => startOTDrag(e, n, pos, svg));
+    }
 
     nodeLayer.appendChild(g);
   });
+}
+
+/* ── OT Map drag-to-reclassify ───────────────────────────────────────────── */
+function startOTDrag(evt, node, origPos, svgEl) {
+  evt.preventDefault(); evt.stopPropagation();
+  const ns = "http://www.w3.org/2000/svg";
+  const svgRect = svgEl.getBoundingClientRect();
+  const svgW = parseFloat(svgEl.getAttribute("width"))  || svgRect.width;
+  const svgH = parseFloat(svgEl.getAttribute("height")) || svgRect.height;
+  const scaleX = svgW / svgRect.width;
+  const scaleY = svgH / svgRect.height;
+
+  const ghost = document.createElementNS(ns, "circle");
+  ghost.setAttribute("r", 16); ghost.setAttribute("fill", hostColor(node.host_type));
+  ghost.setAttribute("opacity", "0.55"); ghost.setAttribute("stroke", "#fff");
+  ghost.setAttribute("stroke-width", "2"); ghost.setAttribute("pointer-events", "none");
+  svgEl.appendChild(ghost);
+
+  const hi = document.createElementNS(ns, "rect");
+  hi.setAttribute("x", 0); hi.setAttribute("width", svgW);
+  hi.setAttribute("fill", "#ffffff"); hi.setAttribute("opacity", "0.07");
+  hi.setAttribute("pointer-events", "none"); hi.setAttribute("height", 0);
+  svgEl.appendChild(hi);
+
+  let targetLevel = null;
+
+  function onMove(e) {
+    const svgX = (e.clientX - svgRect.left) * scaleX;
+    const svgY = (e.clientY - svgRect.top)  * scaleY;
+    ghost.setAttribute("cx", svgX); ghost.setAttribute("cy", svgY);
+    targetLevel = null;
+    for (const [lvlStr, y] of Object.entries(otLaneY)) {
+      const lvl = parseFloat(lvlStr);
+      const h   = otLaneH[lvl] ?? 76;
+      if (svgY >= y && svgY < y + h) {
+        targetLevel = lvl;
+        hi.setAttribute("y", y); hi.setAttribute("height", h);
+        return;
+      }
+    }
+    hi.setAttribute("height", 0);
+  }
+
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup",   onUp);
+    svgEl.removeChild(ghost); svgEl.removeChild(hi);
+    const currentLvl = otOverrides[node.id] ?? node.purdue_level ?? purdueLevel(node);
+    if (targetLevel !== null && targetLevel !== currentLvl) {
+      otOverrides[node.id] = targetLevel;
+      renderOTMap(graphData);
+    }
+  }
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup",   onUp);
+}
+
+/* ── OT Map risk annotation panel ───────────────────────────────────────── */
+function showOTRiskPanel(node) {
+  const panel    = document.getElementById("ot-risk-panel");
+  const existing = otRiskLabels[node.id] || { label: "", note: "" };
+  document.getElementById("ot-rp-label").textContent = node.hostname || node.ip;
+  document.getElementById("ot-rp-note").value = existing.note || "";
+
+  const btns = document.getElementById("ot-rp-btns");
+  btns.innerHTML = Object.entries(OT_RISK_COLORS).map(([lvl, col]) =>
+    `<button class="ot-risk-btn${existing.label === lvl ? " active" : ""}"
+      data-level="${lvl}" style="border-color:${col};color:${col}">${lvl}</button>`
+  ).join("") +
+  `<button class="ot-risk-btn" data-level="" style="border-color:#555;color:#666">✕ Clear</button>`;
+
+  btns.querySelectorAll(".ot-risk-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const lbl  = btn.dataset.level;
+      const note = document.getElementById("ot-rp-note").value.trim();
+      if (!lbl) { delete otRiskLabels[node.id]; }
+      else      { otRiskLabels[node.id] = { label: lbl, note }; }
+      panel.classList.add("hidden");
+      renderOTMap(graphData);
+    });
+  });
+
+  panel.style.top   = "80px";
+  panel.style.right = "12px";
+  panel.classList.remove("hidden");
+}
+
+/* ── OT Map export (PNG + JSON) ──────────────────────────────────────────── */
+function exportOTMapPng() {
+  if (!graphData) return;
+  const svgEl = document.getElementById("ot-map-svg");
+  const W = parseFloat(svgEl.getAttribute("width"))  || 900;
+  const H = parseFloat(svgEl.getAttribute("height")) || 600;
+  const svgStr = new XMLSerializer().serializeToString(svgEl);
+  const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#0d1117";
+    ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(img, 0, 0, W, H);
+    URL.revokeObjectURL(url);
+    const a = document.createElement("a");
+    a.download = `ot-map-risk-${new Date().toISOString().slice(0, 10)}.png`;
+    a.href = canvas.toDataURL("image/png");
+    a.click();
+  };
+  img.src = url;
+}
+
+function exportOTMapJson() {
+  if (!graphData) return;
+  const effectiveNodes = [
+    ...graphData.nodes.filter(n => !otRemovedIds.has(n.id)),
+    ...otAddedNodes,
+  ];
+  const nodeLvl = {};
+  effectiveNodes.forEach(n => {
+    nodeLvl[n.id] = (otOverrides[n.id] !== undefined)
+      ? otOverrides[n.id]
+      : (n.purdue_level !== undefined ? n.purdue_level : purdueLevel(n));
+  });
+  const payload = {
+    exported_at: new Date().toISOString(),
+    edit_session: {
+      level_overrides: Object.keys(otOverrides).length,
+      risk_labels:     Object.keys(otRiskLabels).length,
+      added_nodes:     otAddedNodes.length,
+      removed_nodes:   otRemovedIds.size,
+    },
+    nodes: effectiveNodes.map(n => ({
+      ip: n.ip, hostname: n.hostname || null,
+      host_type: n.host_type,
+      purdue_level: nodeLvl[n.id],
+      purdue_level_original: n.purdue_level ?? purdueLevel(n),
+      purdue_level_overridden: otOverrides[n.id] !== undefined,
+      risk_label: otRiskLabels[n.id]?.label || null,
+      risk_note:  otRiskLabels[n.id]?.note  || null,
+      protocols:  n.protocols,
+      mac: n.mac, mac_vendor: n.mac_vendor,
+      is_private: n.is_private,
+      added_manually: n.added_manually || false,
+    })),
+    edges: graphData.edges
+      .filter(e => !otRemovedIds.has(e.source) && !otRemovedIds.has(e.target))
+      .map(e => ({ source: e.source, target: e.target,
+        protocols: e.protocols, packet_count: e.packet_count, bytes: e.bytes })),
+  };
+  const ts   = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url  = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `ot-map-${ts}.json`; a.click();
+  URL.revokeObjectURL(url);
 }
 
 /* ── DNS Map View ────────────────────────────────────────────────────────── */
@@ -2200,6 +2437,54 @@ document.getElementById("exp-png").addEventListener("click", () => {
   exportPng();
   document.getElementById("export-menu").classList.add("hidden");
 });
+
+/* ── OT Map toolbar wiring ───────────────────────────────────────────────── */
+document.getElementById("ot-edit-btn").addEventListener("click", () => {
+  otEditMode = !otEditMode;
+  const btn = document.getElementById("ot-edit-btn");
+  btn.textContent = otEditMode ? "✓ Editing" : "✎ Edit";
+  btn.classList.toggle("active", otEditMode);
+  document.getElementById("ot-add-btn").classList.toggle("hidden", !otEditMode);
+  document.getElementById("ot-map-view").classList.toggle("ot-edit-active", otEditMode);
+  document.getElementById("ot-risk-panel").classList.add("hidden");
+  if (graphData) renderOTMap(graphData);
+});
+
+document.getElementById("ot-add-btn").addEventListener("click", () =>
+  document.getElementById("ot-add-modal").classList.remove("hidden"));
+
+document.getElementById("ot-am-close").addEventListener("click", () =>
+  document.getElementById("ot-add-modal").classList.add("hidden"));
+
+document.getElementById("ot-am-confirm").addEventListener("click", () => {
+  const ip = document.getElementById("ot-am-ip").value.trim();
+  if (!ip) { document.getElementById("ot-am-ip").focus(); return; }
+  const lvl = parseFloat(document.getElementById("ot-am-level").value);
+  // Prevent duplicate IDs
+  if (otAddedNodes.some(a => a.id === ip) || (graphData && graphData.nodes.some(n => n.id === ip))) {
+    alert(`A device with IP ${ip} already exists.`);
+    return;
+  }
+  otAddedNodes.push({
+    id: ip, ip,
+    hostname:  document.getElementById("ot-am-host").value.trim() || null,
+    host_type: document.getElementById("ot-am-type").value || "Unknown",
+    purdue_level: isNaN(lvl) ? -1 : lvl,
+    protocols: [], services: [], open_ports: [], dns_queries: [], dns_names: [],
+    mac: null, mac_vendor: null, os_hint: null, is_private: true,
+    flags: [], geo: null, ot_role: "unknown",
+    modbus_unit_ids: [], dnp3_addresses: [], added_manually: true,
+  });
+  ["ot-am-ip", "ot-am-host"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("ot-add-modal").classList.add("hidden");
+  renderOTMap(graphData);
+});
+
+document.getElementById("ot-rp-close").addEventListener("click", () =>
+  document.getElementById("ot-risk-panel").classList.add("hidden"));
+
+document.getElementById("ot-export-png-btn").addEventListener("click", exportOTMapPng);
+document.getElementById("ot-export-json-btn").addEventListener("click", exportOTMapJson);
 document.getElementById("exp-csv").addEventListener("click", () => {
   exportCsv();
   document.getElementById("export-menu").classList.add("hidden");

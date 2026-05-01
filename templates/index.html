@@ -207,7 +207,53 @@
         <div id="ot-stats-bar"></div>
         <div id="ot-zone-count"></div>
       </div>
+
+      <div id="ot-toolbar">
+        <button id="ot-edit-btn"        class="ot-tb-btn">✎ Edit</button>
+        <button id="ot-add-btn"         class="ot-tb-btn hidden">＋ Add Device</button>
+        <div class="ot-tb-sep"></div>
+        <button id="ot-export-png-btn"  class="ot-tb-btn">⬇ PNG</button>
+        <button id="ot-export-json-btn" class="ot-tb-btn">⬇ JSON</button>
+      </div>
+
       <svg id="ot-map-svg"></svg>
+
+      <div id="ot-risk-panel" class="hidden">
+        <div class="ot-rp-hdr">
+          <span id="ot-rp-label"></span>
+          <button id="ot-rp-close">×</button>
+        </div>
+        <div id="ot-rp-btns"></div>
+        <textarea id="ot-rp-note" rows="2" placeholder="Risk note (optional)…"></textarea>
+      </div>
+
+      <div id="ot-add-modal" class="hidden">
+        <div class="ot-modal-hdr">Add Device <button id="ot-am-close">×</button></div>
+        <div class="ot-modal-body">
+          <input  id="ot-am-ip"   placeholder="IP address *" />
+          <input  id="ot-am-host" placeholder="Hostname (optional)" />
+          <select id="ot-am-type">
+            <option value="">— Device type —</option>
+            <option>PLC</option><option>RTU</option><option>IED</option>
+            <option>HMI</option><option>SCADA Server</option><option>DCS</option>
+            <option>Historian</option><option>Engineering Workstation</option>
+            <option>Building Controller</option><option>Field Device</option>
+            <option>IoT Sensor</option><option>VPN Gateway</option>
+            <option>Windows Host</option><option>Web Server</option>
+          </select>
+          <select id="ot-am-level">
+            <option value="5">L5 — Enterprise/Internet</option>
+            <option value="4">L4 — Business Logistics</option>
+            <option value="3.5">L3.5 — Industrial DMZ</option>
+            <option value="3">L3 — Supervisory / Ops</option>
+            <option value="2">L2 — Control / HMI</option>
+            <option value="1">L1 — PLC / RTU</option>
+            <option value="0">L0 — Field Devices</option>
+            <option value="-1" selected>? — Unclassified</option>
+          </select>
+          <button id="ot-am-confirm">Add Device</button>
+        </div>
+      </div>
     </div>
 
     <!-- DNS Map view -->
