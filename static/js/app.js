@@ -504,6 +504,7 @@ function drawCanvasEdges() {
   ctx.save();
   ctx.translate(t.x, t.y);
   ctx.scale(t.k, t.k);
+  ctx.globalAlpha = 0.7;
 
   for (const d of _canvasLinks) {
     const protoOk = d.protocols.some(p => activeProtos.has(p));
@@ -513,8 +514,8 @@ function drawCanvasEdges() {
 
     const sx = typeof d.source === "object" ? d.source.x : 0;
     const sy = typeof d.source === "object" ? d.source.y : 0;
-    const tx = typeof d.target === "object" ? d.target.x : 0;
-    const ty = typeof d.target === "object" ? d.target.y : 0;
+    const ex = typeof d.target === "object" ? d.target.x : 0;
+    const ey = typeof d.target === "object" ? d.target.y : 0;
 
     const sl = _canvasPLevel[sid] ?? -1;
     const tl = _canvasPLevel[tid] ?? -1;
@@ -522,10 +523,9 @@ function drawCanvasEdges() {
 
     ctx.beginPath();
     ctx.moveTo(sx, sy);
-    ctx.lineTo(tx, ty);
+    ctx.lineTo(ex, ey);
     ctx.strokeStyle = isCross ? "#ff8c00" : protoColor(d.protocols);
     ctx.lineWidth = 1 + Math.log1p(d.packet_count / _canvasMaxEdgePkt * 50) * 1.2;
-    ctx.globalAlpha = 0.7;
     ctx.stroke();
   }
   ctx.restore();
