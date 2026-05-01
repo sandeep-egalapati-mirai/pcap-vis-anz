@@ -144,7 +144,7 @@ function showToast(msg, type = "info", duration = 4000) {
   const el = document.createElement("div");
   el.className = `toast ${type}`;
   el.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span>
-    <span class="toast-msg">${escHtml ? escHtml(msg) : msg}</span>
+    <span class="toast-msg">${escHtml(msg)}</span>
     <button class="toast-close" aria-label="Dismiss">×</button>`;
   container.appendChild(el);
 
@@ -637,16 +637,16 @@ function buildAnomalySidebar(anomalies) {
 }
 
 function _anomalySummary(type, src, count, items) {
-  const dsts = [...new Set(items.map(a => a.dst).filter(Boolean))];
+  const s = src || "?";
   switch (type) {
     case "port_scan":
-      return `Port scan from ${src} → ${count} target${count > 1 ? "s" : ""}`;
+      return `Port scan from ${s} → ${count} target${count > 1 ? "s" : ""}`;
     case "beaconing":
-      return `Beaconing from ${src} to ${count} destination${count > 1 ? "s" : ""}`;
+      return `Beaconing from ${s} to ${count} destination${count > 1 ? "s" : ""}`;
     case "exfiltration":
-      return `Data exfiltration from ${src} (${count} connections)`;
+      return `Data exfiltration from ${s} (${count} connections)`;
     case "suspicious_port":
-      return `Suspicious ports on ${src} (${count} instances)`;
+      return `Suspicious ports on ${s} (${count} instances)`;
     case "cleartext_credentials":
       return `Cleartext credentials on ${count} connection${count > 1 ? "s" : ""}`;
     default:
