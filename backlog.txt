@@ -1,0 +1,170 @@
+# UI/UX Improvement Backlog
+# Generated 2026-05-01
+
+================================================================================
+QUICK WINS (low effort, immediate impact)
+================================================================================
+
+[ ] 1. "Clear all filters" button
+      One click to reset protocols + host types + search back to defaults.
+      Currently impossible without unchecking every checkbox individually.
+
+[ ] 2. Zero-results feedback
+      When search term or filter combination hides all nodes, show an inline
+      message ("No hosts match — clear filters?") instead of a silently empty
+      graph.
+
+[ ] 3. Toast notifications
+      Replace all alert() calls (upload errors, session load/save errors,
+      export errors) with a transient in-app toast in the top-right corner
+      that auto-dismisses after 4 s. Less hostile UX.
+
+[ ] 4. Active filter count badge
+      Show a count or dot on the sidebar Protocols / Host Types section header
+      when filters are non-default, so users know something is being hidden.
+
+[ ] 5. Fit-to-visible after filtering
+      After applying filters, auto-zoom to the visible node set rather than
+      leaving the viewport unchanged (empty-looking if filtered subset is
+      in one corner).
+
+================================================================================
+NAVIGATION & DISCOVERABILITY
+================================================================================
+
+[ ] 6. Collapsible sidebar
+      Toggle arrow to collapse the 240 px sidebar to a narrow icon rail.
+      Frees up significant canvas space, especially on smaller screens.
+
+[ ] 7. Keyboard shortcuts
+      F = fit graph, 1–4 = switch views, / = focus search, Escape = close
+      panels. A ? overlay lists all shortcuts.
+
+[ ] 8. Expanded right-click context menu
+      Currently only "Add Note". Add: Isolate node (hide all non-neighbours),
+      Copy IP, Highlight all anomalies on this host, Open in Table view.
+
+[ ] 9. Breadcrumb / back button
+      When jumping from anomaly sidebar → node → packet inspector, a back
+      button lets the user retrace steps without losing context.
+
+[ ] 10. View-specific empty states
+       DNS Map and OT Map show nothing before a file is uploaded. Replace with
+       an illustrated placeholder ("Upload a .pcap to see the OT topology").
+
+================================================================================
+GRAPH VIEW
+================================================================================
+
+[ ] 11. Node pinning toggle
+        Push-pin icon on selected nodes to permanently lock position (d.fx /
+        d.fy). Currently dragged nodes snap free on release.
+
+[ ] 12. Minimap
+        Small overview thumbnail (bottom-left corner of canvas) showing the
+        full graph with a viewport rectangle. Essential for large captures.
+
+[ ] 13. Isolate mode
+        Clicking "Isolate" shows only the selected node + direct neighbours;
+        all others hidden. A second click restores. Faster than manual filters.
+
+[ ] 14. Edge label on hover
+        Show packet count as a brief inline label on the hovered edge (already
+        in tooltip, but an inline label is more glanceable).
+
+[ ] 15. Cluster expand / collapse
+        In Cluster layout, clicking the cluster centre collapses all nodes of
+        that type into one summary node to reduce visual noise.
+
+================================================================================
+PACKET INSPECTOR & DETAIL PANEL
+================================================================================
+
+[ ] 16. Protocol-coloured hex dump
+        Byte regions highlighted by layer: blue = Ethernet, green = IP,
+        orange = TCP, yellow = payload. Makes the hex view actually readable.
+
+[ ] 17. Copy buttons
+        Small copy icon next to IP addresses, hex strings, and field values in
+        the detail panel. Frequent analyst workflow.
+
+[ ] 18. Floating inspector mode
+        Option to detach the packet inspector into a floating / resizable panel
+        instead of always docking at the bottom. Useful on wide monitors.
+
+[ ] 19. Search within packet list
+        A filter input above the packet table in the inspector to narrow by IP,
+        protocol, or info string.
+
+================================================================================
+TIMELINE
+================================================================================
+
+[ ] 20. Brush selection on minimap
+        Click-drag on the minimap bars to select a time window, matching the
+        Wireshark mental model, instead of only using the slider.
+
+[ ] 21. Playback speed control
+        0.5×, 1×, 2×, 5× speed selector next to the play button.
+
+[ ] 22. Timestamp format toggle
+        Switch between absolute (HH:MM:SS) and relative (seconds from first
+        packet) timestamps. Analysts often want both.
+
+================================================================================
+PERFORMANCE & LARGE FILES
+================================================================================
+
+[x] 23. Progressive loading indicator
+        Show a progress bar or streaming status while the backend parses a
+        large PCAP instead of a blank loading spinner with no feedback.
+
+[x] 24. Virtual scrolling in tables
+        Connection table and packet inspector render all rows at once. At
+        10 K+ rows this hangs. Windowed rendering (only visible rows) fixes it.
+
+[x] 25. Anomaly deduplication summary
+        If 200 port-scan anomalies share the same source, collapse them into
+        one entry ("Port scan from 192.168.1.5 → 47 hosts") rather than 47
+        separate badges.
+
+================================================================================
+POLISH & ACCESSIBILITY
+================================================================================
+
+[ ] 26. Persistent filter state
+        Save last-used filter configuration in localStorage so reopening a
+        session doesn't reset everything.
+
+[ ] 27. Light / dark mode toggle
+        Hard-coded dark theme is fine for analysts but a toggle costs ~30 CSS
+        variable overrides and broadens the audience.
+
+[ ] 28. Stats bar sparklines
+        Tiny inline bar charts next to Hosts / Connections / Packets showing
+        protocol or type distribution rather than just a raw number.
+
+[ ] 29. Colour-blind safe palette option
+        Current red/green severity colours may be indistinguishable. A toggle
+        to a deuteranopia-safe scheme (blues / oranges + pattern fills) helps.
+
+================================================================================
+BIGGER IDEAS (higher effort, high impact)
+================================================================================
+
+[ ] 30. PCAP diff / comparison mode
+        Upload two files and highlight what is new: added hosts, new
+        connections, new anomalies. Useful for before/after incident analysis.
+
+[ ] 31. Saved filter presets
+        Name and save a filter combination ("Show only OT + Modbus") for
+        one-click recall.
+
+[ ] 32. Inline anomaly explanation panel
+        Clicking an anomaly badge shows a short contextual explanation of what
+        it means and why it is suspicious (not just the raw description string).
+
+[ ] 33. Dashboard / summary view (5th view)
+        Card-based overview: top talkers, protocol breakdown donut, anomaly
+        severity bar, busiest connections. A quick entry point before drilling
+        into the graph.

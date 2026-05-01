@@ -8,6 +8,15 @@ from flask import Flask, request, jsonify, render_template
 from flask_compress import Compress
 from werkzeug.utils import secure_filename
 
+# GPU acceleration: use CuPy when a CUDA GPU is available, fall back to NumPy
+try:
+    import cupy as _xp
+    _xp.cuda.runtime.getDeviceCount()  # raises if no GPU
+    GPU_AVAILABLE = True
+except Exception:
+    import numpy as _xp
+    GPU_AVAILABLE = False
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
 Compress(app)
@@ -477,7 +486,7 @@ def parse_mqtt(payload_bytes):
             proto_name_len = (payload[0] << 8) | payload[1]
             if len(payload) >= 2 + proto_name_len + 4:
                 proto_name = payload[2:2+proto_name_len].decode("utf-8", errors="replace")
-                connect_flags = payload[2 + proto_name_len + 3]
+                connect_flags = payload[2 + proto_name_len + 1]
                 has_username = bool(connect_flags & 0x80)
                 has_password = bool(connect_flags & 0x40)
                 clean_session = bool(connect_flags & 0x02)
@@ -1023,24 +1032,20 @@ def analyze_anomalies(hosts, connections, packet_store):
                     })
                     break
 
-    # ── Beaconing: regular inter-packet timing ──
+    # ── Beaconing: regular inter-packet timing (vectorized via CuPy/NumPy) ──
     for conn_key, pkts in packet_store.items():
         if len(pkts) < 10:
             continue
-        times = [p["time"] for p in pkts]
-        times.sort()
-        intervals = [times[i+1] - times[i] for i in range(len(times)-1)]
-        if not intervals:
+        times = _xp.array(sorted(p["time"] for p in pkts), dtype=_xp.float64)
+        intervals = _xp.diff(times)
+        if len(intervals) == 0:
             continue
-        mean_interval = sum(intervals) / len(intervals)
+        mean_interval = float(_xp.mean(intervals))
         if mean_interval <= 0:
             continue
-        try:
-            std_interval = statistics.stdev(intervals)
-        except statistics.StatisticsError:
-            continue
-        cv = std_interval / mean_interval  # coefficient of variation
-        if cv < 0.2:  # < 20% of mean
+        std_interval = float(_xp.std(intervals))
+        cv = std_interval / mean_interval
+        if cv < 0.2:
             a, b = conn_key
             anomalies.append({
                 "type": "beaconing",
@@ -2057,6 +2062,7 @@ def merge_results(results):
             "protocols": all_protocols,
             "host_types": all_host_types,
             "truncated": truncated,
+            "gpu": GPU_AVAILABLE,
         },
     }
 
@@ -2128,6 +2134,19 @@ def upload():
                 os.unlink(path)
             except OSError:
                 pass
+
+
+@app.route("/gpu-status")
+def gpu_status():
+    info = {"gpu": GPU_AVAILABLE}
+    if GPU_AVAILABLE:
+        try:
+            dev = _xp.cuda.Device(0)
+            info["device"] = dev.attributes.get("DeviceName", "CUDA GPU")
+            info["memory_mb"] = dev.mem_info[1] // (1024 * 1024)
+        except Exception:
+            pass
+    return jsonify(info)
 
 
 @app.route("/session-schema")

@@ -11,7 +11,10 @@
 <!-- ── Loading overlay ─────────────────────────────────────────────────── -->
 <div id="loading-overlay">
   <div class="spinner"></div>
-  <p>Parsing network capture&hellip;</p>
+  <p id="loading-stage">Uploading capture&hellip;</p>
+  <div id="loading-bar-wrap">
+    <div id="loading-bar"></div>
+  </div>
 </div>
 
 <!-- ── Upload modal ────────────────────────────────────────────────────── -->
@@ -31,6 +34,9 @@
   </div>
 </div>
 
+<!-- ── Toast container ──────────────────────────────────────────────────── -->
+<div id="toast-container"></div>
+
 <!-- ── Node context menu ────────────────────────────────────────────────── -->
 <div id="ctx-menu" class="hidden">
   <div id="ctx-add-note">✎ Add Note</div>
@@ -46,6 +52,7 @@
       <div class="stat">Hosts: <strong id="stat-hosts">—</strong></div>
       <div class="stat">Connections: <strong id="stat-conns">—</strong></div>
       <div class="stat">Packets: <strong id="stat-pkts">—</strong></div>
+      <div class="stat" id="gpu-badge" style="display:none"></div>
     </div>
 
     <!-- View toggle -->
@@ -86,13 +93,21 @@
       </div>
 
       <div class="sidebar-section">
-        <h3>Protocols</h3>
+        <div class="filter-section-header">
+          <h3>Protocols <span class="filter-badge" id="proto-badge"></span></h3>
+        </div>
         <div id="proto-filters"></div>
       </div>
 
       <div class="sidebar-section">
-        <h3>Host Types</h3>
+        <div class="filter-section-header">
+          <h3>Host Types <span class="filter-badge" id="type-badge"></span></h3>
+        </div>
         <div id="type-filters"></div>
+      </div>
+
+      <div class="sidebar-section" id="clear-filters-section" style="display:none">
+        <button id="clear-filters-btn">✕ Clear all filters</button>
       </div>
 
       <div class="sidebar-section" id="anomaly-section" style="display:none">
@@ -104,7 +119,17 @@
 
     <!-- Graph view -->
     <div id="graph-wrap">
+      <canvas id="edge-canvas"></canvas>
       <svg id="graph-svg"></svg>
+
+      <!-- Zero-results overlay -->
+      <div id="no-results-msg">
+        <div id="no-results-inner">
+          <div id="no-results-icon">⊘</div>
+          <div id="no-results-text">No hosts match the current filters</div>
+          <button id="no-results-clear">Clear filters</button>
+        </div>
+      </div>
 
       <!-- Truncation banner -->
       <div id="trunc-banner">

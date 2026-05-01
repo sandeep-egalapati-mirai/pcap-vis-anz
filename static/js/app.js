@@ -137,6 +137,25 @@ function fmtNum(n) {
   return n.toLocaleString();
 }
 
+/* ── Toast notifications ─────────────────────────────────────────────────── */
+function showToast(msg, type = "info", duration = 4000) {
+  const icons = { error: "✕", success: "✓", info: "ℹ" };
+  const container = document.getElementById("toast-container");
+  const el = document.createElement("div");
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span>
+    <span class="toast-msg">${escHtml(msg)}</span>
+    <button class="toast-close" aria-label="Dismiss">×</button>`;
+  container.appendChild(el);
+
+  const remove = () => {
+    el.classList.add("removing");
+    el.addEventListener("animationend", () => el.remove(), { once: true });
+  };
+  el.querySelector(".toast-close").addEventListener("click", remove);
+  if (duration > 0) setTimeout(remove, duration);
+}
+
 function countryFlag(code) {
   if (!code || code.length !== 2) return "";
   const offset = 127397;
@@ -155,6 +174,14 @@ let currentView  = "graph";  // "graph" | "table" | "dns" | "ot"
 let currentLayout = "force"; // "force" | "radial" | "cluster"
 let anomalyNodeIps = {};     // ip → highest severity
 let tableSort = { col: "packet_count", dir: "desc" };
+
+// Canvas edge rendering (GPU-composited, activated for large graphs)
+const CANVAS_THRESHOLD = 150;  // node count above which canvas edges are used
+let useCanvasEdges = false;
+let currentZoomTransform = d3.zoomIdentity;
+let _canvasLinks = [];
+let _canvasPLevel = {};
+let _canvasMaxEdgePkt = 1;
 
 // Timeline state
 let tlPlaying = false;
@@ -185,7 +212,11 @@ const nodesGroup = zoomGroup.append("g").attr("id", "nodes-layer");
 
 const zoom = d3.zoom()
   .scaleExtent([0.05, 8])
-  .on("zoom", (e) => zoomGroup.attr("transform", e.transform));
+  .on("zoom", (e) => {
+    zoomGroup.attr("transform", e.transform);
+    currentZoomTransform = e.transform;
+    if (useCanvasEdges) drawCanvasEdges();
+  });
 svg.call(zoom);
 
 /* ── Upload modal ─────────────────────────────────────────────────────────── */
@@ -216,6 +247,43 @@ function closeModal() {
   fileInput.value = "";
 }
 
+// Loading progress stages: [threshold_pct, label]
+const LOAD_STAGES = [
+  [0,  "Uploading capture…"],
+  [22, "Parsing packets…"],
+  [52, "Classifying hosts…"],
+  [74, "Detecting anomalies…"],
+  [90, "Building graph…"],
+];
+
+function startLoadingProgress() {
+  const bar   = document.getElementById("loading-bar");
+  const stage = document.getElementById("loading-stage");
+  if (!bar || !stage) return null;
+
+  let pct = 0;
+  bar.style.transition = "none";
+  bar.style.width = "0%";
+
+  const tick = setInterval(() => {
+    // Advance quickly to 20%, then slow to 90%
+    const step = pct < 20 ? 3 : pct < 60 ? 0.8 : pct < 85 ? 0.3 : 0.05;
+    pct = Math.min(90, pct + step);
+    bar.style.transition = "width 0.3s ease";
+    bar.style.width = pct + "%";
+
+    const current = LOAD_STAGES.filter(([t]) => pct >= t).pop();
+    if (current) stage.textContent = current[1];
+  }, 120);
+
+  return { stop() {
+    clearInterval(tick);
+    bar.style.transition = "width 0.2s ease";
+    bar.style.width = "100%";
+    if (stage) stage.textContent = "Done";
+  }};
+}
+
 async function uploadFiles(files) {
   // Copy to array immediately — closeModal() clears the live FileList via fileInput.value=""
   const fileArray = Array.from(files);
@@ -230,6 +298,7 @@ async function uploadFiles(files) {
   modalError.textContent = "";
   closeModal();
   loadingOverlay.classList.remove("hidden");
+  const progress = startLoadingProgress();
 
   const form = new FormData();
   for (const file of fileArray) form.append("file", file);
@@ -237,14 +306,16 @@ async function uploadFiles(files) {
   try {
     const resp = await fetch("/upload", { method: "POST", body: form });
     const data = await resp.json();
+    progress && progress.stop();
     if (data.error) {
-      alert("Error: " + data.error);
+      showToast(data.error, "error");
       openModal();
       return;
     }
     loadGraph(data);
   } catch (err) {
-    alert("Upload failed: " + err.message);
+    progress && progress.stop();
+    showToast("Upload failed: " + err.message, "error");
     openModal();
   } finally {
     loadingOverlay.classList.add("hidden");
@@ -272,6 +343,15 @@ function loadGraph(data) {
   document.getElementById("stat-hosts").textContent = fmtNum(data.stats.total_hosts);
   document.getElementById("stat-conns").textContent = fmtNum(data.stats.total_connections);
   document.getElementById("stat-pkts").textContent  = fmtNum(data.stats.total_packets);
+
+  // GPU badge
+  const gpuBadge = document.getElementById("gpu-badge");
+  if (gpuBadge) {
+    const hasGpu = !!data.stats.gpu;
+    gpuBadge.textContent = hasGpu ? "⚡ GPU" : "CPU";
+    gpuBadge.className = hasGpu ? "stat gpu-active" : "stat gpu-inactive";
+    gpuBadge.style.display = "";
+  }
 
   // Build filter sets
   activeProtos = new Set(data.stats.protocols);
@@ -342,6 +422,7 @@ function setView(view) {
 function buildFilters(data) {
   buildFilterList("proto-filters", data.stats.protocols, activeProtos, PROTO_COLORS, "proto");
   buildFilterList("type-filters",  data.stats.host_types, activeTypes,  HOST_COLORS,  "type");
+  updateFilterUI();
 }
 
 function buildFilterList(containerId, items, activeSet, colorMap, kind) {
@@ -376,12 +457,56 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
     cb.addEventListener("change", () => {
       if (cb.checked) activeSet.add(item);
       else activeSet.delete(item);
+      updateFilterUI();
       applyFilters();
       if (currentView === "table") renderConnTable();
     });
     container.appendChild(div);
   });
 }
+
+function updateFilterUI() {
+  if (!graphData) return;
+  const totalProtos = graphData.stats.protocols.length;
+  const totalTypes  = graphData.stats.host_types.length;
+  const hiddenProtos = totalProtos - activeProtos.size;
+  const hiddenTypes  = totalTypes  - activeTypes.size;
+  const hasSearch    = searchTerm.length > 0;
+  const isFiltered   = hiddenProtos > 0 || hiddenTypes > 0 || hasSearch;
+
+  const protoBadge = document.getElementById("proto-badge");
+  const typeBadge  = document.getElementById("type-badge");
+  if (protoBadge) {
+    protoBadge.textContent = hiddenProtos > 0 ? hiddenProtos + " hidden" : "";
+    protoBadge.classList.toggle("visible", hiddenProtos > 0);
+  }
+  if (typeBadge) {
+    typeBadge.textContent = hiddenTypes > 0 ? hiddenTypes + " hidden" : "";
+    typeBadge.classList.toggle("visible", hiddenTypes > 0);
+  }
+
+  const clearSection = document.getElementById("clear-filters-section");
+  if (clearSection) clearSection.style.display = isFiltered ? "" : "none";
+}
+
+document.getElementById("clear-filters-btn").addEventListener("click", () => {
+  searchBox.value = "";
+  searchTerm = "";
+  // Re-check all checkboxes and restore full sets
+  if (graphData) {
+    activeProtos = new Set(graphData.stats.protocols);
+    activeTypes  = new Set(graphData.stats.host_types);
+    document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
+    document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
+  }
+  updateFilterUI();
+  applyFilters();
+  if (currentView === "table") renderConnTable();
+});
+
+document.getElementById("no-results-clear").addEventListener("click", () => {
+  document.getElementById("clear-filters-btn").click();
+});
 
 function applyFilters() {
   if (!graphData) return;
@@ -402,6 +527,38 @@ function applyFilters() {
     const visible = protoOk && visibleNodeIds.has(sid) && visibleNodeIds.has(tid);
     d3.select(this).classed("faded", !visible);
   });
+
+  if (useCanvasEdges) drawCanvasEdges();
+
+  // Zero-results feedback
+  const noResults = document.getElementById("no-results-msg");
+  if (noResults) noResults.classList.toggle("visible", visibleNodeIds.size === 0 && !!graphData);
+
+  // Fit viewport to visible nodes (debounced so it doesn't fire during simulation)
+  if (visibleNodeIds.size > 0 && visibleNodeIds.size < (graphData.nodes || []).length) {
+    clearTimeout(applyFilters._fitTimer);
+    applyFilters._fitTimer = setTimeout(zoomFitVisible, 300);
+  }
+}
+
+function zoomFitVisible() {
+  // Compute bounding box of non-faded nodes only
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodesGroup.selectAll(".node:not(.faded)").each(function(d) {
+    if (d.x == null || d.y == null) return;
+    minX = Math.min(minX, d.x); minY = Math.min(minY, d.y);
+    maxX = Math.max(maxX, d.x); maxY = Math.max(maxY, d.y);
+  });
+  if (!isFinite(minX)) return;
+  const padding = 60;
+  const svgEl = svg.node();
+  const w = svgEl.clientWidth, h = svgEl.clientHeight;
+  const bw = maxX - minX || 1, bh = maxY - minY || 1;
+  const scale = Math.min((w - padding * 2) / bw, (h - padding * 2) / bh, 3);
+  const tx = w / 2 - scale * (minX + bw / 2);
+  const ty = h / 2 - scale * (minY + bh / 2);
+  svg.transition().duration(500)
+    .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
 }
 
 /* ── Anomaly sidebar ─────────────────────────────────────────────────────── */
@@ -418,42 +575,149 @@ function buildAnomalySidebar(anomalies) {
 
   // Build lookup: ip → highest severity
   anomalyNodeIps = {};
+  const sevOrder = { high: 3, medium: 2, low: 1 };
   anomalies.forEach(a => {
-    const sevOrder = { high: 3, medium: 2, low: 1 };
-    const ips = [a.src, a.dst].filter(Boolean);
-    ips.forEach(ip => {
+    [a.src, a.dst].filter(Boolean).forEach(ip => {
       const cur = anomalyNodeIps[ip];
-      if (!cur || sevOrder[a.severity] > sevOrder[cur]) {
-        anomalyNodeIps[ip] = a.severity;
-      }
+      if (!cur || sevOrder[a.severity] > sevOrder[cur]) anomalyNodeIps[ip] = a.severity;
     });
   });
 
+  // Group anomalies by type + src so repeated alerts collapse into one entry
+  const groups = new Map();
   anomalies.forEach(a => {
+    const key = `${a.type}|${a.src || ""}`;
+    if (!groups.has(key)) groups.set(key, { rep: a, items: [] });
+    groups.get(key).items.push(a);
+  });
+
+  groups.forEach(({ rep, items }) => {
+    const count   = items.length;
+    const summary = count > 1
+      ? _anomalySummary(rep.type, rep.src, count, items)
+      : rep.description;
+
     const div = document.createElement("div");
-    div.className = `anomaly-badge ${a.severity}`;
-    div.innerHTML = `
-      <span class="ab-sev ${a.severity}">${a.severity}</span>
-      <span class="ab-desc">${escHtml(a.description)}</span>
-    `;
-    div.addEventListener("click", () => {
-      // Highlight relevant nodes
-      if (a.src) {
-        const node = graphData && graphData.nodes.find(n => n.ip === a.src);
-        if (node) {
-          selectedNode = node;
-          showDetailPanel(node);
-          detailPanel.classList.add("open");
-          const linkSel = linksGroup.selectAll(".link");
-          const nodeSel = nodesGroup.selectAll(".node");
-          nodeSel.classed("selected", n => n.id === node.id);
-          highlightNode(node, linkSel, nodeSel);
-          setView("graph");
-        }
-      }
-    });
+    div.className = `anomaly-badge ${rep.severity}`;
+
+    if (count > 1) {
+      div.innerHTML = `
+        <span class="ab-sev ${rep.severity}">${rep.severity}</span>
+        <span class="ab-desc">${escHtml(summary)}</span>
+        <button class="ab-expand" aria-label="Expand">▾ ${count}</button>
+      `;
+      const expandBtn = div.querySelector(".ab-expand");
+      let expanded = false;
+      const childList = document.createElement("div");
+      childList.className = "ab-children hidden";
+      items.forEach(a => {
+        const child = document.createElement("div");
+        child.className = "ab-child";
+        child.textContent = a.description;
+        child.addEventListener("click", (e) => { e.stopPropagation(); _jumpToAnomaly(a); });
+        childList.appendChild(child);
+      });
+      div.appendChild(childList);
+      expandBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        expanded = !expanded;
+        childList.classList.toggle("hidden", !expanded);
+        expandBtn.textContent = (expanded ? "▴" : "▾") + " " + count;
+      });
+    } else {
+      div.innerHTML = `
+        <span class="ab-sev ${rep.severity}">${rep.severity}</span>
+        <span class="ab-desc">${escHtml(summary)}</span>
+      `;
+    }
+
+    div.addEventListener("click", () => _jumpToAnomaly(rep));
     list.appendChild(div);
   });
+}
+
+function _anomalySummary(type, src, count, items) {
+  const s = src || "?";
+  switch (type) {
+    case "port_scan":
+      return `Port scan from ${s} → ${count} target${count > 1 ? "s" : ""}`;
+    case "beaconing":
+      return `Beaconing from ${s} to ${count} destination${count > 1 ? "s" : ""}`;
+    case "exfiltration":
+      return `Data exfiltration from ${s} (${count} connections)`;
+    case "suspicious_port":
+      return `Suspicious ports on ${s} (${count} instances)`;
+    case "cleartext_credentials":
+      return `Cleartext credentials on ${count} connection${count > 1 ? "s" : ""}`;
+    default:
+      return `${type.replace(/_/g, " ")} — ${count} instance${count > 1 ? "s" : ""}`;
+  }
+}
+
+function _jumpToAnomaly(a) {
+  if (!a.src) return;
+  const node = graphData && graphData.nodes.find(n => n.ip === a.src);
+  if (!node) return;
+  selectedNode = node;
+  showDetailPanel(node);
+  detailPanel.classList.add("open");
+  const linkSel = linksGroup.selectAll(".link");
+  const nodeSel = nodesGroup.selectAll(".node");
+  nodeSel.classed("selected", n => n.id === node.id);
+  highlightNode(node, linkSel, nodeSel);
+  setView("graph");
+}
+
+/* ── Canvas edge rendering (GPU-composited) ──────────────────────────────── */
+function resizeEdgeCanvas() {
+  const canvas = document.getElementById("edge-canvas");
+  const svgEl  = document.getElementById("graph-svg");
+  canvas.width  = svgEl.clientWidth;
+  canvas.height = svgEl.clientHeight;
+}
+
+function drawCanvasEdges() {
+  const canvas = document.getElementById("edge-canvas");
+  if (!canvas || !useCanvasEdges) return;
+  const ctx = canvas.getContext("2d");
+  const t = currentZoomTransform;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Collect visible node IDs from the SVG node selection
+  const visibleNodeIds = new Set();
+  nodesGroup.selectAll(".node").each(function(d) {
+    if (!d3.select(this).classed("faded")) visibleNodeIds.add(d.id);
+  });
+
+  ctx.save();
+  ctx.translate(t.x, t.y);
+  ctx.scale(t.k, t.k);
+  ctx.globalAlpha = 0.7;
+
+  for (const d of _canvasLinks) {
+    const protoOk = d.protocols.some(p => activeProtos.has(p));
+    const sid = typeof d.source === "object" ? d.source.id : d.source;
+    const tid = typeof d.target === "object" ? d.target.id : d.target;
+    if (!protoOk || !visibleNodeIds.has(sid) || !visibleNodeIds.has(tid)) continue;
+
+    const sx = typeof d.source === "object" ? d.source.x : 0;
+    const sy = typeof d.source === "object" ? d.source.y : 0;
+    const ex = typeof d.target === "object" ? d.target.x : 0;
+    const ey = typeof d.target === "object" ? d.target.y : 0;
+
+    const sl = _canvasPLevel[sid] ?? -1;
+    const tl = _canvasPLevel[tid] ?? -1;
+    const isCross = sl !== -1 && tl !== -1 && sl !== tl;
+
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(ex, ey);
+    ctx.strokeStyle = isCross ? "#ff8c00" : protoColor(d.protocols);
+    ctx.lineWidth = 1 + Math.log1p(d.packet_count / _canvasMaxEdgePkt * 50) * 1.2;
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /* ── D3 force graph ──────────────────────────────────────────────────────── */
@@ -483,10 +747,22 @@ function renderGraph(data) {
     return 1 + Math.log1p(d.packet_count / maxEdgePkt * 50) * 1.2;
   }
 
+  // ── Canvas edge mode (GPU-composited rendering for large graphs) ──
+  useCanvasEdges = nodes.length > CANVAS_THRESHOLD;
+  _canvasMaxEdgePkt = maxEdgePkt;
+  const edgeCanvas = document.getElementById("edge-canvas");
+  if (useCanvasEdges) {
+    edgeCanvas.style.display = "";
+    resizeEdgeCanvas();
+  } else {
+    edgeCanvas.style.display = "none";
+  }
+
   // ── Links ──
   // Build Purdue level lookup for cross-zone highlighting
   const _pLevel = {};
   nodes.forEach(n => { _pLevel[n.id] = purdueLevel(n.host_type); });
+  _canvasPLevel = _pLevel;
   const _crossCount = links.filter(e => {
     const sl = _pLevel[typeof e.source === "object" ? e.source.id : e.source] ?? -1;
     const tl = _pLevel[typeof e.target === "object" ? e.target.id : e.target] ?? -1;
@@ -520,6 +796,12 @@ function renderGraph(data) {
       const tid = typeof d.target === "object" ? d.target.id : d.target;
       openPktInspector(sid, tid);
     });
+
+  // In canvas mode, hide SVG lines and store link data for canvas drawing
+  if (useCanvasEdges) {
+    _canvasLinks = links;
+    linkSel.style("display", "none");
+  }
 
   // ── Nodes ──
   const nodeSel = nodesGroup.selectAll(".node")
@@ -640,11 +922,15 @@ function renderGraph(data) {
 
   simulation = buildSimulation(nodes, links, cx, cy, currentLayout);
   simulation.on("tick", () => {
-    linkSel
-      .attr("x1", d => d.source.x)
-      .attr("y1", d => d.source.y)
-      .attr("x2", d => d.target.x)
-      .attr("y2", d => d.target.y);
+    if (useCanvasEdges) {
+      drawCanvasEdges();
+    } else {
+      linkSel
+        .attr("x1", d => d.source.x)
+        .attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x)
+        .attr("y2", d => d.target.y);
+    }
     nodeSel.attr("transform", d => `translate(${d.x},${d.y})`);
   });
 
@@ -711,9 +997,13 @@ document.querySelectorAll(".layout-btn").forEach(btn => {
     const cy = svg.node().clientHeight / 2;
     simulation = buildSimulation(nodes, links, cx, cy, currentLayout);
     simulation.on("tick", () => {
-      linkSel
-        .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
-        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+      if (useCanvasEdges) {
+        drawCanvasEdges();
+      } else {
+        linkSel
+          .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+          .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+      }
       nodeSel.attr("transform", d => `translate(${d.x},${d.y})`);
     });
     simulation.alpha(0.8).restart();
@@ -1016,6 +1306,7 @@ searchBox.addEventListener("input", () => {
   clearTimeout(_searchTimer);
   _searchTimer = setTimeout(() => {
     searchTerm = searchBox.value.trim().toLowerCase();
+    updateFilterUI();
     applyFilters();
 
     if (searchTerm && graphData) {
@@ -1122,6 +1413,13 @@ function hostIcon(type) {
 window.addEventListener("load", () => {
   loadingOverlay.classList.add("hidden");
   modalOverlay.classList.remove("hidden");
+});
+
+window.addEventListener("resize", () => {
+  if (useCanvasEdges) {
+    resizeEdgeCanvas();
+    drawCanvasEdges();
+  }
 });
 
 /* ── Packet Inspector ─────────────────────────────────────────────────────── */
@@ -1712,62 +2010,104 @@ function escHtml(s) {
 })();
 
 /* ── Connection Table View ───────────────────────────────────────────────── */
-function renderConnTable() {
-  if (!graphData) return;
-  const tbody = document.getElementById("conn-tbody");
-  tbody.innerHTML = "";
+/* ── Connection table with virtual scrolling ─────────────────────────────── */
+const VT_ROW_H  = 34;   // must match CSS height on tbody tr
+const VT_BUFFER = 8;    // extra rows rendered above and below the viewport
 
-  let edges = [...graphData.edges];
+let _vtRows = [];        // current sorted + decorated edge array
 
-  // Sort
-  edges.sort((a, b) => {
-    const av = a[tableSort.col] || 0;
-    const bv = b[tableSort.col] || 0;
-    if (typeof av === "string") return tableSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
-    return tableSort.dir === "asc" ? av - bv : bv - av;
-  });
-
-  // Apply protocol + host type filters
+function _buildConnRows() {
+  if (!graphData) return [];
   const nodeMap = {};
-  graphData.nodes.forEach(n => nodeMap[n.ip] = n);
+  graphData.nodes.forEach(n => { nodeMap[n.ip] = n; });
 
-  edges.forEach(e => {
-    const srcNode = nodeMap[e.source];
-    const dstNode = nodeMap[e.target];
-    const protoOk = e.protocols.some(p => activeProtos.has(p));
-    const typeOk = (!srcNode || activeTypes.has(srcNode.host_type)) &&
-                   (!dstNode || activeTypes.has(dstNode.host_type));
-    const searchOk = !searchTerm ||
-      e.source.includes(searchTerm) || e.target.includes(searchTerm);
-
-    const tr = document.createElement("tr");
-    if (!protoOk || !typeOk || !searchOk) tr.className = "ct-faded";
-
-    const duration = (e.first_seen != null && e.last_seen != null)
-      ? (e.last_seen - e.first_seen).toFixed(3) + "s"
-      : "—";
-
-    tr.innerHTML = `
-      <td title="${e.source}">${e.source}</td>
-      <td title="${e.target}">${e.target}</td>
-      <td>${e.protocols.join(", ")}</td>
-      <td>${fmtNum(e.packet_count)}</td>
-      <td>${fmtBytes(e.bytes)}</td>
-      <td>${e.ports.slice(0,8).join(", ")}</td>
-      <td>${duration}</td>
-    `;
-    tr.addEventListener("click", () => {
-      if (currentView === "table") {
-        // Switch to graph + open inspector
-        setView("graph");
-        setTimeout(() => openPktInspector(e.source, e.target), 100);
-      } else {
-        openPktInspector(e.source, e.target);
-      }
+  return [...graphData.edges]
+    .sort((a, b) => {
+      const av = a[tableSort.col] || 0, bv = b[tableSort.col] || 0;
+      if (typeof av === "string")
+        return tableSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      return tableSort.dir === "asc" ? av - bv : bv - av;
+    })
+    .map(e => {
+      const srcNode = nodeMap[e.source], dstNode = nodeMap[e.target];
+      const protoOk  = e.protocols.some(p => activeProtos.has(p));
+      const typeOk   = (!srcNode || activeTypes.has(srcNode.host_type)) &&
+                       (!dstNode || activeTypes.has(dstNode.host_type));
+      const searchOk = !searchTerm ||
+        e.source.includes(searchTerm) || e.target.includes(searchTerm);
+      const faded    = !protoOk || !typeOk || !searchOk;
+      const duration = (e.first_seen != null && e.last_seen != null)
+        ? (e.last_seen - e.first_seen).toFixed(3) + "s" : "—";
+      return { e, faded, duration };
     });
-    tbody.appendChild(tr);
-  });
 }
+
+function _buildConnTr({ e, faded, duration }) {
+  const tr = document.createElement("tr");
+  if (faded) tr.className = "ct-faded";
+  tr.innerHTML = `
+    <td title="${e.source}">${e.source}</td>
+    <td title="${e.target}">${e.target}</td>
+    <td>${e.protocols.join(", ")}</td>
+    <td>${fmtNum(e.packet_count)}</td>
+    <td>${fmtBytes(e.bytes)}</td>
+    <td>${e.ports.slice(0, 8).join(", ")}</td>
+    <td>${duration}</td>
+  `;
+  tr.addEventListener("click", () => {
+    setView("graph");
+    setTimeout(() => openPktInspector(e.source, e.target), 100);
+  });
+  return tr;
+}
+
+function _drawConnRows() {
+  const wrap  = document.getElementById("conn-table-wrap");
+  const tbody = document.getElementById("conn-tbody");
+  if (!wrap || !tbody) return;
+
+  const scrollTop     = wrap.scrollTop;
+  const containerH    = wrap.clientHeight;
+  const start         = Math.max(0, Math.floor(scrollTop / VT_ROW_H) - VT_BUFFER);
+  const end           = Math.min(_vtRows.length,
+                          Math.ceil((scrollTop + containerH) / VT_ROW_H) + VT_BUFFER);
+
+  const frag = document.createDocumentFragment();
+
+  if (start > 0) {
+    const s = document.createElement("tr");
+    s.className = "vt-spacer";
+    s.style.height = (start * VT_ROW_H) + "px";
+    s.innerHTML = `<td colspan="7" style="padding:0;border:none"></td>`;
+    frag.appendChild(s);
+  }
+
+  for (let i = start; i < end; i++) frag.appendChild(_buildConnTr(_vtRows[i]));
+
+  const remaining = _vtRows.length - end;
+  if (remaining > 0) {
+    const s = document.createElement("tr");
+    s.className = "vt-spacer";
+    s.style.height = (remaining * VT_ROW_H) + "px";
+    s.innerHTML = `<td colspan="7" style="padding:0;border:none"></td>`;
+    frag.appendChild(s);
+  }
+
+  tbody.innerHTML = "";
+  tbody.appendChild(frag);
+}
+
+function renderConnTable() {
+  _vtRows = _buildConnRows();
+  _drawConnRows();
+}
+
+// Scroll handler — redraws visible slice on scroll
+let _vtScrollTimer = null;
+document.getElementById("conn-table-wrap").addEventListener("scroll", () => {
+  clearTimeout(_vtScrollTimer);
+  _vtScrollTimer = setTimeout(_drawConnRows, 16);
+});
 
 // Table sort click handlers
 document.querySelectorAll("#conn-table th.sortable").forEach(th => {
@@ -2818,7 +3158,7 @@ function exportCsv() {
 
 function exportAnomalies() {
   if (!graphData || !(graphData.anomalies || []).length) {
-    alert("No anomalies to export.");
+    showToast("No anomalies to export.", "info");
     return;
   }
   const rows = [["Type", "Severity", "Source", "Destination", "Description"]];
@@ -2841,7 +3181,7 @@ function downloadCsv(rows, filename) {
 
 /* ── Sessions ────────────────────────────────────────────────────────────── */
 document.getElementById("save-session-btn").addEventListener("click", () => {
-  if (!graphData) { alert("No data loaded."); return; }
+  if (!graphData) { showToast("No data loaded.", "error"); return; }
   const sessionData = {
     nodes: graphData.nodes,
     edges: graphData.edges,
@@ -2873,7 +3213,7 @@ document.getElementById("session-file-input").addEventListener("change", (e) => 
       if (!data.nodes || !data.edges) throw new Error("Invalid session file");
       loadGraph(data);
     } catch (err) {
-      alert("Failed to load session: " + err.message);
+      showToast("Failed to load session: " + err.message, "error");
     }
   };
   reader.readAsText(file);
