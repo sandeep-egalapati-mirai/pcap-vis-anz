@@ -2,6 +2,26 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Branching
+
+Before making major changes (new features, protocol additions, refactors touching multiple files, changes to core data flow), create and check out a feature branch:
+
+```bash
+git checkout -b feature/<short-description>
+```
+
+Major changes include:
+- Adding a new protocol parser or anomaly rule
+- Modifying `analyze_pcap()`, `merge_results()`, or `analyze_anomalies()`
+- Restructuring the frontend rendering pipeline or global state
+- Changing the JSON schema returned by `/upload`
+
+Minor changes (typo fixes, constant tweaks, CSS-only edits) can go directly on `main`.
+
+Once a feature is fully implemented and tests pass, ask the user to review and merge the branch into `main`:
+
+> "Feature is complete and tests pass. Please review and merge `feature/<name>` into `main` when ready."
+
 ## Workflow
 
 After completing any change:
