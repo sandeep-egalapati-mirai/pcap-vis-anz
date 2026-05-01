@@ -3,3 +3,4 @@ flask-compress>=1.14
 scapy>=2.5.0
 werkzeug>=2.3.0
 geoip2>=4.0.0
+numpy>=1.24.0
