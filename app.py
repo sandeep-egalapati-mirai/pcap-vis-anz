@@ -201,12 +201,28 @@ _PURDUE_L2_TYPES = {"HMI", "DCS"}
 _PURDUE_L1_TYPES = {"PLC", "RTU", "IED", "Building Controller"}
 _PURDUE_L0_TYPES = {"Field Device", "IoT Sensor", "Smart Meter"}
 
-def purdue_level_py(host_type: str, country: str | None = None) -> float:
-    """Return the Purdue Model level for a host (5, 4, 3.5, 3, 2, 1, 0, or -1)."""
+def purdue_level_py(
+    host_type: str,
+    country: str | None = None,
+    ot_role: str = "unknown",
+    modbus_unit_ids=None,
+    dnp3_addresses=None,
+) -> float:
+    """Return the Purdue Model level for a host (5, 4, 3.5, 3, 2, 1, 0, or -1).
+
+    OT protocol evidence (ot_role, modbus_unit_ids, dnp3_addresses) demotes
+    a host from L4 (IT/business) to L3 (supervisory) — e.g. a Windows Host
+    running Modbus belongs on the OT side of the DMZ.
+    """
     if country:
         return 5
     if host_type in _PURDUE_L4_TYPES:
-        return 4
+        has_ot_evidence = (
+            ot_role not in ("unknown", "")
+            or bool(modbus_unit_ids)
+            or bool(dnp3_addresses)
+        )
+        return 3 if has_ot_evidence else 4
     if host_type in _PURDUE_L35_TYPES:
         return 3.5
     if host_type in _PURDUE_L3_TYPES:
@@ -1818,7 +1834,13 @@ def analyze_pcap(filepath):
             "ot_role": h.get("ot_role", "unknown"),
             "modbus_unit_ids": sorted(h.get("modbus_unit_ids", set())),
             "dnp3_addresses": sorted(h.get("dnp3_addresses", set())),
-            "purdue_level": purdue_level_py(h["host_type"], geo.get("country_code") if geo else None),
+            "purdue_level": purdue_level_py(
+                h["host_type"],
+                geo.get("country_code") if geo else None,
+                ot_role=h.get("ot_role", "unknown"),
+                modbus_unit_ids=h.get("modbus_unit_ids"),
+                dnp3_addresses=h.get("dnp3_addresses"),
+            ),
         })
 
     edges = []
@@ -1987,6 +2009,13 @@ def merge_results(results):
             "ot_role": mn.get("ot_role", "unknown"),
             "modbus_unit_ids": sorted(mn.get("modbus_unit_ids", set())),
             "dnp3_addresses": sorted(mn.get("dnp3_addresses", set())),
+            "purdue_level": purdue_level_py(
+                mn["host_type"],
+                mn.get("geo", {}).get("country_code") if mn.get("geo") else None,
+                ot_role=mn.get("ot_role", "unknown"),
+                modbus_unit_ids=mn.get("modbus_unit_ids"),
+                dnp3_addresses=mn.get("dnp3_addresses"),
+            ),
         })
 
     edges_out = []

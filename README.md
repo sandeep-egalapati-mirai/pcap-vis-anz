@@ -17,7 +17,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Search** — Find nodes by IP address or hostname (300ms debounce)
 - **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, anomalies, OT analysis, conversations)
 - **Four views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout)
-- **OT Map** — Full Purdue Model swimlane view (L0 Field → L5 Enterprise/Internet) with editable mode: drag-to-reclassify, add/remove devices, risk annotation (Critical → Info), and PNG/JSON export
+- **OT Map** — Full Purdue Model swimlane view (L0 Field → L5 Enterprise/Internet) with D3 zoom/pan (Ctrl+scroll, toolbar buttons), traffic-weighted edges, anomaly callouts (! badge on affected nodes, lane tint for high-severity), cross-zone vs. cross-level edge counting, zone legend, Purdue level tooltips, activeTypes filter integration, OT protocol evidence-based Purdue level assignment, and editable mode: drag-to-reclassify, add/remove devices (inline error on duplicate IP), risk annotation (Critical → Info, panel positioned near clicked node), and PNG/JSON export
 - **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap (rAF-throttled for smooth playback)
 - **Packet inspector** — Click any edge or node to open a Wireshark-style panel showing per-packet protocol trees and hex dumps
 - **OT Command Log** — Dedicated tab in the packet inspector showing a chronological OT command history (protocol, direction, function code, result)

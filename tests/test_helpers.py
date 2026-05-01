@@ -55,3 +55,17 @@ def test_purdue_level_unclassified():
 def test_purdue_level_no_country_is_not_l5():
     assert purdue_level_py("Windows Host") == 4  # no country → L4, not L5
     assert purdue_level_py("Windows Host", country=None) == 4
+
+def test_purdue_level_ot_evidence_demotes_l4_to_l3():
+    # L4 hosts with OT protocol evidence are demoted to L3 (supervisory)
+    assert purdue_level_py("Windows Host", ot_role="master") == 3
+    assert purdue_level_py("Windows Host", modbus_unit_ids=[1, 2]) == 3
+    assert purdue_level_py("Windows Host", dnp3_addresses=[10]) == 3
+    assert purdue_level_py("Web Server", ot_role="outstation") == 3
+    # No OT evidence → stays L4
+    assert purdue_level_py("Windows Host", ot_role="unknown") == 4
+    assert purdue_level_py("Windows Host", modbus_unit_ids=[]) == 4
+    assert purdue_level_py("Windows Host", dnp3_addresses=[]) == 4
+    # Non-L4 types are not affected by OT evidence
+    assert purdue_level_py("PLC", ot_role="master") == 1
+    assert purdue_level_py("HMI", modbus_unit_ids=[1]) == 2

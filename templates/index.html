@@ -209,11 +209,20 @@
       </div>
 
       <div id="ot-toolbar">
-        <button id="ot-edit-btn"        class="ot-tb-btn">✎ Edit</button>
+        <button id="ot-edit-btn"        class="ot-tb-btn" title="Toggle edit mode: drag devices, set risk levels, add/remove">✎ Edit</button>
         <button id="ot-add-btn"         class="ot-tb-btn hidden">＋ Add Device</button>
+        <div class="ot-tb-sep"></div>
+        <button id="ot-zoom-in-btn"     class="ot-tb-btn" title="Zoom in">+</button>
+        <button id="ot-zoom-out-btn"    class="ot-tb-btn" title="Zoom out">−</button>
+        <button id="ot-zoom-fit-btn"    class="ot-tb-btn" title="Fit to view">⊡</button>
         <div class="ot-tb-sep"></div>
         <button id="ot-export-png-btn"  class="ot-tb-btn">⬇ PNG</button>
         <button id="ot-export-json-btn" class="ot-tb-btn">⬇ JSON</button>
+      </div>
+
+      <div id="ot-edit-hint" class="ot-hint-bar hidden">
+        ✎ Edit mode — Click a device to set risk level · Drag to reclassify Purdue level · × to remove
+        <button class="ot-hint-close" id="ot-hint-close-btn">×</button>
       </div>
 
       <svg id="ot-map-svg"></svg>
@@ -251,6 +260,7 @@
             <option value="0">L0 — Field Devices</option>
             <option value="-1" selected>? — Unclassified</option>
           </select>
+          <div id="ot-am-error"></div>
           <button id="ot-am-confirm">Add Device</button>
         </div>
       </div>
