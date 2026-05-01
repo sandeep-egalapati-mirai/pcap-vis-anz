@@ -207,13 +207,19 @@ def purdue_level_py(
     ot_role: str = "unknown",
     modbus_unit_ids=None,
     dnp3_addresses=None,
+    is_private: bool = True,
 ) -> float:
-    """Return the Purdue Model level for a host (5, 4, 3.5, 3, 2, 1, 0, or -1).
+    """Return the Purdue Model level for a host (6, 5, 4, 3.5, 3, 2, 1, 0, or -1).
+
+    Level 6 — Public Internet: any non-private (internet-routable) IP, detected
+    via the is_private flag regardless of whether GeoIP data is available.
 
     OT protocol evidence (ot_role, modbus_unit_ids, dnp3_addresses) demotes
     a host from L4 (IT/business) to L3 (supervisory) — e.g. a Windows Host
     running Modbus belongs on the OT side of the DMZ.
     """
+    if not is_private:
+        return 6
     if country:
         return 5
     if host_type in _PURDUE_L4_TYPES:
@@ -1840,6 +1846,7 @@ def analyze_pcap(filepath):
                 ot_role=h.get("ot_role", "unknown"),
                 modbus_unit_ids=h.get("modbus_unit_ids"),
                 dnp3_addresses=h.get("dnp3_addresses"),
+                is_private=h.get("is_private", True),
             ),
         })
 
@@ -2015,6 +2022,7 @@ def merge_results(results):
                 ot_role=mn.get("ot_role", "unknown"),
                 modbus_unit_ids=mn.get("modbus_unit_ids"),
                 dnp3_addresses=mn.get("dnp3_addresses"),
+                is_private=mn.get("is_private", True),
             ),
         })
 

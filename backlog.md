@@ -20,6 +20,7 @@
 - [x] Backend: `purdue_level_py()` uses OT evidence (ot_role, modbus_unit_ids, dnp3_addresses) to demote L4→L3
 - [x] Backend: `merge_results()` now outputs `purdue_level` for merged nodes
 - [x] Frontend: `purdueLevel()` mirrors OT evidence demotion logic
+- [x] OT Map: Public Internet zone (L6) — all non-RFC1918 IPs automatically placed in a top "Public Internet" lane; no GeoIP database required; zone suppressed when only private IPs present; OT→Internet edges flagged as critical cross-zone
 
 ## Known Issues / Ideas
 

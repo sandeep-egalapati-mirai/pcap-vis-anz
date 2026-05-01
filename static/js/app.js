@@ -1807,7 +1807,8 @@ const OT_RISK_COLORS = {
 
 /* ── OT Map View (Purdue Model) ──────────────────────────────────────────── */
 const PURDUE_LEVELS = [
-  { level: 5,   label: "L5 — Enterprise/Internet", types: new Set([]) /* external IPs via country */ },
+  { level: 6,   label: "L6 — Public Internet",    types: new Set([]) /* all is_private:false */ },
+  { level: 5,   label: "L5 — Enterprise/Internet", types: new Set([]) /* internal corporate edge */ },
   { level: 4,   label: "L4 — Business Logistics",  types: new Set(["Windows Host","Web Server","Mail Server","Directory Server","Database Server"]) },
   { level: 3.5, label: "L3.5 — Industrial DMZ",    types: new Set(["VPN Gateway","Security Tool","Remote Desktop"]) },
   { level: 3,   label: "L3 — Supervisory / Ops",   types: new Set(["SCADA Server","Historian","Engineering Workstation"]) },
@@ -1817,11 +1818,13 @@ const PURDUE_LEVELS = [
   { level: -1,  label: "? — Unclassified",          types: new Set([]) /* catch-all */ },
 ];
 const LEVEL_COLORS = {
+  6: "#100a20",
   5: "#1a2a4a", 4: "#1f3a5f", 3.5: "#3a2800",
   3: "#2d5a27", 2: "#5a4a00", 1: "#5a1a00", 0: "#2a1a3a", [-1]: "#2a2a2a",
 };
 const PURDUE_DESC = {
-  5:   "Corporate network, internet, cloud services",
+  6:   "Public internet, cloud services, and external hosts (non-RFC1918 IPs)",
+  5:   "Corporate network / internet edge",
   4:   "ERP, business servers, IT management",
   3.5: "Firewall/gateway buffer between OT and IT",
   3:   "Historians, SCADA servers, engineering workstations",
@@ -1831,14 +1834,18 @@ const PURDUE_DESC = {
   [-1]: "Devices not yet classified to a Purdue level",
 };
 
-// Zone groupings for the left-margin bracket labels
+// Zone groupings for bridge detection
 const PURDUE_ZONES = [
-  { name: "IT Zone",        levels: new Set([5, 4]),    color: "#2a6aac" },
-  { name: "Industrial DMZ", levels: new Set([3.5]),     color: "#c87000" },
-  { name: "OT Zone",        levels: new Set([3,2,1,0]), color: "#4a8a1a" },
+  { name: "Public Internet", levels: new Set([6]),       color: "#2a1a5a" },
+  { name: "IT Zone",         levels: new Set([5, 4]),    color: "#2a6aac" },
+  { name: "Industrial DMZ",  levels: new Set([3.5]),     color: "#c87000" },
+  { name: "OT Zone",         levels: new Set([3,2,1,0]), color: "#4a8a1a" },
 ];
 
 function purdueLevel(node) {
+  // Public internet: any non-private IP, regardless of geo data availability
+  if (node.is_private === false) return 6;
+  // Legacy: geo-resolved external hosts (GeoIP database present)
   if (node.country || (node.geo && node.geo.country_code)) return 5;
   for (const row of PURDUE_LEVELS) {
     if (row.types.has(node.host_type)) {
@@ -1873,15 +1880,17 @@ function renderOTMap(data) {
 
   // Zone layout — order defines top-to-bottom rendering
   const ZONE_LAYOUT = [
-    { name: "IT Zone",        desc: "Enterprise & business network",        color: "#2a6aac", levels: [5, 4]      },
-    { name: "Industrial DMZ", desc: "Firewall/gateway buffer between zones", color: "#c87000", levels: [3.5]      },
-    { name: "OT Zone",        desc: "Operational Technology (ICS / SCADA)", color: "#4a8a1a", levels: [3, 2, 1, 0]},
-    { name: "Unclassified",   desc: "Devices not yet assigned to a level",  color: "#555",    levels: [-1]       },
+    { name: "Public Internet", desc: "External/internet-facing hosts (non-private IPs)",  color: "#2a1a5a", levels: [6]         },
+    { name: "IT Zone",         desc: "Enterprise & business network",                     color: "#2a6aac", levels: [5, 4]      },
+    { name: "Industrial DMZ",  desc: "Firewall/gateway buffer between zones",             color: "#c87000", levels: [3.5]       },
+    { name: "OT Zone",         desc: "Operational Technology (ICS / SCADA)",              color: "#4a8a1a", levels: [3, 2, 1, 0]},
+    { name: "Unclassified",    desc: "Devices not yet assigned to a level",               color: "#555",    levels: [-1]        },
   ];
 
   // Zone membership for cross-zone detection (zone boundary crossing = security concern)
   const nodeZone = (lvl) => {
-    if (lvl >= 4) return "IT";
+    if (lvl === 6) return "Internet";
+    if (lvl >= 4 && lvl <= 5) return "IT";
     if (lvl === 3.5) return "DMZ";
     if (lvl >= 0 && lvl <= 3) return "OT";
     return null;
@@ -1911,7 +1920,7 @@ function renderOTMap(data) {
       if (e.target === n.id) peerLevels.add(nodeLevel[e.source] ?? -1);
     });
     const hasOT = [...peerLevels].some(l => l >= 0 && l <= 3);
-    const hasIT = [...peerLevels].some(l => l >= 4 && l <= 5);
+    const hasIT = [...peerLevels].some(l => l >= 4 && l <= 6);
     if (hasOT && hasIT) bridgeIds.add(n.id);
   });
 
@@ -1952,11 +1961,15 @@ function renderOTMap(data) {
       : "All connections stay within their security zone.";
 
   // ── Pre-pass: compute dynamic lane heights and Y positions ────────────────
-  // Unclassified zone is skipped entirely if it has no devices
-  const hasUnclassified = effectiveNodes.some(n => (nodeLevel[n.id] ?? -1) === -1);
-  const activeZoneLayout = ZONE_LAYOUT.filter(z =>
-    z.name !== "Unclassified" || hasUnclassified
-  );
+  // Suppress "Public Internet" and "Unclassified" zones when they have no devices
+  const activeZoneLayout = ZONE_LAYOUT.filter(zone => {
+    if (zone.name === "Unclassified" || zone.name === "Public Internet") {
+      return zone.levels.some(lvl =>
+        effectiveNodes.some(n => (nodeLevel[n.id] ?? -1) === lvl)
+      );
+    }
+    return true;
+  });
 
   const laneH = {};
   const laneY = {};

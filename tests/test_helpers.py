@@ -69,3 +69,14 @@ def test_purdue_level_ot_evidence_demotes_l4_to_l3():
     # Non-L4 types are not affected by OT evidence
     assert purdue_level_py("PLC", ot_role="master") == 1
     assert purdue_level_py("HMI", modbus_unit_ids=[1]) == 2
+
+def test_purdue_level_public_ip_is_internet():
+    # Any non-private IP → level 6 regardless of host type
+    assert purdue_level_py("Windows Host", is_private=False) == 6
+    assert purdue_level_py("Web Server",   is_private=False) == 6
+    assert purdue_level_py("Unknown",      is_private=False) == 6
+    # Private IPs stay at their host-type level
+    assert purdue_level_py("Windows Host", is_private=True) == 4
+    assert purdue_level_py("PLC",          is_private=True) == 1
+    # country + is_private=False → still L6 (is_private wins)
+    assert purdue_level_py("Windows Host", country="US", is_private=False) == 6

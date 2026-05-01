@@ -17,7 +17,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Search** — Find nodes by IP address or hostname (300ms debounce)
 - **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, anomalies, OT analysis, conversations)
 - **Four views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout)
-- **OT Map** — Full Purdue Model swimlane view (L0 Field → L5 Enterprise/Internet) with D3 zoom/pan (Ctrl+scroll, toolbar buttons), traffic-weighted edges, anomaly callouts (! badge on affected nodes, lane tint for high-severity), cross-zone vs. cross-level edge counting, zone legend, Purdue level tooltips, activeTypes filter integration, OT protocol evidence-based Purdue level assignment, and editable mode: drag-to-reclassify, add/remove devices (inline error on duplicate IP), risk annotation (Critical → Info, panel positioned near clicked node), and PNG/JSON export
+- **OT Map** — Full Purdue Model swimlane view (L0 Field → L6 Public Internet) with automatic Public Internet zone for non-RFC1918 IPs (no GeoIP required), D3 zoom/pan (Ctrl+scroll, toolbar buttons), traffic-weighted edges, anomaly callouts (! badge on affected nodes, lane tint for high-severity), cross-zone vs. cross-level edge counting, zone legend, Purdue level tooltips, activeTypes filter integration, OT protocol evidence-based Purdue level assignment, and editable mode: drag-to-reclassify, add/remove devices (inline error on duplicate IP), risk annotation (Critical → Info, panel positioned near clicked node), and PNG/JSON export
 - **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap (rAF-throttled for smooth playback)
 - **Packet inspector** — Click any edge or node to open a Wireshark-style panel showing per-packet protocol trees and hex dumps
 - **OT Command Log** — Dedicated tab in the packet inspector showing a chronological OT command history (protocol, direction, function code, result)
@@ -84,14 +84,15 @@ The visualizer detects and classifies industrial control system devices and prot
 - Cleartext OT protocols (Modbus, DNP3, S7, BACnet have no encryption)
 
 **OT Topology:**
-- **OT Map view** — Full Purdue Reference Model swimlane layout (L0 Field → L5 Enterprise/Internet) with:
-  - Zone grouping brackets: **OT Zone** (L0–L3), **Industrial DMZ** (L3.5), **IT Zone** (L4–L5)
+- **OT Map view** — Full Purdue Reference Model swimlane layout (L0 Field → L6 Public Internet) with:
+  - Zone grouping brackets: **Public Internet** (L6, non-private IPs), **IT Zone** (L4–L5), **Industrial DMZ** (L3.5), **OT Zone** (L0–L3)
+  - **Public Internet zone** — all non-RFC1918 IP addresses are automatically placed here, no GeoIP database required; zone is suppressed when only private IPs are present
   - IT/OT demarcation line between L3.5 and L4
   - Level subtitles describing what each Purdue level represents
   - Device counts per lane
   - **Unclassified lane** for devices that don't map to a known Purdue level
-  - **Bridge-node detection**: devices spanning OT↔IT zones highlighted with orange pulsing rings
-  - Cross-zone edge highlighting (orange dashed lines)
+  - **Bridge-node detection**: devices spanning OT↔IT/Internet zones highlighted with orange pulsing rings
+  - Cross-zone edge highlighting (orange dashed lines); OT→Internet edges flagged as critical cross-zone
   - Hover tooltips showing IP, type, Purdue level, protocols, and connection count
   - `purdue_level` field on every node in the `/upload` JSON response
   - **Editable mode** (✎ Edit button) — drag nodes between Purdue lanes to reclassify, add/remove devices manually, annotate nodes with Critical/High/Medium/Low/Info risk labels (colour ring + badge), then export the annotated map as a **PNG** or structured **JSON**
