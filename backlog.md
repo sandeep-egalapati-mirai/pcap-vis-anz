@@ -93,7 +93,8 @@
 - [x] Feature #4: TCP Follow Stream — "Stream" tab in packet inspector; sorts packets by time, groups by direction (client=blue, server=green), decodes hex payload to ASCII with non-printables as `.`; tab hidden when no payloads captured
 - [x] Feature #5: Credentials extraction view — HTTP Basic auth, HTTP form POST, FTP USER/PASS, SMTP AUTH PLAIN/LOGIN, POP3 USER/PASS, IMAP LOGIN; sidebar panel with protocol filter + click-to-reveal passwords; capped at 500/capture, 2000/merge
 - [x] Feature #6: Unified OT command log — chronological global table of all Modbus/DNP3/S7comm/EtherNet/IP/IEC-104/BACnet commands; 5th view tab ("OT Log"); filter by protocol + direction; color-coded read/write/error/diagnostic; 5000 cmd cap per capture
-- [x] Feature #9: Markdown audit report — "Export Audit Report" in export dropdown; generates a `.md` file client-side with: capture summary table, top-10 hosts by risk score, anomalies grouped by severity, OT inventory by Purdue level, TLS/SNI observations, DNS tunneling suspects, captured credentials table, OT write operations; no server round-trip
+- [x] Feature #7: HTTP file transfer detection — detects HTTP server responses with interesting Content-Type (application/*, image/*, audio/*, video/*, text/csv, text/xml) or Content-Disposition: attachment; extracts filename, MIME type, Content-Length, SHA-256 of body bytes; sidebar "File Transfers" panel with hash; capped at 200/capture, 500/merge (deduped by SHA-256); 12 unit tests added
+- [x] Feature #9: Markdown audit report — "Export Audit Report" in export dropdown; generates a `.md` file client-side with: capture summary table, top-10 hosts by risk score, anomalies grouped by severity, OT inventory by Purdue level, TLS/SNI observations, DNS tunneling suspects, captured credentials table, file transfers table, OT write operations; no server round-trip
 
 ## Completed (Bug Fixes)
 

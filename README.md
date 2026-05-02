@@ -22,7 +22,8 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Packet inspector** — Click any edge or node to open a Wireshark-style panel showing per-packet protocol trees and hex dumps
 - **OT Command Log** — Dedicated tab in the packet inspector showing a chronological OT command history (protocol, direction, function code, result)
 - **OT Analysis panel** — Per-node read/write/error ratio bar, master/outstation role badge, Modbus unit IDs, DNP3 link addresses
-- **Exports** — PNG graph screenshot, connections CSV, anomalies CSV, Markdown audit report (capture summary, risk ranking, anomalies by severity, OT inventory, TLS/SNI observations, captured credentials, OT write log)
+- **Exports** — PNG graph screenshot, connections CSV, anomalies CSV, Markdown audit report (capture summary, risk ranking, anomalies by severity, OT inventory, TLS/SNI observations, captured credentials, file transfers, OT write log)
+- **File transfer detection** — detects HTTP file downloads (Content-Disposition: attachment + interesting Content-Type); sidebar "File Transfers" panel with filename, MIME, size, SHA-256 hash; 200 files/capture, 500/merge (deduped by hash)
 - **Session save / load** — Export full analysis to JSON and reload without re-uploading the capture file
 - **Node annotations** — Right-click any node to attach a persistent note (stored in browser localStorage)
 - **Anomaly detection** — 23 detection rules across general network, OT/ICS, and IoT threat categories

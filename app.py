@@ -1793,6 +1793,7 @@ def analyze_pcap(filepath):
     MAX_PACKETS = 1_000_000
     MAX_HOSTS = 50_000
     MAX_CREDS = 500
+    MAX_FILES = 200
     MAX_OT_COMMANDS = 5_000
     processed = 0
     packet_store = defaultdict(list)
@@ -1800,6 +1801,7 @@ def analyze_pcap(filepath):
     first_pkt_time = None
     last_pkt_time = None
     credentials = []
+    files = []
     _cred_ftp   = {}   # conn_key → {"user": str}
     _cred_pop3  = {}   # conn_key → {"user": str}
     _cred_smtp  = {}   # conn_key → {"phase": "user"|"pass", "user": str}
@@ -1807,6 +1809,13 @@ def analyze_pcap(filepath):
     _CRED_SMTP_PORTS  = {25, 587, 465}
     _CRED_POP3_PORTS  = {110}
     _CRED_IMAP_PORTS  = {143}
+    _FILE_MIME_PREFIXES = (
+        "application/", "image/", "audio/", "video/",
+        "text/csv", "text/xml", "text/plain",
+    )
+    _FILE_MIME_SKIP = {"text/html", "text/css", "text/javascript",
+                       "application/json", "application/javascript",
+                       "application/x-www-form-urlencoded"}
     ot_commands = []
 
     try:
@@ -2085,6 +2094,65 @@ def analyze_pcap(filepath):
                                 _cred_rec.update({"time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
                                                   "src": sip, "dst": dip, "dport": dport})
                                 credentials.append(_cred_rec)
+
+                        # HTTP response file detection
+                        if payload and len(files) < MAX_FILES and sport in _CRED_HTTP_PORTS and payload[:5] == b"HTTP/":
+                            try:
+                                _sep = payload.find(b"\r\n\r\n")
+                                if _sep != -1:
+                                    _hdr_raw = payload[:_sep].decode("utf-8", errors="replace")
+                                    _body = payload[_sep + 4:]
+                                    _mime = ""
+                                    _filename = ""
+                                    _clen = None
+                                    for _hl in _hdr_raw.split("\r\n")[1:]:
+                                        if ":" not in _hl:
+                                            continue
+                                        _hk, _hv = _hl.split(":", 1)
+                                        _hk_l = _hk.strip().lower()
+                                        _hv_s = _hv.strip()
+                                        if _hk_l == "content-type":
+                                            _mime = _hv_s.split(";")[0].strip().lower()
+                                        elif _hk_l == "content-disposition":
+                                            _fnm = re.search(r'filename\*?=["\']?([^"\';\r\n]+)', _hv_s, re.IGNORECASE)
+                                            if _fnm:
+                                                _filename = _fnm.group(1).strip().strip("\"'")[:200]
+                                        elif _hk_l == "content-length":
+                                            try:
+                                                _clen = int(_hv_s)
+                                            except ValueError:
+                                                pass
+                                    _interesting = (
+                                        _filename or
+                                        (_mime and any(_mime.startswith(p) for p in _FILE_MIME_PREFIXES)
+                                         and _mime not in _FILE_MIME_SKIP)
+                                    )
+                                    if _interesting and _body:
+                                        _sha = hashlib.sha256(_body).hexdigest()
+                                        _size = _clen if _clen is not None else len(_body)
+                                        if not _filename:
+                                            _ext_map = {
+                                                "application/pdf": ".pdf", "application/zip": ".zip",
+                                                "application/x-zip-compressed": ".zip",
+                                                "application/gzip": ".gz", "application/x-tar": ".tar",
+                                                "application/x-msdownload": ".exe",
+                                                "application/vnd.ms-excel": ".xls",
+                                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+                                                "application/msword": ".doc",
+                                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                                                "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+                                                "text/csv": ".csv", "text/xml": ".xml",
+                                            }
+                                            _ext = _ext_map.get(_mime, "")
+                                            _filename = f"transfer_{_sha[:8]}{_ext}"
+                                        files.append({
+                                            "time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
+                                            "src": sip, "dst": dip,
+                                            "filename": _filename, "mime_type": _mime,
+                                            "size": _size, "sha256": _sha,
+                                        })
+                            except Exception:
+                                pass
 
                 # ── ICMP ─────────────────────────────────────────────────────
                 elif proto_num == 1:
@@ -2479,6 +2547,7 @@ def analyze_pcap(filepath):
         "packets": packets_out,
         "anomalies": anomalies,
         "credentials": credentials,
+        "files": files,
         "ot_commands": ot_commands,
         "stats": {
             "total_packets": processed,
@@ -2500,6 +2569,7 @@ def merge_results(results):
     merged_packets = {}
     merged_anomalies = []
     merged_credentials = []
+    merged_files = []
     merged_ot_commands = []
     anomaly_keys = set()
     total_packets = 0
@@ -2611,6 +2681,15 @@ def merge_results(results):
         if remaining_creds > 0:
             merged_credentials.extend(result.get("credentials", [])[:remaining_creds])
 
+        # Merge files (cap at 500 total, deduplicate by sha256)
+        seen_hashes = {f["sha256"] for f in merged_files}
+        for _f in result.get("files", []):
+            if len(merged_files) >= 500:
+                break
+            if _f["sha256"] not in seen_hashes:
+                merged_files.append(_f)
+                seen_hashes.add(_f["sha256"])
+
         # Merge OT commands (cap at 10000)
         remaining_ot = 10_000 - len(merged_ot_commands)
         if remaining_ot > 0:
@@ -2680,6 +2759,7 @@ def merge_results(results):
         "packets": merged_packets,
         "anomalies": merged_anomalies,
         "credentials": merged_credentials,
+        "files": merged_files,
         "ot_commands": merged_ot_commands,
         "stats": {
             "total_packets": total_packets,
