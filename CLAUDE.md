@@ -78,7 +78,7 @@ Key functions in call order:
 
 | Function | Purpose |
 |---|---|
-| `analyze_pcap(filepath)` | Streams PCAP via scapy `PcapReader`; builds `hosts` dict and `connections` defaultdict; calls protocol parsers on matching ports; caps at 1,000,000 packets and 50 stored packets per connection |
+| `analyze_pcap(filepath)` | Streams PCAP via scapy `RawPcapReader` with manual byte parsing (Eth/IP/IPv6/TCP/UDP/ICMP/ARP); builds `hosts` dict and `connections` defaultdict; calls protocol parsers on matching ports; caps at 1,000,000 packets and 50 stored packets per connection. DNS layer reconstructed from payload bytes only for port 53 traffic. ~30× faster than the old `PcapReader` approach. |
 | `merge_results(results)` | Merges multiple `analyze_pcap` results for multi-file uploads; deduplicates anomalies |
 | `analyze_anomalies(hosts, connections, packet_store)` | Detects port scans, cleartext credentials, beaconing (CV < 0.2), exfiltration (>10 MB to external), suspicious ports, OT/IoT-specific issues |
 | `parse_http / parse_modbus / parse_mqtt / parse_coap` | Deep-inspection parsers called per packet when the port matches |

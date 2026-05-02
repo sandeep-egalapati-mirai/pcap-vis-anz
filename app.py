@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import tempfile
 import statistics
@@ -1405,10 +1406,122 @@ def analyze_anomalies(hosts, connections, packet_store):
     return deduped
 
 
+# ── Hot-loop helpers for RawPcapReader-based packet parsing ──────────────────
+
+_TCP_FLAG_MAP = [
+    (0x01, 'F'), (0x02, 'S'), (0x04, 'R'), (0x08, 'P'),
+    (0x10, 'A'), (0x20, 'U'), (0x40, 'E'), (0x80, 'C'),
+]
+
+
+def _tcp_flag_str(flags_byte):
+    """Render TCP flags byte as compact string (e.g. 'SA' for SYN+ACK)."""
+    return ''.join(c for bit, c in _TCP_FLAG_MAP if flags_byte & bit) or '0'
+
+
+def _ipv6_str(b):
+    """Convert 16 bytes to a compressed IPv6 address string."""
+    return str(ipaddress.IPv6Address(bytes(b)))
+
+
+_ICMP_TYPE_NAMES = {0: "Echo Reply", 3: "Dest Unreachable",
+                    8: "Echo Request", 11: "Time Exceeded"}
+
+
+def _build_packet_detail(raw, rel_t, sip, dip, protocol, plen,
+                         sport, dport, payload, is_ipv6,
+                         tcp_flags, tcp_seq, tcp_ack, tcp_window, tcp_doff_bytes,
+                         udp_len, icmp_type, icmp_code,
+                         smac, dmac, ttl, l3_off, eth_type):
+    """Build the packet-detail dict for the drill-down panel from already-parsed fields."""
+    pd = {
+        "time": rel_t, "src": sip, "dst": dip,
+        "protocol": protocol, "len": plen,
+        "sport": sport, "dport": dport,
+        "layers": [], "hex": "", "info": "",
+        "http": None, "modbus": None, "mqtt": None, "coap": None,
+        "dnp3": None, "s7comm": None, "enip": None,
+        "iec104": None, "bacnet": None,
+    }
+
+    if smac is not None:
+        pd["layers"].append({"name": "Ethernet", "fields": [
+            {"k": "Dst MAC", "v": dmac},
+            {"k": "Src MAC", "v": smac},
+            {"k": "Type",    "v": hex(eth_type)},
+        ]})
+
+    if not is_ipv6 and l3_off + 20 <= len(raw):
+        ihl = (raw[l3_off] & 0x0f) * 4
+        total_len = (raw[l3_off + 2] << 8) | raw[l3_off + 3]
+        ip_id = (raw[l3_off + 4] << 8) | raw[l3_off + 5]
+        df = bool(raw[l3_off + 6] & 0x40)
+        mf = bool(raw[l3_off + 6] & 0x20)
+        ip_flags_str = '+'.join(x for x, cond in [('DF', df), ('MF', mf)] if cond) or '0'
+        pd["layers"].append({"name": "Internet Protocol", "fields": [
+            {"k": "Version",    "v": 4},
+            {"k": "Hdr Length", "v": f"{ihl} bytes"},
+            {"k": "Total Len",  "v": total_len},
+            {"k": "ID",         "v": hex(ip_id)},
+            {"k": "Flags",      "v": ip_flags_str},
+            {"k": "TTL",        "v": ttl},
+            {"k": "Protocol",   "v": raw[l3_off + 9]},
+            {"k": "Src",        "v": sip},
+            {"k": "Dst",        "v": dip},
+        ]})
+    elif is_ipv6 and l3_off + 40 <= len(raw):
+        tc = ((raw[l3_off] & 0x0f) << 4) | (raw[l3_off + 1] >> 4)
+        fl = ((raw[l3_off + 1] & 0x0f) << 16) | (raw[l3_off + 2] << 8) | raw[l3_off + 3]
+        ipv6_plen = (raw[l3_off + 4] << 8) | raw[l3_off + 5]
+        nh = raw[l3_off + 6]
+        pd["layers"].append({"name": "Internet Protocol Version 6", "fields": [
+            {"k": "Version",       "v": 6},
+            {"k": "Traffic Class", "v": tc},
+            {"k": "Flow Label",    "v": hex(fl)},
+            {"k": "Payload Len",   "v": ipv6_plen},
+            {"k": "Next Header",   "v": nh},
+            {"k": "Hop Limit",     "v": ttl},
+            {"k": "Src",           "v": sip},
+            {"k": "Dst",           "v": dip},
+        ]})
+
+    if tcp_flags is not None:
+        flag_str = _tcp_flag_str(tcp_flags)
+        pd["layers"].append({"name": "Transmission Control Protocol", "fields": [
+            {"k": "Src Port", "v": sport},
+            {"k": "Dst Port", "v": dport},
+            {"k": "Seq",      "v": tcp_seq},
+            {"k": "Ack",      "v": tcp_ack},
+            {"k": "Flags",    "v": flag_str},
+            {"k": "Window",   "v": tcp_window},
+        ]})
+        pd["info"] = f"{sport} → {dport} [{flag_str}] Seq={tcp_seq}"
+        if payload:
+            pd["info"] += f" Len={len(payload)}"
+    elif udp_len is not None:
+        pd["layers"].append({"name": "User Datagram Protocol", "fields": [
+            {"k": "Src Port", "v": sport},
+            {"k": "Dst Port", "v": dport},
+            {"k": "Length",   "v": udp_len},
+        ]})
+        pd["info"] = f"{sport} → {dport}"
+    elif icmp_type is not None:
+        pd["layers"].append({"name": "Internet Control Message Protocol", "fields": [
+            {"k": "Type", "v": f"{icmp_type} ({_ICMP_TYPE_NAMES.get(icmp_type, 'Unknown')})"},
+            {"k": "Code", "v": icmp_code},
+        ]})
+        pd["info"] = _ICMP_TYPE_NAMES.get(icmp_type, f"Type {icmp_type}")
+
+    if payload:
+        pd["payload_hex"] = payload[:256].hex()
+    pd["hex"] = raw[:256].hex()
+    return pd
+
+
 def analyze_pcap(filepath):
     try:
-        from scapy.all import IP, IPv6, TCP, UDP, ICMP, ARP, Ether, DNS
-        from scapy.utils import PcapReader
+        from scapy.layers.dns import DNS as _DNS   # reconstructed only for port 53 traffic
+        from scapy.utils import RawPcapReader
     except ImportError as e:
         return {"error": f"scapy not available: {e}"}
 
@@ -1469,46 +1582,81 @@ def analyze_pcap(filepath):
     last_pkt_time = None
 
     try:
-        with PcapReader(filepath) as reader:
-            for pkt in reader:
+        with RawPcapReader(filepath) as reader:
+            for raw, meta in reader:
                 if processed >= MAX_PACKETS:
                     break
                 processed += 1
-                if first_pkt_time is None and hasattr(pkt, "time"):
-                    first_pkt_time = float(pkt.time)
+
+                pkt_time = meta.sec + meta.usec / 1_000_000.0
+                if first_pkt_time is None:
+                    first_pkt_time = pkt_time
+                last_pkt_time = pkt_time
+
+                # ── Ethernet header ───────────────────────────────────────────
+                # NOTE: assumes DLT_EN10MB (standard Ethernet). Non-Ethernet
+                # link types (DLT_NULL, DLT_LINUX_SLL, etc.) will be skipped.
+                if len(raw) < 14:
+                    continue
+
+                smac = ':'.join(f'{b:02x}' for b in raw[0:6])
+                dmac = ':'.join(f'{b:02x}' for b in raw[6:12])
+                ethertype = (raw[12] << 8) | raw[13]
+                l2_off = 14
+
+                if ethertype == 0x8100 and len(raw) >= 18:   # 802.1Q VLAN
+                    ethertype = (raw[16] << 8) | raw[17]
+                    l2_off = 18
+
+                eth_type = ethertype
 
                 # ── ARP ──────────────────────────────────────────────────────
-                if ARP in pkt:
-                    try:
-                        sip = pkt[ARP].psrc
-                        smac = pkt[ARP].hwsrc
-                        if sip and sip not in ("0.0.0.0", "255.255.255.255"):
-                            h = host(sip, smac)
-                            h["protocols"].add("ARP")
-                    except Exception:
-                        pass
+                if ethertype == 0x0806:
+                    if len(raw) >= l2_off + 28:
+                        try:
+                            spa = '.'.join(str(b) for b in raw[l2_off + 14:l2_off + 18])
+                            sha = ':'.join(f'{b:02x}' for b in raw[l2_off + 8:l2_off + 14])
+                            if spa and spa not in ("0.0.0.0", "255.255.255.255"):
+                                h = host(spa, sha)
+                                h["protocols"].add("ARP")
+                        except Exception:
+                            pass
                     continue
 
                 # ── IPv4 / IPv6 ──────────────────────────────────────────────
-                if IP in pkt:
-                    sip = pkt[IP].src
-                    dip = pkt[IP].dst
-                    ttl = pkt[IP].ttl
-                elif IPv6 in pkt:
-                    sip = pkt[IPv6].src
-                    dip = pkt[IPv6].dst
-                    ttl = pkt[IPv6].hlim
+                if ethertype == 0x0800:
+                    if len(raw) < l2_off + 20:
+                        continue
+                    ihl = (raw[l2_off] & 0x0f) * 4
+                    if ihl < 20 or len(raw) < l2_off + ihl:
+                        continue
+                    ttl = raw[l2_off + 8]
+                    proto_num = raw[l2_off + 9]
+                    sip = '.'.join(str(b) for b in raw[l2_off + 12:l2_off + 16])
+                    dip = '.'.join(str(b) for b in raw[l2_off + 16:l2_off + 20])
+                    l3_off = l2_off
+                    l4_off = l3_off + ihl
+                    is_ipv6 = False
+                elif ethertype == 0x86DD:
+                    if len(raw) < l2_off + 40:
+                        continue
+                    ttl = raw[l2_off + 7]       # hop limit
+                    proto_num = raw[l2_off + 6]  # next header
+                    sip = _ipv6_str(raw[l2_off + 8:l2_off + 24])
+                    dip = _ipv6_str(raw[l2_off + 24:l2_off + 40])
+                    l3_off = l2_off
+                    # Fixed 40-byte IPv6 header; extension headers not traversed
+                    l4_off = l3_off + 40
+                    is_ipv6 = True
                 else:
                     continue
 
                 # Cap host table to prevent memory exhaustion from crafted PCAPs
                 if len(hosts) >= MAX_HOSTS and sip not in hosts and dip not in hosts:
                     continue
-                plen = len(pkt)
-                rel_t = round(float(pkt.time) - first_pkt_time, 6) if first_pkt_time else 0
 
-                smac = pkt[Ether].src if Ether in pkt else None
-                dmac = pkt[Ether].dst if Ether in pkt else None
+                plen = meta.wirelen if meta.wirelen > 0 else len(raw)
+                rel_t = round(pkt_time - first_pkt_time, 6) if first_pkt_time else 0
 
                 sh = host(sip, smac)
                 dh = host(dip, dmac)
@@ -1532,91 +1680,115 @@ def analyze_pcap(filepath):
                 if conn["first_seen"] is None:
                     conn["first_seen"] = rel_t
                 conn["last_seen"] = rel_t
-                if hasattr(pkt, "time"):
-                    abs_t = float(pkt.time)
-                    last_pkt_time = abs_t
-                    if conn["abs_first_seen"] is None:
-                        conn["abs_first_seen"] = abs_t
-                    conn["abs_last_seen"] = abs_t
+                if conn["abs_first_seen"] is None:
+                    conn["abs_first_seen"] = pkt_time
+                conn["abs_last_seen"] = pkt_time
+
+                # Initialize transport-layer fields — always defined for drill-down
+                sport = None
+                dport = None
+                payload = b""
+                tcp_flags = None
+                tcp_seq = None
+                tcp_ack = None
+                tcp_window = None
+                tcp_doff_bytes = None
+                udp_len = None
+                icmp_type = None
+                icmp_code = None
 
                 # ── TCP ──────────────────────────────────────────────────────
-                if TCP in pkt:
-                    sport = pkt[TCP].sport
-                    dport = pkt[TCP].dport
-                    protocol = "TCP"
+                if proto_num == 6:
+                    if len(raw) >= l4_off + 20:
+                        sport = (raw[l4_off] << 8) | raw[l4_off + 1]
+                        dport = (raw[l4_off + 2] << 8) | raw[l4_off + 3]
+                        tcp_seq        = int.from_bytes(raw[l4_off + 4:l4_off + 8], 'big')
+                        tcp_ack        = int.from_bytes(raw[l4_off + 8:l4_off + 12], 'big')
+                        tcp_doff_bytes = (raw[l4_off + 12] >> 4) * 4
+                        tcp_flags      = raw[l4_off + 13]
+                        tcp_window     = (raw[l4_off + 14] << 8) | raw[l4_off + 15]
+                        p_off = l4_off + max(tcp_doff_bytes, 20)
+                        payload = raw[p_off:] if p_off < len(raw) else b""
+                        protocol = "TCP"
 
-                    if dport in PORT_LOOKUP:
-                        proto, svc = PORT_LOOKUP[dport]
-                        protocol = proto
-                        dh["dst_ports"].add(dport)
-                        dh["services"].add(svc)
-                        dh["host_type_hints"][svc] += 1
-                    elif sport in PORT_LOOKUP:
-                        proto, svc = PORT_LOOKUP[sport]
-                        protocol = proto
-                        sh["dst_ports"].add(sport)
-                        sh["services"].add(svc)
-                        sh["host_type_hints"][svc] += 1
-                    else:
-                        dh["dst_ports"].add(dport)
+                        if dport in PORT_LOOKUP:
+                            proto_lbl, svc = PORT_LOOKUP[dport]
+                            protocol = proto_lbl
+                            dh["dst_ports"].add(dport)
+                            dh["services"].add(svc)
+                            dh["host_type_hints"][svc] += 1
+                        elif sport in PORT_LOOKUP:
+                            proto_lbl, svc = PORT_LOOKUP[sport]
+                            protocol = proto_lbl
+                            sh["dst_ports"].add(sport)
+                            sh["services"].add(svc)
+                            sh["host_type_hints"][svc] += 1
+                        else:
+                            dh["dst_ports"].add(dport)
 
-                    connections[conn_key]["dst_ports"].add(dport)
+                        connections[conn_key]["dst_ports"].add(dport)
 
                 # ── UDP ──────────────────────────────────────────────────────
-                elif UDP in pkt:
-                    sport = pkt[UDP].sport
-                    dport = pkt[UDP].dport
-                    protocol = "UDP"
+                elif proto_num == 17:
+                    if len(raw) >= l4_off + 8:
+                        sport = (raw[l4_off] << 8) | raw[l4_off + 1]
+                        dport = (raw[l4_off + 2] << 8) | raw[l4_off + 3]
+                        udp_len = (raw[l4_off + 4] << 8) | raw[l4_off + 5]
+                        payload = raw[l4_off + 8:] if l4_off + 8 < len(raw) else b""
+                        protocol = "UDP"
 
-                    if dport in PORT_LOOKUP:
-                        proto, svc = PORT_LOOKUP[dport]
-                        protocol = proto
-                        dh["dst_ports"].add(dport)
-                        dh["services"].add(svc)
-                        dh["host_type_hints"][svc] += 1
-                    elif sport in PORT_LOOKUP:
-                        proto, svc = PORT_LOOKUP[sport]
-                        protocol = proto
-                        sh["dst_ports"].add(sport)
-                        sh["services"].add(svc)
-                        sh["host_type_hints"][svc] += 1
-                    else:
-                        dh["dst_ports"].add(dport)
+                        if dport in PORT_LOOKUP:
+                            proto_lbl, svc = PORT_LOOKUP[dport]
+                            protocol = proto_lbl
+                            dh["dst_ports"].add(dport)
+                            dh["services"].add(svc)
+                            dh["host_type_hints"][svc] += 1
+                        elif sport in PORT_LOOKUP:
+                            proto_lbl, svc = PORT_LOOKUP[sport]
+                            protocol = proto_lbl
+                            sh["dst_ports"].add(sport)
+                            sh["services"].add(svc)
+                            sh["host_type_hints"][svc] += 1
+                        else:
+                            dh["dst_ports"].add(dport)
 
-                    # DNS name extraction
-                    if DNS in pkt:
-                        try:
-                            dns = pkt[DNS]
-                            if dns.qr == 0 and dns.qdcount > 0 and dns.qd:
-                                qname = dns.qd.qname
-                                if isinstance(qname, bytes):
-                                    qname = qname.decode("utf-8", errors="replace")
-                                sh["dns_queries"].add(qname.rstrip("."))
-                            elif dns.qr == 1:
-                                an = dns.an
-                                while an and hasattr(an, "type"):
-                                    if an.type == 1:  # A record
-                                        rip = an.rdata
-                                        rname = an.rrname
-                                        if isinstance(rip, bytes):
-                                            rip = ".".join(str(b) for b in rip)
-                                        if isinstance(rname, bytes):
-                                            rname = rname.decode("utf-8", errors="replace")
-                                        rname = rname.rstrip(".")
-                                        rip_str = str(rip)
-                                        if rip_str in hosts:
-                                            if not hosts[rip_str]["hostname"]:
-                                                hosts[rip_str]["hostname"] = rname
-                                            hosts[rip_str]["dns_names"].add(rname)
-                                    an = an.payload if hasattr(an, "payload") else None
-                        except Exception:
-                            pass
+                        # DNS name extraction — reconstruct DNS layer from payload only for port 53
+                        if (dport == 53 or sport == 53) and payload:
+                            try:
+                                dns = _DNS(payload)
+                                if dns.qr == 0 and dns.qdcount > 0 and dns.qd:
+                                    qname = dns.qd.qname
+                                    if isinstance(qname, bytes):
+                                        qname = qname.decode("utf-8", errors="replace")
+                                    sh["dns_queries"].add(qname.rstrip("."))
+                                elif dns.qr == 1:
+                                    an = dns.an
+                                    while an and hasattr(an, "type"):
+                                        if an.type == 1:  # A record
+                                            rip = an.rdata
+                                            rname = an.rrname
+                                            if isinstance(rip, bytes):
+                                                rip = ".".join(str(b) for b in rip)
+                                            if isinstance(rname, bytes):
+                                                rname = rname.decode("utf-8", errors="replace")
+                                            rname = rname.rstrip(".")
+                                            rip_str = str(rip)
+                                            if rip_str in hosts:
+                                                if not hosts[rip_str]["hostname"]:
+                                                    hosts[rip_str]["hostname"] = rname
+                                                hosts[rip_str]["dns_names"].add(rname)
+                                        an = an.payload if hasattr(an, "payload") else None
+                            except Exception:
+                                pass
 
-                    connections[conn_key]["dst_ports"].add(dport)
+                        connections[conn_key]["dst_ports"].add(dport)
 
                 # ── ICMP ─────────────────────────────────────────────────────
-                elif ICMP in pkt:
+                elif proto_num == 1:
                     protocol = "ICMP"
+                    if len(raw) >= l4_off + 2:
+                        icmp_type = raw[l4_off]
+                        icmp_code = raw[l4_off + 1]
 
                 sh["protocols"].add(protocol)
                 dh["protocols"].add(protocol)
@@ -1629,97 +1801,20 @@ def analyze_pcap(filepath):
                 # ── Per-packet capture for drill-down ────────────────────────
                 if len(packet_store[conn_key]) < MAX_STORED_PER_CONN:
                     try:
-                        sport_ = pkt[TCP].sport if TCP in pkt else (pkt[UDP].sport if UDP in pkt else None)
-                        dport_ = pkt[TCP].dport if TCP in pkt else (pkt[UDP].dport if UDP in pkt else None)
-                        pd = {
-                            "time": rel_t, "src": sip, "dst": dip,
-                            "protocol": protocol, "len": plen,
-                            "sport": sport_, "dport": dport_,
-                            "layers": [], "hex": "", "info": "",
-                            "http": None,
-                            "modbus": None,
-                            "mqtt": None,
-                            "coap": None,
-                            "dnp3": None,
-                            "s7comm": None,
-                            "enip": None,
-                            "iec104": None,
-                            "bacnet": None,
-                        }
-                        if Ether in pkt:
-                            e_ = pkt[Ether]
-                            pd["layers"].append({"name": "Ethernet", "fields": [
-                                {"k": "Dst MAC", "v": e_.dst},
-                                {"k": "Src MAC", "v": e_.src},
-                                {"k": "Type",    "v": hex(e_.type)},
-                            ]})
-                        if IP in pkt:
-                            ip_ = pkt[IP]
-                            pd["layers"].append({"name": "Internet Protocol", "fields": [
-                                {"k": "Version",     "v": ip_.version},
-                                {"k": "Hdr Length",  "v": f"{ip_.ihl * 4} bytes"},
-                                {"k": "Total Len",   "v": ip_.len},
-                                {"k": "ID",          "v": hex(ip_.id)},
-                                {"k": "Flags",       "v": str(ip_.flags)},
-                                {"k": "TTL",         "v": ip_.ttl},
-                                {"k": "Protocol",    "v": ip_.proto},
-                                {"k": "Src",         "v": ip_.src},
-                                {"k": "Dst",         "v": ip_.dst},
-                            ]})
-                        elif IPv6 in pkt:
-                            ip6_ = pkt[IPv6]
-                            pd["layers"].append({"name": "Internet Protocol Version 6", "fields": [
-                                {"k": "Version",      "v": ip6_.version},
-                                {"k": "Traffic Class","v": ip6_.tc},
-                                {"k": "Flow Label",   "v": hex(ip6_.fl)},
-                                {"k": "Payload Len",  "v": ip6_.plen},
-                                {"k": "Next Header",  "v": ip6_.nh},
-                                {"k": "Hop Limit",    "v": ip6_.hlim},
-                                {"k": "Src",          "v": ip6_.src},
-                                {"k": "Dst",          "v": ip6_.dst},
-                            ]})
-                        payload = b""
-                        if TCP in pkt:
-                            t_ = pkt[TCP]
-                            flag_str = str(t_.flags)
-                            pd["layers"].append({"name": "Transmission Control Protocol", "fields": [
-                                {"k": "Src Port",  "v": t_.sport},
-                                {"k": "Dst Port",  "v": t_.dport},
-                                {"k": "Seq",       "v": t_.seq},
-                                {"k": "Ack",       "v": t_.ack},
-                                {"k": "Flags",     "v": flag_str},
-                                {"k": "Window",    "v": t_.window},
-                            ]})
-                            pd["info"] = f"{t_.sport} → {t_.dport} [{flag_str}] Seq={t_.seq}"
-                            payload = bytes(t_.payload)
-                            if payload:
-                                pd["info"] += f" Len={len(payload)}"
-                        elif UDP in pkt:
-                            u_ = pkt[UDP]
-                            pd["layers"].append({"name": "User Datagram Protocol", "fields": [
-                                {"k": "Src Port", "v": u_.sport},
-                                {"k": "Dst Port", "v": u_.dport},
-                                {"k": "Length",   "v": u_.len},
-                            ]})
-                            pd["info"] = f"{u_.sport} → {u_.dport}"
-                            payload = bytes(u_.payload)
-                        elif ICMP in pkt:
-                            ic_ = pkt[ICMP]
-                            t_names = {0: "Echo Reply", 3: "Dest Unreachable",
-                                       8: "Echo Request", 11: "Time Exceeded"}
-                            pd["layers"].append({"name": "Internet Control Message Protocol", "fields": [
-                                {"k": "Type", "v": f"{ic_.type} ({t_names.get(ic_.type, 'Unknown')})"},
-                                {"k": "Code", "v": ic_.code},
-                            ]})
-                            pd["info"] = t_names.get(ic_.type, f"Type {ic_.type}")
-                            payload = b""
+                        pd = _build_packet_detail(
+                            raw, rel_t, sip, dip, protocol, plen,
+                            sport, dport, payload, is_ipv6,
+                            tcp_flags, tcp_seq, tcp_ack, tcp_window, tcp_doff_bytes,
+                            udp_len, icmp_type, icmp_code,
+                            smac, dmac, ttl, l3_off, eth_type,
+                        )
 
                         # HTTP parsing
                         if protocol == "HTTP" and payload:
                             pd["http"] = parse_http(payload, protocol)
 
                         # Modbus TCP parsing
-                        if payload and (dport_ == 502 or sport_ == 502):
+                        if payload and (dport == 502 or sport == 502):
                             mb = parse_modbus(payload)
                             if mb:
                                 pd["modbus"] = mb
@@ -1736,19 +1831,19 @@ def analyze_pcap(filepath):
                                     conn["fc_counts"][fc_label] += 1
 
                         # MQTT parsing
-                        if payload and (dport_ in (1883, 8883) or sport_ in (1883, 8883)):
+                        if payload and (dport in (1883, 8883) or sport in (1883, 8883)):
                             mq = parse_mqtt(payload)
                             if mq:
                                 pd["mqtt"] = mq
 
                         # CoAP parsing
-                        if payload and (dport_ in (5683, 5684) or sport_ in (5683, 5684)):
+                        if payload and (dport in (5683, 5684) or sport in (5683, 5684)):
                             cp = parse_coap(payload)
                             if cp:
                                 pd["coap"] = cp
 
                         # DNP3 parsing
-                        if payload and (dport_ == 20000 or sport_ == 20000):
+                        if payload and (dport == 20000 or sport == 20000):
                             dn = parse_dnp3(payload)
                             if dn:
                                 pd["dnp3"] = dn
@@ -1769,7 +1864,7 @@ def analyze_pcap(filepath):
                                     conn["fc_counts"][f"DNP3:{fn}"] += 1
 
                         # S7comm parsing
-                        if payload and (dport_ == 102 or sport_ == 102):
+                        if payload and (dport == 102 or sport == 102):
                             s7 = parse_s7comm(payload)
                             if s7:
                                 pd["s7comm"] = s7
@@ -1786,7 +1881,7 @@ def analyze_pcap(filepath):
                                     conn["fc_counts"][f"S7:{fn}"] += 1
 
                         # EtherNet/IP parsing
-                        if payload and (dport_ in (2222, 44818) or sport_ in (2222, 44818)):
+                        if payload and (dport in (2222, 44818) or sport in (2222, 44818)):
                             ei = parse_enip(payload)
                             if ei:
                                 pd["enip"] = ei
@@ -1794,7 +1889,7 @@ def analyze_pcap(filepath):
                                     conn["fc_counts"][f"EtherNet/IP:{ei['cip_service_name']}"] += 1
 
                         # IEC 60870-5-104 parsing
-                        if payload and (dport_ == 2404 or sport_ == 2404):
+                        if payload and (dport == 2404 or sport == 2404):
                             ic = parse_iec104(payload)
                             if ic:
                                 pd["iec104"] = ic
@@ -1802,18 +1897,13 @@ def analyze_pcap(filepath):
                                     conn["fc_counts"][f"IEC-104:{ic['type_name']}"] += 1
 
                         # BACnet parsing
-                        if payload and (dport_ == 47808 or sport_ == 47808):
+                        if payload and (dport == 47808 or sport == 47808):
                             bn = parse_bacnet(payload)
                             if bn:
                                 pd["bacnet"] = bn
                                 if bn.get("service_name"):
                                     conn["fc_counts"][f"BACnet:{bn['service_name']}"] += 1
 
-                        # Store hex dump of payload
-                        if payload:
-                            pd["payload_hex"] = payload[:256].hex()
-                        raw = bytes(pkt)[:256]
-                        pd["hex"] = raw.hex()
                         packet_store[conn_key].append(pd)
                     except Exception:
                         pass

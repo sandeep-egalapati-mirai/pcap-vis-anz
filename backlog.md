@@ -29,6 +29,7 @@
 - [x] Performance: Progress bar during large PCAP parsing (streaming status instead of blank spinner)
 - [x] Performance: Virtual scrolling in connection table and packet inspector (windowed rendering)
 - [x] Performance: Anomaly deduplication summary — collapses repeated same-source anomalies into one entry
+- [x] Performance: Replace `PcapReader` with `RawPcapReader` + manual byte parsing in `analyze_pcap()` hot loop (~30× speedup; 150K-packet capture: ~44s → ~1.5s)
 
 ## Navigation & Discoverability
 
