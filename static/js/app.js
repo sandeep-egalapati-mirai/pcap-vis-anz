@@ -3913,6 +3913,10 @@ document.getElementById("exp-anomalies").addEventListener("click", () => {
   exportAnomalies();
   document.getElementById("export-menu").classList.add("hidden");
 });
+document.getElementById("exp-report").addEventListener("click", () => {
+  generateAuditReport();
+  document.getElementById("export-menu").classList.add("hidden");
+});
 
 function exportPng() {
   const svgEl = document.getElementById("graph-svg");
@@ -3968,6 +3972,171 @@ function exportAnomalies() {
     rows.push([a.type, a.severity, a.src || "", a.dst || "", a.description]);
   });
   downloadCsv(rows, "anomalies.csv");
+}
+
+function generateAuditReport() {
+  if (!graphData) { showToast("No data loaded.", "error"); return; }
+  const now = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+  const s = graphData.stats || {};
+  const nodes = graphData.nodes || [];
+  const edges = graphData.edges || [];
+  const anomalies = graphData.anomalies || [];
+  const creds = graphData.credentials || [];
+  const otCmds = graphData.ot_commands || [];
+
+  const lines = [];
+  const h = (lvl, txt) => lines.push("#".repeat(lvl) + " " + txt);
+  const p = txt => lines.push(txt);
+  const br = () => lines.push("");
+
+  h(1, "PCAP Network Audit Report");
+  p(`Generated: ${now}`);
+  br();
+
+  // Capture Summary
+  h(2, "Capture Summary");
+  p(`| Metric | Value |`);
+  p(`|--------|-------|`);
+  p(`| Hosts | ${s.hosts ?? nodes.length} |`);
+  p(`| Connections | ${s.connections ?? edges.length} |`);
+  p(`| Packets | ${s.packets ?? "—"} |`);
+  p(`| Bytes | ${s.bytes ? (s.bytes / 1e6).toFixed(2) + " MB" : "—"} |`);
+  p(`| Anomalies | ${anomalies.length} |`);
+  p(`| Credentials captured | ${creds.length} |`);
+  p(`| OT commands | ${otCmds.length} |`);
+  br();
+
+  // Risk Overview — top 10 hosts by risk score
+  const scored = nodes.filter(n => (n.risk_score ?? 0) > 0)
+                       .sort((a, b) => (b.risk_score ?? 0) - (a.risk_score ?? 0))
+                       .slice(0, 10);
+  if (scored.length) {
+    h(2, "Risk Overview — Top 10 Hosts");
+    p(`| IP | Hostname | Type | Risk | Anomalies |`);
+    p(`|----|----------|------|------|-----------|`);
+    scored.forEach(n => {
+      const host = (n.dns_names && n.dns_names[0]) || n.hostname || "—";
+      const risk = n.risk_score ?? 0;
+      const aCount = anomalies.filter(a => a.src === n.id || a.dst === n.id).length;
+      p(`| ${n.id} | ${host} | ${n.host_type || "—"} | ${risk} | ${aCount} |`);
+    });
+    br();
+  }
+
+  // Anomalies by severity
+  if (anomalies.length) {
+    h(2, "Anomalies");
+    const bySev = {};
+    anomalies.forEach(a => { (bySev[a.severity] = bySev[a.severity] || []).push(a); });
+    ["critical", "high", "medium", "low"].forEach(sev => {
+      if (!bySev[sev]) return;
+      h(3, sev.charAt(0).toUpperCase() + sev.slice(1) + ` (${bySev[sev].length})`);
+      bySev[sev].forEach(a => {
+        const route = [a.src, a.dst].filter(Boolean).join(" → ") || "—";
+        p(`- **${a.type}** | ${route} | ${a.description}`);
+      });
+      br();
+    });
+  }
+
+  // OT Inventory by Purdue level
+  const otNodes = nodes.filter(n => n.purdue_level != null && n.purdue_level >= 0);
+  if (otNodes.length) {
+    h(2, "OT/ICS Inventory by Purdue Level");
+    const levelNames = {
+      0: "L0 — Field Devices",
+      1: "L1 — PLC / RTU",
+      2: "L2 — Control / HMI",
+      3: "L3 — Supervisory",
+      3.5: "L3.5 — Industrial DMZ",
+      4: "L4 — Business Logistics",
+      5: "L5 — Enterprise",
+      6: "L6 — Public Internet",
+    };
+    const byLevel = {};
+    otNodes.forEach(n => {
+      const lv = n.purdue_level;
+      (byLevel[lv] = byLevel[lv] || []).push(n);
+    });
+    Object.keys(byLevel).sort((a, b) => +a - +b).forEach(lv => {
+      h(3, levelNames[lv] || `Level ${lv}`);
+      byLevel[lv].forEach(n => {
+        const host = (n.dns_names && n.dns_names[0]) || n.hostname || "";
+        p(`- ${n.id}${host ? " (" + host + ")" : ""} — ${n.host_type || "Unknown"}`);
+      });
+      br();
+    });
+  }
+
+  // TLS observations
+  const tlsNodes = nodes.filter(n => (n.tls_sni && n.tls_sni.length) || (n.tls_ja3 && n.tls_ja3.length));
+  if (tlsNodes.length) {
+    h(2, "TLS Observations");
+    tlsNodes.forEach(n => {
+      h(3, n.id);
+      if (n.tls_sni && n.tls_sni.length) p(`- SNI destinations: ${n.tls_sni.slice(0, 10).join(", ")}`);
+      if (n.tls_ja3 && n.tls_ja3.length) {
+        n.tls_ja3.forEach(j => {
+          const flag = j.label ? ` ⚠ ${j.label}` : "";
+          p(`- JA3: \`${j.hash}\`${flag}`);
+        });
+      }
+      br();
+    });
+  }
+
+  // DNS tunneling suspects
+  const dnsTunnel = anomalies.filter(a => a.type === "dns_tunneling_suspected");
+  if (dnsTunnel.length) {
+    h(2, "DNS Tunneling Suspects");
+    dnsTunnel.forEach(a => p(`- **${a.src || "—"}** — ${a.description}`));
+    br();
+  }
+
+  // Credentials
+  if (creds.length) {
+    h(2, `Captured Credentials (${creds.length})`);
+    p(`| Time | Protocol | Source | Destination | Username | Type |`);
+    p(`|------|----------|--------|-------------|----------|------|`);
+    creds.slice(0, 100).forEach(c => {
+      const t = c.rel_time != null ? `+${c.rel_time}s` : (c.time || "—");
+      p(`| ${t} | ${c.protocol} | ${c.src} | ${c.dst} | ${c.username || "—"} | ${c.type} |`);
+    });
+    if (creds.length > 100) p(`\n_…and ${creds.length - 100} more_`);
+    br();
+  }
+
+  // OT command summary
+  if (otCmds.length) {
+    h(2, `OT Command Summary (${otCmds.length} total)`);
+    const byProto = {};
+    otCmds.forEach(c => (byProto[c.protocol] = (byProto[c.protocol] || 0) + 1));
+    p(`| Protocol | Commands |`);
+    p(`|----------|----------|`);
+    Object.entries(byProto).sort((a, b) => b[1] - a[1]).forEach(([pr, cnt]) => p(`| ${pr} | ${cnt} |`));
+    br();
+    const writes = otCmds.filter(c => c.direction === "write");
+    if (writes.length) {
+      h(3, `Write Operations (${writes.length})`);
+      writes.slice(0, 50).forEach(c => {
+        p(`- +${c.rel_time}s **${c.protocol}** ${c.src} → ${c.dst} | ${c.function_name || c.function_code || ""}`);
+      });
+      if (writes.length > 50) p(`_…and ${writes.length - 50} more_`);
+      br();
+    }
+  }
+
+  p("---");
+  p("_Report generated by [PCAP Network Visualizer](https://github.com/esandeepchoudary/pcap-vis-anz)_");
+
+  const md = lines.join("\n");
+  const blob = new Blob([md], { type: "text/markdown;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "pcap-audit-report.md";
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function downloadCsv(rows, filename) {
