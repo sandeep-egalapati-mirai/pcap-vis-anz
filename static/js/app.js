@@ -1565,13 +1565,9 @@ document.getElementById("pkt-tab-pkts").addEventListener("click", () => {
   document.getElementById("pkt-tab-cmds").classList.remove("active");
 });
 document.getElementById("pkt-tab-cmds").addEventListener("click", () => {
-  // gather current packets from the visible table rows' data
-  const allKeys = Object.keys(packetData);
-  let curPkts = [];
-  for (const k of allKeys) { if (packetData[k].length) { curPkts = packetData[k]; break; } }
-  // best effort: find packets by reading what's shown
   const label = pktConnLabel.textContent;
   const m = label.match(/^(.+?)  ↔  (.+?)  ·/);
+  let curPkts = [];
   if (m) {
     const key = [m[1].trim(), m[2].trim()].sort().join("|");
     curPkts = packetData[key] || [];
@@ -1579,24 +1575,44 @@ document.getElementById("pkt-tab-cmds").addEventListener("click", () => {
   _switchPktTab("cmds", curPkts);
 });
 
+document.getElementById("pkt-tab-stream").addEventListener("click", () => {
+  const label = pktConnLabel.textContent;
+  const m = label.match(/^(.+?)  ↔  (.+?)  ·/);
+  let curPkts = [];
+  if (m) {
+    const key = [m[1].trim(), m[2].trim()].sort().join("|");
+    curPkts = packetData[key] || [];
+  }
+  _switchPktTab("stream", curPkts);
+});
+
 const OT_PKT_FIELDS = ["modbus","dnp3","s7comm","enip","iec104","bacnet"];
 
 function _switchPktTab(tab, pkts) {
-  const listWrap = document.getElementById("pkt-list-wrap");
-  const cmdLog   = document.getElementById("pkt-cmd-log");
-  const tabPkts  = document.getElementById("pkt-tab-pkts");
-  const tabCmds  = document.getElementById("pkt-tab-cmds");
+  const listWrap   = document.getElementById("pkt-list-wrap");
+  const cmdLog     = document.getElementById("pkt-cmd-log");
+  const streamView = document.getElementById("pkt-stream-view");
+  const tabPkts    = document.getElementById("pkt-tab-pkts");
+  const tabCmds    = document.getElementById("pkt-tab-cmds");
+  const tabStream  = document.getElementById("pkt-tab-stream");
+  // Hide all panes first
+  listWrap.classList.add("hidden");
+  cmdLog.classList.add("hidden");
+  streamView.classList.add("hidden");
+  tabPkts.classList.remove("active");
+  tabCmds.classList.remove("active");
+  tabStream.classList.remove("active");
   if (tab === "cmds") {
-    listWrap.classList.add("hidden");
     cmdLog.classList.remove("hidden");
-    tabPkts.classList.remove("active");
     tabCmds.classList.add("active");
     renderCmdLog(pkts);
+  } else if (tab === "stream") {
+    streamView.classList.remove("hidden");
+    tabStream.classList.add("active");
+    renderStream(pkts);
   } else {
-    cmdLog.classList.add("hidden");
     listWrap.classList.remove("hidden");
     tabPkts.classList.add("active");
-    tabCmds.classList.remove("active");
   }
 }
 
@@ -1664,15 +1680,71 @@ function renderCmdLog(pkts) {
   cmdLog.innerHTML = html;
 }
 
+function renderStream(pkts) {
+  const view = document.getElementById("pkt-stream-view");
+  const sorted = [...pkts].sort((a, b) => a.time - b.time);
+  const payloadPkts = sorted.filter(p => p.payload_hex && p.payload_hex.length > 0);
+
+  if (payloadPkts.length === 0) {
+    view.innerHTML = '<div class="stream-empty">No payload data captured for this connection.</div>';
+    return;
+  }
+
+  // Determine "client" as the src of the first packet with payload
+  const clientIp = payloadPkts[0].src;
+
+  function hexToAscii(hex) {
+    let out = "";
+    for (let i = 0; i < hex.length; i += 2) {
+      const code = parseInt(hex.slice(i, i + 2), 16);
+      out += (code >= 0x20 && code < 0x7f) ? String.fromCharCode(code) : ".";
+    }
+    return out;
+  }
+
+  // Merge consecutive same-direction packets into blocks
+  const blocks = [];
+  let cur = null;
+  payloadPkts.forEach(p => {
+    const dir = p.src === clientIp ? "client" : "server";
+    if (!cur || cur.dir !== dir) {
+      cur = { dir, chunks: [hexToAscii(p.payload_hex)], time: p.time, count: 1 };
+      blocks.push(cur);
+    } else {
+      cur.chunks.push(hexToAscii(p.payload_hex));
+      cur.count++;
+    }
+  });
+
+  const frag = document.createDocumentFragment();
+  blocks.forEach(b => {
+    const div = document.createElement("div");
+    div.className = `stream-block ${b.dir}`;
+    const label = b.dir === "client" ? `→ client (+${b.time.toFixed(3)}s)` : `← server (+${b.time.toFixed(3)}s)`;
+    const meta = document.createElement("div");
+    meta.className = "stream-meta";
+    meta.textContent = label + (b.count > 1 ? `  [${b.count} packets]` : "");
+    const data = document.createElement("div");
+    data.className = "stream-data";
+    data.textContent = b.chunks.join("");
+    div.appendChild(meta);
+    div.appendChild(data);
+    frag.appendChild(div);
+  });
+  view.innerHTML = "";
+  view.appendChild(frag);
+}
+
 function openPktInspector(sid, tid) {
   const key = [sid, tid].sort().join("|");
   const pkts = packetData[key] || [];
   pktConnLabel.textContent = `${sid}  ↔  ${tid}  ·  ${pkts.length} packet${pkts.length !== 1 ? "s" : ""} captured`;
   _switchPktTab("pkts", pkts);
   renderPktTable(pkts);
-  // Show Cmd Log tab only if there are OT packets
   const hasOT = pkts.some(p => OT_PKT_FIELDS.some(f => p[f]));
   document.getElementById("pkt-tab-cmds").style.display = hasOT ? "" : "none";
+  const hasPayload = pkts.some(p => p.payload_hex && p.payload_hex.length > 0);
+  document.getElementById("pkt-tab-stream").style.display = hasPayload ? "" : "none";
   pktInspector.classList.remove("hidden");
   graphWrap.classList.add("pkt-open");
 }
