@@ -22,7 +22,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Packet inspector** — Click any edge or node to open a Wireshark-style panel showing per-packet protocol trees and hex dumps
 - **OT Command Log** — Dedicated tab in the packet inspector showing a chronological OT command history (protocol, direction, function code, result)
 - **OT Analysis panel** — Per-node read/write/error ratio bar, master/outstation role badge, Modbus unit IDs, DNP3 link addresses
-- **Exports** — PNG graph screenshot, connections CSV, anomalies CSV, Markdown audit report (capture summary, risk ranking, anomalies by severity, OT inventory, TLS/SNI observations, captured credentials, file transfers, OT write log)
+- **Exports** — PNG graph screenshot, connections CSV, anomalies CSV, credentials CSV (with passwords), Markdown audit report (capture summary, risk ranking, anomalies by severity, OT inventory, TLS/SNI observations, captured credentials, file transfers, OT write log)
 - **File transfer detection** — detects HTTP file downloads (Content-Disposition: attachment + interesting Content-Type); sidebar "File Transfers" panel with filename, MIME, size, SHA-256 hash; 200 files/capture, 500/merge (deduped by hash)
 - **PCAP baseline diff** — "Set Baseline" button in header; upload a second PCAP and open the "⊕ Diff" tab to compare: new/disappeared hosts, new connections (with protocols), new anomalies vs baseline; three-column diff view, no server round-trip
 - **Session save / load** — Export full analysis to JSON and reload without re-uploading the capture file
@@ -37,6 +37,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 **General network**
 - Port scan — single source contacting >5 IPs across >15 unique ports
 - Cleartext credentials — FTP or Telnet traffic with payload
+- **Password reuse** — same password observed across 2+ protocols or destination hosts
 - Beaconing — connection with highly regular inter-packet timing (coefficient of variation < 0.2)
 - Data exfiltration — host sending >10 MB to a non-private IP
 - Suspicious ports — known C2/hack-tool ports (4444, 1337, 31337, 6666, 6667)

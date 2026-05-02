@@ -213,6 +213,7 @@ let currentView  = "graph";  // "graph" | "table" | "dns" | "ot" | "otlog" | "di
 let baselineData = null;
 let currentLayout = "force"; // "force" | "radial" | "cluster"
 let anomalyNodeIps = {};     // ip → highest severity
+let credIpSet = new Set();   // IPs with captured credentials
 let tableSort = { col: "packet_count", dir: "desc" };
 
 // Canvas edge rendering (GPU-composited, activated for large graphs)
@@ -728,6 +729,12 @@ function buildCredentialsSidebar(creds) {
   list.innerHTML = "";
   filterBar.innerHTML = "";
 
+  credIpSet = new Set();
+  (creds || []).forEach(c => {
+    if (c.src) credIpSet.add(c.src);
+    if (c.dst) credIpSet.add(c.dst);
+  });
+
   if (!creds || creds.length === 0) {
     section.style.display = "none";
     return;
@@ -852,6 +859,8 @@ function _anomalySummary(type, src, count, items) {
       return `Suspicious ports on ${s} (${count} instances)`;
     case "cleartext_credentials":
       return `Cleartext credentials on ${count} connection${count > 1 ? "s" : ""}`;
+    case "password_reuse":
+      return `Password reused across ${count} service${count > 1 ? "s" : ""}`;
     default:
       return `${type.replace(/_/g, " ")} — ${count} instance${count > 1 ? "s" : ""}`;
   }
@@ -1064,6 +1073,15 @@ function renderGraph(data) {
         .attr("r", nodeRadius(d) + 4);
     }
   });
+
+  // Credential key icon
+  nodeSel.filter(d => credIpSet.has(d.ip)).append("text")
+    .attr("class", "node-cred-icon")
+    .attr("dy", d => -(nodeRadius(d) + 4))
+    .attr("dx", d => nodeRadius(d) - 2)
+    .attr("font-size", "10px")
+    .attr("text-anchor", "middle")
+    .text("🔑");
 
   // Circle
   nodeSel.append("circle")
@@ -1432,6 +1450,33 @@ function showDetailPanel(d) {
     });
   }
 
+  // Credentials captured for this node
+  const nodeCreds = (graphData.credentials || []).filter(c => c.src === d.ip || c.dst === d.ip);
+  if (nodeCreds.length) {
+    rows.push(sectionTitle(`Captured Credentials (${nodeCreds.length})`));
+    nodeCreds.slice(0, 20).forEach(c => {
+      const pwId = `dpw-${Math.random().toString(36).slice(2)}`;
+      const ts = c.rel_time != null ? `+${c.rel_time}s` : "";
+      rows.push(`<div class="cred-card" style="margin-bottom:4px">
+        <div>
+          <span class="cred-proto ${escHtml((c.protocol||'').toLowerCase())}">${escHtml(c.protocol||'')}</span>
+          <span style="color:var(--text2);font-size:10px">${escHtml(c.type||'')}</span>
+          <span style="float:right;color:var(--text2);font-size:10px">${escHtml(ts)}</span>
+        </div>
+        <div class="cred-route" style="margin-top:2px">${escHtml(c.src||'')} → ${escHtml(c.dst||'')}${c.dport ? ':'+c.dport : ''}</div>
+        <div style="margin-top:3px">
+          <span class="cred-user">${escHtml(c.username || '(no user)')}</span>
+          <span style="color:var(--text2);margin:0 4px">/</span>
+          <span class="cred-pw" id="${pwId}">●●●●●●</span>
+          <button class="cred-reveal" data-pw="${escHtml(c.password||'')}" data-id="${pwId}">show</button>
+        </div>
+      </div>`);
+    });
+    if (nodeCreds.length > 20) {
+      rows.push(`<div style="color:var(--text2);font-size:11px">…and ${nodeCreds.length - 20} more</div>`);
+    }
+  }
+
   // OT Analysis section (for OT host types)
   const CORE_OT_TYPES = new Set(["PLC","RTU","IED","HMI","SCADA Server","DCS","Historian","Engineering Workstation","Building Controller","Field Device"]);
   if (CORE_OT_TYPES.has(d.host_type) && graphData) {
@@ -1526,6 +1571,20 @@ function showDetailPanel(d) {
   }
 
   body.innerHTML = rows.join("");
+
+  // Bind credential reveal buttons in detail panel
+  body.querySelectorAll(".cred-reveal").forEach(btn => {
+    btn.addEventListener("click", function() {
+      const el = document.getElementById(this.dataset.id);
+      if (this.textContent === "show") {
+        el.textContent = this.dataset.pw || "(empty)";
+        this.textContent = "hide";
+      } else {
+        el.textContent = "●●●●●●";
+        this.textContent = "show";
+      }
+    });
+  });
 
   // Bind conversation table click
   body.querySelectorAll(".conv-table tbody tr").forEach(tr => {
@@ -4090,6 +4149,10 @@ document.getElementById("exp-anomalies").addEventListener("click", () => {
   exportAnomalies();
   document.getElementById("export-menu").classList.add("hidden");
 });
+document.getElementById("exp-cred-csv").addEventListener("click", () => {
+  exportCredentialsCsv();
+  document.getElementById("export-menu").classList.add("hidden");
+});
 document.getElementById("exp-report").addEventListener("click", () => {
   generateAuditReport();
   document.getElementById("export-menu").classList.add("hidden");
@@ -4149,6 +4212,27 @@ function exportAnomalies() {
     rows.push([a.type, a.severity, a.src || "", a.dst || "", a.description]);
   });
   downloadCsv(rows, "anomalies.csv");
+}
+
+function exportCredentialsCsv() {
+  if (!graphData || !(graphData.credentials || []).length) {
+    showToast("No credentials to export.", "info");
+    return;
+  }
+  const rows = [["Time", "Protocol", "Type", "Source", "Destination", "Port", "Username", "Password"]];
+  graphData.credentials.forEach(c => {
+    rows.push([
+      c.rel_time != null ? `+${c.rel_time}s` : (c.time || ""),
+      c.protocol || "",
+      c.type || "",
+      c.src || "",
+      c.dst || "",
+      c.dport || "",
+      c.username || "",
+      c.password || "",
+    ]);
+  });
+  downloadCsv(rows, "credentials.csv");
 }
 
 function generateAuditReport() {

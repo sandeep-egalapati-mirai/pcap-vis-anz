@@ -7,6 +7,7 @@ import re
 import tempfile
 import statistics
 from collections import defaultdict, Counter
+from urllib.parse import parse_qs
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from flask import Flask, request, jsonify, render_template
@@ -334,6 +335,18 @@ def geo_lookup(ip):
         }
     except Exception:
         return None
+
+
+def _ber_len(data, off):
+    """Parse a BER length field. Returns (length, new_offset)."""
+    b = data[off]
+    if b < 0x80:
+        return b, off + 1
+    elif b == 0x81:
+        return data[off + 1], off + 2
+    elif b == 0x82:
+        return (data[off + 1] << 8) | data[off + 2], off + 3
+    return 0, off + 1
 
 
 def parse_http(payload_bytes, protocol):
@@ -1149,7 +1162,7 @@ def parse_tls_client_hello(payload):
         return None
 
 
-def analyze_anomalies(hosts, connections, packet_store):
+def analyze_anomalies(hosts, connections, packet_store, credentials=None):
     """Detect network anomalies and return a list of anomaly dicts."""
     anomalies = []
 
@@ -1600,6 +1613,24 @@ def analyze_anomalies(hosts, connections, packet_store):
                 "description": f"{ip} shows DNS tunneling indicators: {reason}",
             })
 
+    # ── Password reuse across protocols or destinations ───────────────────────
+    if credentials:
+        pw_services = defaultdict(set)
+        for c in credentials:
+            pw = c.get("password", "")
+            if pw and len(pw) >= 4:
+                pw_services[pw].add((c.get("protocol"), c.get("dst")))
+        for pw, services in pw_services.items():
+            if len(services) >= 2:
+                svc_list = sorted(f"{p}@{d}" for p, d in services)
+                anomalies.append({
+                    "type": "password_reuse",
+                    "severity": "high",
+                    "src": None,
+                    "dst": None,
+                    "description": f"Password reused across {len(services)} services: {', '.join(svc_list[:5])}",
+                })
+
     # Deduplicate (keep unique type+src+dst combos)
     seen = set()
     deduped = []
@@ -1801,14 +1832,19 @@ def analyze_pcap(filepath):
     first_pkt_time = None
     last_pkt_time = None
     credentials = []
+    _cred_seen  = set()
     files = []
     _cred_ftp   = {}   # conn_key → {"user": str}
     _cred_pop3  = {}   # conn_key → {"user": str}
     _cred_smtp  = {}   # conn_key → {"phase": "user"|"pass", "user": str}
+    _cred_telnet = {}  # conn_key → {"phase": str, "buf": str, "user": str}
     _CRED_HTTP_PORTS  = {80, 8080, 8000, 3000, 8008, 8888}
     _CRED_SMTP_PORTS  = {25, 587, 465}
     _CRED_POP3_PORTS  = {110}
     _CRED_IMAP_PORTS  = {143}
+    _CRED_LDAP_PORTS  = {389}
+    _CRED_SNMP_PORTS  = {161, 162}
+    _CRED_TELNET_PORT = 23
     _FILE_MIME_PREFIXES = (
         "application/", "image/", "audio/", "video/",
         "text/csv", "text/xml", "text/plain",
@@ -2020,81 +2056,6 @@ def analyze_pcap(filepath):
 
                         connections[conn_key]["dst_ports"].add(dport)
 
-                        # ── Credential extraction ─────────────────────────────
-                        if payload and len(credentials) < MAX_CREDS:
-                            _cred_rec = None
-                            try:
-                                # HTTP Basic auth & POST form fields
-                                if dport in _CRED_HTTP_PORTS and payload[:5] in (b"GET /", b"POST ", b"PUT /", b"PATCH", b"DELET"):
-                                    _htxt = payload[:4000].decode("utf-8", errors="replace")
-                                    _am = re.search(r"Authorization:\s*Basic\s+([A-Za-z0-9+/=]+)", _htxt, re.IGNORECASE)
-                                    if _am:
-                                        _dec = base64.b64decode(_am.group(1) + "==").decode("utf-8", errors="replace")
-                                        if ":" in _dec:
-                                            _u, _p = _dec.split(":", 1)
-                                            _cred_rec = {"protocol": "HTTP", "type": "Basic Auth",
-                                                         "username": _u[:120], "password": _p[:120]}
-                                    if not _cred_rec and b"POST " == payload[:5]:
-                                        _pm = re.search(r"(?:password|passwd|pwd)=([^&\r\n ]{1,120})", _htxt, re.IGNORECASE)
-                                        if _pm:
-                                            _um = re.search(r"(?:username|user|login|email|name)=([^&\r\n ]{1,120})", _htxt, re.IGNORECASE)
-                                            _cred_rec = {"protocol": "HTTP", "type": "Form POST",
-                                                         "username": _um.group(1) if _um else "", "password": _pm.group(1)}
-                                # FTP USER / PASS sequence
-                                elif dport == 21 or sport == 21:
-                                    _ftxt = payload.decode("utf-8", errors="replace").strip()
-                                    _fcmd = _ftxt.upper()
-                                    if _fcmd.startswith("USER "):
-                                        _cred_ftp[conn_key] = {"user": _ftxt[5:].strip()[:120]}
-                                    elif _fcmd.startswith("PASS ") and conn_key in _cred_ftp:
-                                        _cred_rec = {"protocol": "FTP", "type": "USER/PASS",
-                                                     "username": _cred_ftp.pop(conn_key)["user"],
-                                                     "password": _ftxt[5:].strip()[:120]}
-                                # SMTP AUTH PLAIN / AUTH LOGIN
-                                elif dport in _CRED_SMTP_PORTS or sport in _CRED_SMTP_PORTS:
-                                    _stxt = payload.decode("utf-8", errors="replace").strip()
-                                    _m = re.match(r"AUTH PLAIN ([A-Za-z0-9+/=]+)", _stxt, re.IGNORECASE)
-                                    if _m:
-                                        _dec = base64.b64decode(_m.group(1) + "==").decode("utf-8", errors="replace")
-                                        _pts = _dec.split("\x00")
-                                        if len(_pts) >= 3:
-                                            _cred_rec = {"protocol": "SMTP", "type": "AUTH PLAIN",
-                                                         "username": _pts[1][:120], "password": _pts[2][:120]}
-                                    elif re.match(r"AUTH LOGIN", _stxt, re.IGNORECASE):
-                                        _cred_smtp[conn_key] = {"phase": "user"}
-                                    elif conn_key in _cred_smtp:
-                                        _cs = _cred_smtp[conn_key]
-                                        if _cs.get("phase") == "user":
-                                            _cs["user"] = base64.b64decode(_stxt + "==").decode("utf-8", errors="replace")[:120]
-                                            _cs["phase"] = "pass"
-                                        elif _cs.get("phase") == "pass":
-                                            _pw = base64.b64decode(_stxt + "==").decode("utf-8", errors="replace")[:120]
-                                            _cred_rec = {"protocol": "SMTP", "type": "AUTH LOGIN",
-                                                         "username": _cs.get("user", ""), "password": _pw}
-                                            del _cred_smtp[conn_key]
-                                # POP3 USER / PASS sequence
-                                elif dport in _CRED_POP3_PORTS or sport in _CRED_POP3_PORTS:
-                                    _ptxt = payload.decode("utf-8", errors="replace").strip()
-                                    if _ptxt.upper().startswith("USER "):
-                                        _cred_pop3[conn_key] = {"user": _ptxt[5:].strip()[:120]}
-                                    elif _ptxt.upper().startswith("PASS ") and conn_key in _cred_pop3:
-                                        _cred_rec = {"protocol": "POP3", "type": "USER/PASS",
-                                                     "username": _cred_pop3.pop(conn_key)["user"],
-                                                     "password": _ptxt[5:].strip()[:120]}
-                                # IMAP LOGIN command
-                                elif dport in _CRED_IMAP_PORTS or sport in _CRED_IMAP_PORTS:
-                                    _itxt = payload.decode("utf-8", errors="replace").strip()
-                                    _im = re.match(r'[A-Za-z0-9]+ LOGIN (\S+)\s+(\S+)', _itxt, re.IGNORECASE)
-                                    if _im:
-                                        _cred_rec = {"protocol": "IMAP", "type": "LOGIN",
-                                                     "username": _im.group(1)[:120], "password": _im.group(2)[:120]}
-                            except Exception:
-                                pass
-                            if _cred_rec:
-                                _cred_rec.update({"time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
-                                                  "src": sip, "dst": dip, "dport": dport})
-                                credentials.append(_cred_rec)
-
                         # HTTP response file detection
                         if payload and len(files) < MAX_FILES and sport in _CRED_HTTP_PORTS and payload[:5] == b"HTTP/":
                             try:
@@ -2160,6 +2121,188 @@ def analyze_pcap(filepath):
                     if len(raw) >= l4_off + 2:
                         icmp_type = raw[l4_off]
                         icmp_code = raw[l4_off + 1]
+
+                # ── Credential extraction ─────────────────────────────────────
+                if payload and sport is not None and dport is not None and len(credentials) < MAX_CREDS:
+                    _cred_rec = None
+                    try:
+                        # HTTP Basic auth & POST form fields
+                        if dport in _CRED_HTTP_PORTS and payload[:5] in (b"GET /", b"POST ", b"PUT /", b"PATCH", b"DELET"):
+                            _htxt = payload[:4000].decode("utf-8", errors="replace")
+                            _am = re.search(r"Authorization:\s*Basic\s+([A-Za-z0-9+/=]+)", _htxt, re.IGNORECASE)
+                            if _am:
+                                _dec = base64.b64decode(_am.group(1) + "==").decode("utf-8", errors="replace")
+                                if ":" in _dec:
+                                    _u, _p = _dec.split(":", 1)
+                                    _cred_rec = {"protocol": "HTTP", "type": "Basic Auth",
+                                                 "username": _u[:120], "password": _p[:120]}
+                            if not _cred_rec and payload[:5] == b"POST ":
+                                _sep_idx = _htxt.find("\r\n\r\n")
+                                _sep_sz = 4
+                                if _sep_idx == -1:
+                                    _sep_idx = _htxt.find("\n\n")
+                                    _sep_sz = 2
+                                if _sep_idx != -1:
+                                    _body_str = _htxt[_sep_idx + _sep_sz:]
+                                    _form = parse_qs(_body_str, keep_blank_values=True)
+                                    _pw_val = next((_form[k][0][:120] for k in ("password", "passwd", "pwd") if k in _form), None)
+                                    if _pw_val:
+                                        _user_val = next((_form[k][0][:120] for k in ("username", "user", "login", "email", "name") if k in _form), "")
+                                        _cred_rec = {"protocol": "HTTP", "type": "Form POST",
+                                                     "username": _user_val, "password": _pw_val}
+                        # FTP USER / PASS sequence
+                        elif dport == 21 or sport == 21:
+                            _ftxt = payload.decode("utf-8", errors="replace").strip()
+                            _fcmd = _ftxt.upper()
+                            if _fcmd.startswith("USER "):
+                                _cred_ftp[conn_key] = {"user": _ftxt[5:].strip()[:120]}
+                            elif _fcmd.startswith("PASS ") and conn_key in _cred_ftp:
+                                _cred_rec = {"protocol": "FTP", "type": "USER/PASS",
+                                             "username": _cred_ftp.pop(conn_key)["user"],
+                                             "password": _ftxt[5:].strip()[:120]}
+                        # SMTP AUTH PLAIN / AUTH LOGIN
+                        elif dport in _CRED_SMTP_PORTS or sport in _CRED_SMTP_PORTS:
+                            _stxt = payload.decode("utf-8", errors="replace").strip()
+                            _m = re.match(r"AUTH PLAIN ([A-Za-z0-9+/=]+)", _stxt, re.IGNORECASE)
+                            if _m:
+                                _dec = base64.b64decode(_m.group(1) + "==").decode("utf-8", errors="replace")
+                                _pts = _dec.split("\x00")
+                                if len(_pts) >= 3:
+                                    _cred_rec = {"protocol": "SMTP", "type": "AUTH PLAIN",
+                                                 "username": _pts[1][:120], "password": _pts[2][:120]}
+                            elif re.match(r"AUTH LOGIN", _stxt, re.IGNORECASE):
+                                _cred_smtp[conn_key] = {"phase": "user"}
+                            elif conn_key in _cred_smtp:
+                                _cs = _cred_smtp[conn_key]
+                                if _cs.get("phase") == "user":
+                                    _cs["user"] = base64.b64decode(_stxt + "==").decode("utf-8", errors="replace")[:120]
+                                    _cs["phase"] = "pass"
+                                elif _cs.get("phase") == "pass":
+                                    _pw = base64.b64decode(_stxt + "==").decode("utf-8", errors="replace")[:120]
+                                    _cred_rec = {"protocol": "SMTP", "type": "AUTH LOGIN",
+                                                 "username": _cs.get("user", ""), "password": _pw}
+                                    del _cred_smtp[conn_key]
+                        # POP3 USER / PASS sequence
+                        elif dport in _CRED_POP3_PORTS or sport in _CRED_POP3_PORTS:
+                            _ptxt = payload.decode("utf-8", errors="replace").strip()
+                            if _ptxt.upper().startswith("USER "):
+                                _cred_pop3[conn_key] = {"user": _ptxt[5:].strip()[:120]}
+                            elif _ptxt.upper().startswith("PASS ") and conn_key in _cred_pop3:
+                                _cred_rec = {"protocol": "POP3", "type": "USER/PASS",
+                                             "username": _cred_pop3.pop(conn_key)["user"],
+                                             "password": _ptxt[5:].strip()[:120]}
+                        # IMAP LOGIN command (handles quoted credentials)
+                        elif dport in _CRED_IMAP_PORTS or sport in _CRED_IMAP_PORTS:
+                            _itxt = payload.decode("utf-8", errors="replace").strip()
+                            _im = re.match(r'[A-Za-z0-9]+ LOGIN ("(?:[^"\\]|\\.)*"|[^\s"]+)\s+("(?:[^"\\]|\\.)*"|[^\s"]+)',
+                                           _itxt, re.IGNORECASE)
+                            if _im:
+                                _cred_rec = {"protocol": "IMAP", "type": "LOGIN",
+                                             "username": _im.group(1).strip('"')[:120],
+                                             "password": _im.group(2).strip('"')[:120]}
+                        # LDAP Simple Bind
+                        elif dport in _CRED_LDAP_PORTS or sport in _CRED_LDAP_PORTS:
+                            if len(payload) > 6 and payload[0] == 0x30:
+                                _off = 1
+                                _, _off = _ber_len(payload, _off)
+                                if _off < len(payload) and payload[_off] == 0x02:
+                                    _off += 1
+                                    _mid_len, _off = _ber_len(payload, _off)
+                                    _off += _mid_len
+                                if _off < len(payload) and payload[_off] == 0x60:
+                                    _off += 1
+                                    _, _off = _ber_len(payload, _off)
+                                    if _off < len(payload) and payload[_off] == 0x02:
+                                        _off += 1
+                                        _vlen, _off = _ber_len(payload, _off)
+                                        _off += _vlen
+                                    _dn = ""
+                                    _ldap_pw = ""
+                                    if _off < len(payload) and payload[_off] == 0x04:
+                                        _off += 1
+                                        _dn_len, _off = _ber_len(payload, _off)
+                                        _dn = payload[_off:_off + _dn_len].decode("utf-8", errors="replace")
+                                        _off += _dn_len
+                                    if _off < len(payload) and payload[_off] == 0x80:
+                                        _off += 1
+                                        _pw_len, _off = _ber_len(payload, _off)
+                                        _ldap_pw = payload[_off:_off + _pw_len].decode("utf-8", errors="replace")
+                                    if _dn or _ldap_pw:
+                                        _cred_rec = {"protocol": "LDAP", "type": "Simple Bind",
+                                                     "username": _dn[:120], "password": _ldap_pw[:120]}
+                        # SNMP community string (v1/v2c only)
+                        elif dport in _CRED_SNMP_PORTS or sport in _CRED_SNMP_PORTS:
+                            if len(payload) > 6 and payload[0] == 0x30:
+                                _off = 1
+                                _, _off = _ber_len(payload, _off)
+                                if _off < len(payload) and payload[_off] == 0x02:
+                                    _off += 1
+                                    _vlen, _off = _ber_len(payload, _off)
+                                    _snmp_ver = payload[_off] if _vlen >= 1 else 99
+                                    _off += _vlen
+                                    if _snmp_ver != 3 and _off < len(payload) and payload[_off] == 0x04:
+                                        _off += 1
+                                        _clen, _off = _ber_len(payload, _off)
+                                        if 0 < _clen <= 120:
+                                            _community = payload[_off:_off + _clen].decode("utf-8", errors="replace")
+                                            _cred_rec = {"protocol": "SNMP", "type": "Community String",
+                                                         "username": _community, "password": ""}
+                        # Telnet login (prompt/response state machine)
+                        elif dport == _CRED_TELNET_PORT or sport == _CRED_TELNET_PORT:
+                            _clean = bytearray()
+                            _ti = 0
+                            _raw_tel = bytes(payload)
+                            while _ti < len(_raw_tel):
+                                if _raw_tel[_ti] == 0xFF and _ti + 1 < len(_raw_tel):
+                                    _ti += 1
+                                    _nb = _raw_tel[_ti]
+                                    if _nb == 0xFF:
+                                        _clean.append(0xFF)
+                                        _ti += 1
+                                    elif _nb == 0xFA:
+                                        _ti += 1
+                                        while _ti + 1 < len(_raw_tel) and not (
+                                                _raw_tel[_ti] == 0xFF and _raw_tel[_ti + 1] == 0xF0):
+                                            _ti += 1
+                                        _ti += 2
+                                    elif 0xFB <= _nb <= 0xFE:
+                                        _ti += 2
+                                    else:
+                                        _ti += 1
+                                else:
+                                    _clean.append(_raw_tel[_ti])
+                                    _ti += 1
+                            _tel_txt = _clean.decode("utf-8", errors="replace")
+                            _tstate = _cred_telnet.setdefault(conn_key, {"phase": None, "buf": "", "user": ""})
+                            _tel_lower = _tel_txt.lower()
+                            if "login:" in _tel_lower or "username:" in _tel_lower:
+                                _tstate["phase"] = "user"
+                                _tstate["buf"] = ""
+                            elif "password:" in _tel_lower:
+                                _tstate["phase"] = "pass"
+                                _tstate["buf"] = ""
+                            elif _tstate["phase"] in ("user", "pass"):
+                                _tstate["buf"] = (_tstate["buf"] + _tel_txt)[:256]
+                                if "\n" in _tstate["buf"] or "\r" in _tstate["buf"]:
+                                    _val = _tstate["buf"].strip()[:120]
+                                    if _tstate["phase"] == "user":
+                                        _tstate["user"] = _val
+                                        _tstate["phase"] = "pass"
+                                        _tstate["buf"] = ""
+                                    elif _tstate["phase"] == "pass" and _tstate["user"]:
+                                        _cred_rec = {"protocol": "Telnet", "type": "Login",
+                                                     "username": _tstate["user"], "password": _val}
+                                        del _cred_telnet[conn_key]
+                    except Exception:
+                        pass
+                    if _cred_rec:
+                        _cred_rec.update({"time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
+                                          "src": sip, "dst": dip, "dport": dport})
+                        _cred_key = (_cred_rec["protocol"], _cred_rec["src"], _cred_rec["dst"],
+                                     _cred_rec.get("dport"), _cred_rec.get("username"), _cred_rec.get("password"))
+                        if _cred_key not in _cred_seen:
+                            _cred_seen.add(_cred_key)
+                            credentials.append(_cred_rec)
 
                 sh["protocols"].add(protocol)
                 dh["protocols"].add(protocol)
@@ -2416,7 +2559,7 @@ def analyze_pcap(filepath):
             h["host_type"] = "Engineering Workstation"
 
     # ── Anomaly detection ─────────────────────────────────────────────────────
-    anomalies = analyze_anomalies(hosts, connections, packet_store)
+    anomalies = analyze_anomalies(hosts, connections, packet_store, credentials)
 
     # ── Per-host risk score (0–100) ───────────────────────────────────────────
     _SEV_WEIGHT = {"high": 30, "medium": 15, "low": 5}
