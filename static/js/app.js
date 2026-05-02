@@ -1098,6 +1098,7 @@ function showTooltipNode(event, d) {
       ${fmtNum(d.packet_count)} pkts · ${fmtBytes(d.bytes_sent + d.bytes_recv)}
     </div>
     ${anomalyNodeIps[d.ip] ? `<div style="margin-top:4px;font-size:10px;color:${anomalyNodeIps[d.ip]==='high'?'var(--red)':'var(--yellow)'}">⚠ ${anomalyNodeIps[d.ip].toUpperCase()} anomaly</div>` : ""}
+    ${d.tls_sni && d.tls_sni.length ? `<div style="margin-top:2px;font-size:10px;color:#58a6ff">TLS: ${d.tls_sni.slice(0,2).map(escHtml).join(", ")}</div>` : ""}
   `;
   tooltip.classList.add("visible");
   positionTooltip(event);
@@ -1199,6 +1200,34 @@ function showDetailPanel(d) {
   if (d.dns_queries.length) {
     rows.push(sectionTitle("DNS queries sent"));
     d.dns_queries.forEach(q => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px;color:var(--text2)">${escHtml(q)}</div>`));
+  }
+
+  if (d.tls_sni && d.tls_sni.length) {
+    rows.push(sectionTitle("TLS SNI (server names)"));
+    d.tls_sni.forEach(s => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px;color:#58a6ff">${escHtml(s)}</div>`));
+  }
+
+  if (d.tls_ja3 && d.tls_ja3.length) {
+    rows.push(sectionTitle("JA3 fingerprints"));
+    d.tls_ja3.forEach(j => {
+      const knownBad = {
+        "e7d705a3286e19ea42f587b344ee6865": "Metasploit Meterpreter",
+        "6734f37431670b3ab4292b8f60f29984": "Cobalt Strike",
+        "b386946a5a44d1ddcc843bc75336dfce": "Dridex",
+        "a0e9f5d64349fb13191bc781f81f42e1": "AgentTesla",
+        "c12f54a3f91dc7bafd92cb59fe009a35": "Cobalt Strike Beacon",
+        "ada79f3a9e63d0f1f4c6cb3ba9e99fa0": "Emotet",
+        "de350869b8c85de67a350c8d186f11e6": "Trickbot",
+        "51c64c77e60f3980eea90869b68c58a8": "AsyncRAT",
+        "6bca5a6d9bf5b08f9cd95feefc1c2c7e": "QakBot",
+        "a106ce68aee22e2f5d82ee41fb5fb22a": "IcedID",
+      };
+      const threat = knownBad[j];
+      rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:10px;margin-bottom:3px">
+        <span style="color:${threat ? 'var(--red)' : 'var(--text2)'}">${escHtml(j)}</span>
+        ${threat ? `<span style="color:var(--red);margin-left:6px">⚠ ${escHtml(threat)}</span>` : ""}
+      </div>`);
+    });
   }
 
   // Anomalies for this node

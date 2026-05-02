@@ -1,4 +1,6 @@
+import hashlib
 import ipaddress
+import math
 import os
 import tempfile
 import statistics
@@ -1001,6 +1003,150 @@ def parse_bacnet(payload_bytes):
         return None
 
 
+def _is_grease(val):
+    """TLS GREASE values (RFC 8701): 0x?A?A pattern where both bytes are equal."""
+    lo = val & 0xFF
+    return lo == (val >> 8) and (lo & 0x0F) == 0x0A
+
+
+# Known-malicious JA3 fingerprints (curated from public threat intelligence)
+_KNOWN_BAD_JA3 = {
+    "e7d705a3286e19ea42f587b344ee6865": "Metasploit Meterpreter",
+    "6734f37431670b3ab4292b8f60f29984": "Cobalt Strike",
+    "b386946a5a44d1ddcc843bc75336dfce": "Dridex",
+    "a0e9f5d64349fb13191bc781f81f42e1": "AgentTesla",
+    "c12f54a3f91dc7bafd92cb59fe009a35": "Cobalt Strike Beacon",
+    "ada79f3a9e63d0f1f4c6cb3ba9e99fa0": "Emotet",
+    "72a589da586844d7f0818ce684948eea": "TLS Anomaly (ABUSE.CH)",
+    "de350869b8c85de67a350c8d186f11e6": "Trickbot",
+    "51c64c77e60f3980eea90869b68c58a8": "AsyncRAT",
+    "fd4bc6cea4bef9aea6295ac5b3fd65a9": "CobaltStrike (alt)",
+    "6bca5a6d9bf5b08f9cd95feefc1c2c7e": "QakBot",
+    "a106ce68aee22e2f5d82ee41fb5fb22a": "IcedID",
+}
+
+
+def parse_tls_client_hello(payload):
+    """Parse TLS ClientHello from TCP payload bytes.
+
+    Returns dict with sni, ja3, ja3_str, tls_version or None on failure.
+    """
+    try:
+        if len(payload) < 43:
+            return None
+        # TLS record header: content_type=0x16 (Handshake), version=0x03xx
+        if payload[0] != 0x16 or payload[1] != 0x03:
+            return None
+        record_len = (payload[3] << 8) | payload[4]
+        if len(payload) < 5 + record_len:
+            return None
+
+        # Handshake header: msg_type (1 byte) + length (3 bytes)
+        hs = payload[5:]
+        if not hs or hs[0] != 0x01:  # 0x01 = ClientHello
+            return None
+        hs_len = (hs[1] << 16) | (hs[2] << 8) | hs[3]
+        if len(hs) < 4 + hs_len:
+            return None
+
+        ch = hs[4:]  # ClientHello body
+        if len(ch) < 34:
+            return None
+
+        # client_version (2 bytes) + random (32 bytes)
+        client_version = (ch[0] << 8) | ch[1]
+        pos = 34  # skip version(2) + random(32)
+
+        # session_id
+        if pos >= len(ch):
+            return None
+        sid_len = ch[pos]
+        pos += 1 + sid_len
+
+        # cipher_suites
+        if pos + 2 > len(ch):
+            return None
+        cs_len = (ch[pos] << 8) | ch[pos + 1]
+        pos += 2
+        ciphers = []
+        for i in range(0, cs_len, 2):
+            if pos + i + 2 > len(ch):
+                break
+            c = (ch[pos + i] << 8) | ch[pos + i + 1]
+            if not _is_grease(c):
+                ciphers.append(str(c))
+        pos += cs_len
+
+        # compression_methods
+        if pos >= len(ch):
+            return None
+        cm_len = ch[pos]
+        pos += 1 + cm_len
+
+        # extensions
+        sni = None
+        ext_types = []
+        curves = []
+        point_formats = []
+
+        if pos + 2 <= len(ch):
+            ext_total = (ch[pos] << 8) | ch[pos + 1]
+            pos += 2
+            ext_end = min(pos + ext_total, len(ch))
+            while pos + 4 <= ext_end:
+                ext_type = (ch[pos] << 8) | ch[pos + 1]
+                ext_len  = (ch[pos + 2] << 8) | ch[pos + 3]
+                pos += 4
+                if pos + ext_len > len(ch):
+                    break
+                ext_data = ch[pos:pos + ext_len]
+                pos += ext_len
+
+                if not _is_grease(ext_type):
+                    ext_types.append(str(ext_type))
+
+                # SNI (type 0x0000)
+                if ext_type == 0x0000 and len(ext_data) >= 5 and ext_data[2] == 0:
+                    sni_name_len = (ext_data[3] << 8) | ext_data[4]
+                    if len(ext_data) >= 5 + sni_name_len:
+                        sni = ext_data[5:5 + sni_name_len].decode("utf-8", errors="replace")
+
+                # Supported Groups / EllipticCurves (type 0x000A)
+                elif ext_type == 0x000A and len(ext_data) >= 2:
+                    grp_len = (ext_data[0] << 8) | ext_data[1]
+                    for i in range(0, grp_len, 2):
+                        if 2 + i + 2 > len(ext_data):
+                            break
+                        g = (ext_data[2 + i] << 8) | ext_data[2 + i + 1]
+                        if not _is_grease(g):
+                            curves.append(str(g))
+
+                # EC Point Formats (type 0x000B)
+                elif ext_type == 0x000B and len(ext_data) >= 1:
+                    pf_len = ext_data[0]
+                    for i in range(pf_len):
+                        if 1 + i < len(ext_data):
+                            point_formats.append(str(ext_data[1 + i]))
+
+        ja3_str = ",".join([
+            str(client_version),
+            "-".join(ciphers),
+            "-".join(ext_types),
+            "-".join(curves),
+            "-".join(point_formats),
+        ])
+        ja3 = hashlib.md5(ja3_str.encode()).hexdigest()
+
+        return {
+            "sni": sni,
+            "ja3": ja3,
+            "ja3_str": ja3_str,
+            "tls_version": client_version,
+        }
+    except Exception:
+        return None
+
+
 def analyze_anomalies(hosts, connections, packet_store):
     """Detect network anomalies and return a list of anomaly dicts."""
     anomalies = []
@@ -1041,6 +1187,19 @@ def analyze_anomalies(hosts, connections, packet_store):
                         "description": f"Cleartext {proto_name} traffic detected between {a} and {b} — credentials may be exposed",
                     })
                     break
+
+    # ── TLS: known-bad JA3 fingerprint ───────────────────────────────────────
+    for ip, h in hosts.items():
+        for ja3 in h.get("tls_ja3", set()):
+            if ja3 in _KNOWN_BAD_JA3:
+                label = _KNOWN_BAD_JA3[ja3]
+                anomalies.append({
+                    "type": "unusual_ja3",
+                    "severity": "high",
+                    "src": ip,
+                    "dst": None,
+                    "description": f"{ip} used TLS fingerprint matching {label} (JA3={ja3}) — known malware/C2 tool signature",
+                })
 
     # ── Beaconing: regular inter-packet timing (vectorized via CuPy/NumPy) ──
     for conn_key, pkts in packet_store.items():
@@ -1441,7 +1600,7 @@ def _build_packet_detail(raw, rel_t, sip, dip, protocol, plen,
         "layers": [], "hex": "", "info": "",
         "http": None, "modbus": None, "mqtt": None, "coap": None,
         "dnp3": None, "s7comm": None, "enip": None,
-        "iec104": None, "bacnet": None,
+        "iec104": None, "bacnet": None, "tls": None,
     }
 
     if smac is not None:
@@ -1566,6 +1725,8 @@ def analyze_pcap(filepath):
                 "dnp3_addresses": set(),
                 "ot_role": "unknown",
                 "has_s7_download": False,
+                "tls_sni": set(),
+                "tls_ja3": set(),
             }
         h = hosts[ip]
         if mac and not h["mac"]:
@@ -1904,6 +2065,17 @@ def analyze_pcap(filepath):
                                 if bn.get("service_name"):
                                     conn["fc_counts"][f"BACnet:{bn['service_name']}"] += 1
 
+                        # TLS ClientHello — SNI + JA3 fingerprint
+                        if (len(payload) >= 43 and
+                                payload[0] == 0x16 and payload[1] == 0x03):
+                            tls = parse_tls_client_hello(payload)
+                            if tls:
+                                pd["tls"] = tls
+                                if tls.get("sni"):
+                                    sh["tls_sni"].add(tls["sni"])
+                                if tls.get("ja3"):
+                                    sh["tls_ja3"].add(tls["ja3"])
+
                         packet_store[conn_key].append(pd)
                     except Exception:
                         pass
@@ -1996,6 +2168,8 @@ def analyze_pcap(filepath):
             "ot_role": h.get("ot_role", "unknown"),
             "modbus_unit_ids": sorted(h.get("modbus_unit_ids", set())),
             "dnp3_addresses": sorted(h.get("dnp3_addresses", set())),
+            "tls_sni": sorted(h.get("tls_sni", set())),
+            "tls_ja3": sorted(h.get("tls_ja3", set())),
             "purdue_level": purdue_level_py(
                 h["host_type"],
                 geo.get("country_code") if geo else None,
@@ -2092,6 +2266,8 @@ def merge_results(results):
                 merged_nodes[ip]["dns_queries"] = set(n["dns_queries"])
                 merged_nodes[ip]["modbus_unit_ids"] = set(n.get("modbus_unit_ids", []))
                 merged_nodes[ip]["dnp3_addresses"] = set(n.get("dnp3_addresses", []))
+                merged_nodes[ip]["tls_sni"] = set(n.get("tls_sni", []))
+                merged_nodes[ip]["tls_ja3"] = set(n.get("tls_ja3", []))
             else:
                 mn = merged_nodes[ip]
                 mn["packet_count"] += n["packet_count"]
@@ -2104,6 +2280,8 @@ def merge_results(results):
                 mn["dns_queries"].update(n["dns_queries"])
                 mn["modbus_unit_ids"].update(n.get("modbus_unit_ids", []))
                 mn["dnp3_addresses"].update(n.get("dnp3_addresses", []))
+                mn["tls_sni"].update(n.get("tls_sni", []))
+                mn["tls_ja3"].update(n.get("tls_ja3", []))
                 if not mn["hostname"] and n["hostname"]:
                     mn["hostname"] = n["hostname"]
                 if not mn["geo"] and n.get("geo"):
@@ -2186,6 +2364,8 @@ def merge_results(results):
             "ot_role": mn.get("ot_role", "unknown"),
             "modbus_unit_ids": sorted(mn.get("modbus_unit_ids", set())),
             "dnp3_addresses": sorted(mn.get("dnp3_addresses", set())),
+            "tls_sni": sorted(mn.get("tls_sni", set())),
+            "tls_ja3": sorted(mn.get("tls_ja3", set())),
             "purdue_level": purdue_level_py(
                 mn["host_type"],
                 mn.get("geo", {}).get("country_code") if mn.get("geo") else None,
