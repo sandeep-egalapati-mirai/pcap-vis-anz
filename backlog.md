@@ -91,6 +91,8 @@
 - General: Test coverage for `analyze_pcap` and `merge_results` is thin — add integration tests with sample PCAPs
 
 - [x] Feature #4: TCP Follow Stream — "Stream" tab in packet inspector; sorts packets by time, groups by direction (client=blue, server=green), decodes hex payload to ASCII with non-printables as `.`; tab hidden when no payloads captured
+- [x] Feature #5: Credentials extraction view — HTTP Basic auth, HTTP form POST, FTP USER/PASS, SMTP AUTH PLAIN/LOGIN, POP3 USER/PASS, IMAP LOGIN; sidebar panel with protocol filter + click-to-reveal passwords; capped at 500/capture, 2000/merge
+- [x] Feature #6: Unified OT command log — chronological global table of all Modbus/DNP3/S7comm/EtherNet/IP/IEC-104/BACnet commands; 5th view tab ("OT Log"); filter by protocol + direction; color-coded read/write/error/diagnostic; 5000 cmd cap per capture
 
 ## Completed (Bug Fixes)
 
