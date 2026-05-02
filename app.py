@@ -1575,11 +1575,13 @@ def analyze_pcap(filepath):
 
     MAX_PACKETS = 1_000_000
     MAX_HOSTS = 50_000
+    MAX_OT_COMMANDS = 5_000
     processed = 0
     packet_store = defaultdict(list)
     MAX_STORED_PER_CONN = 50
     first_pkt_time = None
     last_pkt_time = None
+    ot_commands = []
 
     try:
         with RawPcapReader(filepath) as reader:
@@ -1829,6 +1831,19 @@ def analyze_pcap(filepath):
                                 if mb.get("function_code") is not None:
                                     fc_label = f"Modbus:FC{mb['function_code']} {mb.get('function_name', '')}".rstrip()
                                     conn["fc_counts"][fc_label] += 1
+                                if len(ot_commands) < MAX_OT_COMMANDS:
+                                    _dir = "error" if mb["is_error"] else ("write" if mb["is_write"] else "read")
+                                    ot_commands.append({
+                                        "time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
+                                        "src": sip, "dst": dip,
+                                        "protocol": "Modbus",
+                                        "function_code": mb.get("function_code"),
+                                        "function_name": mb.get("function_name", ""),
+                                        "direction": _dir,
+                                        "register": mb.get("register_address"),
+                                        "quantity": mb.get("quantity"),
+                                        "unit_id": mb.get("unit_id"),
+                                    })
 
                         # MQTT parsing
                         if payload and (dport in (1883, 8883) or sport in (1883, 8883)):
@@ -1862,6 +1877,21 @@ def analyze_pcap(filepath):
                                 if dn.get("function_code") is not None:
                                     fn = dn.get("function_name") or f"FC{dn['function_code']}"
                                     conn["fc_counts"][f"DNP3:{fn}"] += 1
+                                if len(ot_commands) < MAX_OT_COMMANDS:
+                                    _dir = "error" if dn["is_error"] else ("write" if dn["is_write"] else "read")
+                                    ot_commands.append({
+                                        "time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
+                                        "src": sip, "dst": dip,
+                                        "protocol": "DNP3",
+                                        "function_code": dn.get("function_code"),
+                                        "function_name": dn.get("function_name", ""),
+                                        "direction": _dir,
+                                        "register": None,
+                                        "quantity": None,
+                                        "unit_id": None,
+                                        "address": dn.get("dst_address"),
+                                        "data_object": dn.get("data_object_group"),
+                                    })
 
                         # S7comm parsing
                         if payload and (dport == 102 or sport == 102):
@@ -1879,6 +1909,19 @@ def analyze_pcap(filepath):
                                 if s7.get("function_code") is not None:
                                     fn = s7.get("function_name") or hex(s7["function_code"])
                                     conn["fc_counts"][f"S7:{fn}"] += 1
+                                if len(ot_commands) < MAX_OT_COMMANDS:
+                                    _dir = "error" if s7["is_error"] else ("write" if s7["is_write"] else "read")
+                                    ot_commands.append({
+                                        "time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
+                                        "src": sip, "dst": dip,
+                                        "protocol": "S7comm",
+                                        "function_code": s7.get("function_code"),
+                                        "function_name": s7.get("function_name", ""),
+                                        "direction": _dir,
+                                        "register": None,
+                                        "quantity": None,
+                                        "unit_id": None,
+                                    })
 
                         # EtherNet/IP parsing
                         if payload and (dport in (2222, 44818) or sport in (2222, 44818)):
@@ -1887,6 +1930,17 @@ def analyze_pcap(filepath):
                                 pd["enip"] = ei
                                 if ei.get("cip_service_name"):
                                     conn["fc_counts"][f"EtherNet/IP:{ei['cip_service_name']}"] += 1
+                                if len(ot_commands) < MAX_OT_COMMANDS:
+                                    _dir = "error" if ei.get("is_error") else ("write" if ei.get("is_write") else "read")
+                                    ot_commands.append({
+                                        "time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
+                                        "src": sip, "dst": dip,
+                                        "protocol": "EtherNet/IP",
+                                        "function_code": ei.get("command"),
+                                        "function_name": ei.get("cip_service_name") or ei.get("command_name", ""),
+                                        "direction": _dir,
+                                        "register": None, "quantity": None, "unit_id": None,
+                                    })
 
                         # IEC 60870-5-104 parsing
                         if payload and (dport == 2404 or sport == 2404):
@@ -1895,6 +1949,17 @@ def analyze_pcap(filepath):
                                 pd["iec104"] = ic
                                 if ic.get("type_name"):
                                     conn["fc_counts"][f"IEC-104:{ic['type_name']}"] += 1
+                                if len(ot_commands) < MAX_OT_COMMANDS:
+                                    _dir = "write" if ic.get("is_write") else ("read" if ic.get("frame_type") == "I" else "diagnostic")
+                                    ot_commands.append({
+                                        "time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
+                                        "src": sip, "dst": dip,
+                                        "protocol": "IEC-104",
+                                        "function_code": ic.get("type_id"),
+                                        "function_name": ic.get("type_name", ""),
+                                        "direction": _dir,
+                                        "register": None, "quantity": None, "unit_id": None,
+                                    })
 
                         # BACnet parsing
                         if payload and (dport == 47808 or sport == 47808):
@@ -1903,6 +1968,25 @@ def analyze_pcap(filepath):
                                 pd["bacnet"] = bn
                                 if bn.get("service_name"):
                                     conn["fc_counts"][f"BACnet:{bn['service_name']}"] += 1
+                                if len(ot_commands) < MAX_OT_COMMANDS:
+                                    if bn.get("is_error"):
+                                        _dir = "error"
+                                    elif bn.get("is_write"):
+                                        _dir = "write"
+                                    elif bn.get("service_name") in ("i-Am", "i-Have", "who-Is", "who-Has",
+                                                                     "timeSynchronization", "utcTimeSynchronization"):
+                                        _dir = "diagnostic"
+                                    else:
+                                        _dir = "read"
+                                    ot_commands.append({
+                                        "time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
+                                        "src": sip, "dst": dip,
+                                        "protocol": "BACnet",
+                                        "function_code": bn.get("service_choice"),
+                                        "function_name": bn.get("service_name", ""),
+                                        "direction": _dir,
+                                        "register": None, "quantity": None, "unit_id": None,
+                                    })
 
                         packet_store[conn_key].append(pd)
                     except Exception:
@@ -2042,6 +2126,7 @@ def analyze_pcap(filepath):
         "edges": edges,
         "packets": packets_out,
         "anomalies": anomalies,
+        "ot_commands": ot_commands,
         "stats": {
             "total_packets": processed,
             "total_hosts": len(nodes),
@@ -2061,6 +2146,7 @@ def merge_results(results):
     merged_edges = {}
     merged_packets = {}
     merged_anomalies = []
+    merged_ot_commands = []
     anomaly_keys = set()
     total_packets = 0
     truncated = False
@@ -2161,6 +2247,11 @@ def merge_results(results):
                 anomaly_keys.add(akey)
                 merged_anomalies.append(a)
 
+        # Merge OT commands (cap at 10000)
+        remaining_ot = 10_000 - len(merged_ot_commands)
+        if remaining_ot > 0:
+            merged_ot_commands.extend(result.get("ot_commands", [])[:remaining_ot])
+
     # Serialize merged nodes
     nodes_out = []
     for ip, mn in merged_nodes.items():
@@ -2221,6 +2312,7 @@ def merge_results(results):
         "edges": edges_out,
         "packets": merged_packets,
         "anomalies": merged_anomalies,
+        "ot_commands": merged_ot_commands,
         "stats": {
             "total_packets": total_packets,
             "total_hosts": len(nodes_out),

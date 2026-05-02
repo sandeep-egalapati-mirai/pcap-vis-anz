@@ -81,6 +81,14 @@
 - General: GeoIP lookup is optional and silently skipped if MMDB absent; consider a warning banner
 - General: Test coverage for `analyze_pcap` and `merge_results` is thin — add integration tests with sample PCAPs
 
+## Completed (Enrichments)
+
+- [x] Feature #1: DNS tunneling detection — 3 signals: high-entropy labels (>24 chars, >4.5 bits), long avg query (>60 chars), unique-subdomain flood (>20 under same parent); anomaly type `dns_tunneling` severity high
+- [x] Feature #2: Per-host risk score (0–100) — composite of anomaly severity weights + cross-zone egress + suspicious-port count + OT write target; badge on graph nodes + detail panel + table sort
+- [x] Feature #3: TLS ClientHello inspection — SNI extraction + JA3/MD5 fingerprinting; 10 known-bad hashes bundled (Metasploit, CobaltStrike, Dridex, Emotet, Trickbot, etc.); `unusual_ja3` anomaly
+- [x] Feature #5: Credentials extraction view — HTTP Basic auth, HTTP form POST, FTP USER/PASS, SMTP AUTH PLAIN/LOGIN, POP3 USER/PASS, IMAP LOGIN; sidebar panel with protocol filter + click-to-reveal passwords; capped at 500/capture, 2000/merge
+- [x] Feature #6: Unified OT command log — chronological global table of all Modbus/DNP3/S7comm/EtherNet/IP/IEC-104/BACnet commands; 5th view tab ("OT Log"); filter by protocol + direction; color-coded read/write/error/diagnostic; 5000 cmd cap per capture
+
 ## Completed (Bug Fixes)
 
 - [x] Backend: IPv6 packet inspector crash — packet-inspector block unconditionally accessed `pkt[IP]`; now correctly branches `IP in pkt` / `IPv6 in pkt` and emits IPv6 header fields

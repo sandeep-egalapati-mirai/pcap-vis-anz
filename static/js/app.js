@@ -242,6 +242,7 @@ const graphWrap      = document.getElementById("graph-wrap");
 const tableView      = document.getElementById("table-view");
 const dnsView        = document.getElementById("dns-view");
 const otMapView      = document.getElementById("ot-map-view");
+const otLogView      = document.getElementById("otlog-view");
 const ctxMenu        = document.getElementById("ctx-menu");
 
 /* ── SVG setup ───────────────────────────────────────────────────────────── */
@@ -366,6 +367,7 @@ async function uploadFiles(files) {
 function loadGraph(data) {
   graphData = data;
   packetData = data.packets || {};
+  _otLogRendered = false;
   closePktInspector();
   selectedNode = null;
   searchTerm = "";
@@ -428,6 +430,7 @@ function setView(view) {
     tableView.classList.add("hidden");
     dnsView.classList.add("hidden");
     otMapView.classList.add("hidden");
+    otLogView.classList.add("hidden");
     document.getElementById("graph-controls").style.display = "";
     document.getElementById("legend").style.display = "";
   } else if (view === "table") {
@@ -438,6 +441,7 @@ function setView(view) {
     tableView.classList.remove("hidden");
     dnsView.classList.add("hidden");
     otMapView.classList.add("hidden");
+    otLogView.classList.add("hidden");
     renderConnTable();
   } else if (view === "dns") {
     graphWrap.style.display = "none";
@@ -446,6 +450,7 @@ function setView(view) {
     tableView.classList.add("hidden");
     dnsView.classList.remove("hidden");
     otMapView.classList.add("hidden");
+    otLogView.classList.add("hidden");
     renderDnsMap();
   } else if (view === "ot") {
     graphWrap.style.display = "none";
@@ -454,8 +459,18 @@ function setView(view) {
     tableView.classList.add("hidden");
     dnsView.classList.add("hidden");
     otMapView.classList.remove("hidden");
+    otLogView.classList.add("hidden");
     renderOTMap(graphData);
     renderOTTimeline();
+  } else if (view === "otlog") {
+    graphWrap.style.display = "none";
+    tlBar.classList.add("hidden");
+    pktIns.classList.add("hidden");
+    tableView.classList.add("hidden");
+    dnsView.classList.add("hidden");
+    otMapView.classList.add("hidden");
+    otLogView.classList.remove("hidden");
+    renderOtLog(graphData.ot_commands || []);
   }
 }
 
@@ -3465,6 +3480,101 @@ function showDnsQueries(node) {
     `;
     list.appendChild(div);
   });
+}
+
+/* ── OT Log view ─────────────────────────────────────────────────────────── */
+let _otLogRendered = false;   // render once per dataset load
+
+function renderOtLog(cmds) {
+  const tbody       = document.getElementById("otlog-tbody");
+  const emptyEl     = document.getElementById("otlog-empty");
+  const countLabel  = document.getElementById("otlog-count-label");
+  const protoBar    = document.getElementById("otlog-filter-protos");
+  const dirBar      = document.getElementById("otlog-filter-dirs");
+
+  if (!cmds || cmds.length === 0) {
+    tbody.innerHTML = "";
+    emptyEl.classList.remove("hidden");
+    countLabel.textContent = "0 commands";
+    return;
+  }
+  emptyEl.classList.add("hidden");
+
+  const protos = [...new Set(cmds.map(c => c.protocol))].sort();
+  const dirs   = [...new Set(cmds.map(c => c.direction))].sort();
+  const activeProtoF = new Set(protos);
+  const activeDirF   = new Set(dirs);
+
+  function _dirClass(d) {
+    if (d === "write")      return "otlog-dir-write";
+    if (d === "error")      return "otlog-dir-error";
+    if (d === "diagnostic") return "otlog-dir-diagnostic";
+    return "otlog-dir-read";
+  }
+
+  function _details(c) {
+    const parts = [];
+    if (c.unit_id != null)  parts.push(`Unit ${c.unit_id}`);
+    if (c.register != null) parts.push(`Reg ${c.register}`);
+    if (c.quantity != null) parts.push(`×${c.quantity}`);
+    if (c.address != null)  parts.push(`Addr ${c.address}`);
+    if (c.data_object)      parts.push(c.data_object);
+    return parts.join(" | ") || "—";
+  }
+
+  function rebuildTable() {
+    const visible = cmds.filter(c => activeProtoF.has(c.protocol) && activeDirF.has(c.direction));
+    countLabel.textContent = `${visible.length.toLocaleString()} / ${cmds.length.toLocaleString()} commands`;
+    tbody.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    visible.forEach(c => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td style="font-family:var(--font-mono);font-size:11px;color:var(--text2)">+${c.rel_time}s</td>
+        <td style="font-family:var(--font-mono);font-size:11px">${escHtml(c.src)}</td>
+        <td style="font-family:var(--font-mono);font-size:11px">${escHtml(c.dst)}</td>
+        <td><span class="otlog-proto-pill">${escHtml(c.protocol)}</span></td>
+        <td>${escHtml(c.function_name || (c.function_code != null ? `FC${c.function_code}` : "—"))}</td>
+        <td class="${_dirClass(c.direction)}">${escHtml(c.direction)}</td>
+        <td style="color:var(--text2);font-size:11px">${escHtml(_details(c))}</td>`;
+      frag.appendChild(tr);
+    });
+    tbody.appendChild(frag);
+  }
+
+  // Build filter buttons only once per dataset
+  if (!_otLogRendered) {
+    protoBar.innerHTML = '<span style="font-size:11px;color:var(--text2);margin-right:4px">Protocol:</span>';
+    dirBar.innerHTML   = '<span style="font-size:11px;color:var(--text2);margin-right:4px">Direction:</span>';
+
+    protos.forEach(proto => {
+      const btn = document.createElement("button");
+      btn.className = "otlog-filter-btn active";
+      btn.textContent = proto;
+      btn.addEventListener("click", () => {
+        if (activeProtoF.has(proto)) { activeProtoF.delete(proto); btn.classList.remove("active"); }
+        else { activeProtoF.add(proto); btn.classList.add("active"); }
+        rebuildTable();
+      });
+      protoBar.appendChild(btn);
+    });
+
+    dirs.forEach(dir => {
+      const btn = document.createElement("button");
+      btn.className = "otlog-filter-btn active";
+      btn.textContent = dir;
+      btn.addEventListener("click", () => {
+        if (activeDirF.has(dir)) { activeDirF.delete(dir); btn.classList.remove("active"); }
+        else { activeDirF.add(dir); btn.classList.add("active"); }
+        rebuildTable();
+      });
+      dirBar.appendChild(btn);
+    });
+
+    _otLogRendered = true;
+  }
+
+  rebuildTable();
 }
 
 /* ── Export ──────────────────────────────────────────────────────────────── */

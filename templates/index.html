@@ -61,6 +61,7 @@
       <button class="vt-btn" data-view="table">Table</button>
       <button class="vt-btn" data-view="dns">DNS Map</button>
       <button class="vt-btn" data-view="ot">OT Map</button>
+      <button class="vt-btn" data-view="otlog">OT Log</button>
     </div>
 
     <!-- Export dropdown -->
@@ -300,6 +301,31 @@
           <div id="ot-am-error"></div>
           <button id="ot-am-confirm">Add Device</button>
         </div>
+      </div>
+    </div>
+
+    <!-- OT Log view -->
+    <div id="otlog-view" class="hidden">
+      <div id="otlog-toolbar">
+        <div id="otlog-filter-protos" style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+          <span style="font-size:11px;color:var(--text2);margin-right:4px">Protocol:</span>
+        </div>
+        <div id="otlog-filter-dirs" style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-left:16px">
+          <span style="font-size:11px;color:var(--text2);margin-right:4px">Direction:</span>
+        </div>
+        <div style="margin-left:auto;font-size:11px;color:var(--text2)" id="otlog-count-label"></div>
+      </div>
+      <div id="otlog-table-wrap">
+        <table id="otlog-table">
+          <thead>
+            <tr>
+              <th>Time</th><th>Src</th><th>Dst</th><th>Protocol</th>
+              <th>Function</th><th>Direction</th><th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="otlog-tbody"></tbody>
+        </table>
+        <div id="otlog-empty" class="hidden">No OT commands recorded in this capture</div>
       </div>
     </div>
 
