@@ -1,4 +1,5 @@
 import ipaddress
+import math
 import os
 import tempfile
 import statistics
@@ -1394,6 +1395,51 @@ def analyze_anomalies(hosts, connections, packet_store):
                 "description": f"{ip} polling {len(non_zero)} distinct Modbus unit IDs ({sorted(non_zero)[:8]}) — may indicate network mapping of PLC segments",
             })
 
+    # ── DNS tunneling: high-entropy subdomains, excessive length, unique-label flood ──
+    for ip, h in hosts.items():
+        queries = h.get("dns_queries", set())
+        if len(queries) < 3:
+            continue
+
+        reason = None
+
+        # Signal 1: any label >24 chars with very high entropy (base64/hex encoded data)
+        for q in queries:
+            parts = q.split(".")
+            for label in parts[:-2]:  # skip TLD + 2LD
+                if len(label) > 24 and _shannon_entropy(label) > 4.5:
+                    reason = f"high-entropy subdomain '{label[:24]}…' ({len(queries)} queries)"
+                    break
+            if reason:
+                break
+
+        # Signal 2: unusually long average query name
+        if not reason:
+            avg_len = sum(len(q) for q in queries) / len(queries)
+            if avg_len > 60 and len(queries) >= 5:
+                reason = f"abnormally long DNS queries (avg {avg_len:.0f} chars, {len(queries)} queries)"
+
+        # Signal 3: many unique 3rd-level labels to same parent domain
+        if not reason:
+            parent_subs = defaultdict(set)
+            for q in queries:
+                parts = q.split(".")
+                if len(parts) >= 3:
+                    parent_subs[".".join(parts[-2:])].add(parts[-3])
+            for parent, subs in parent_subs.items():
+                if len(subs) > 20:
+                    reason = f"{len(subs)} unique subdomain labels under {parent} — likely C2 channel"
+                    break
+
+        if reason:
+            anomalies.append({
+                "type": "dns_tunneling",
+                "severity": "high",
+                "src": ip,
+                "dst": None,
+                "description": f"{ip} shows DNS tunneling indicators: {reason}",
+            })
+
     # Deduplicate (keep unique type+src+dst combos)
     seen = set()
     deduped = []
@@ -1426,6 +1472,15 @@ def _ipv6_str(b):
 
 _ICMP_TYPE_NAMES = {0: "Echo Reply", 3: "Dest Unreachable",
                     8: "Echo Request", 11: "Time Exceeded"}
+
+
+def _shannon_entropy(s):
+    """Shannon entropy in bits/char for string s."""
+    if not s:
+        return 0.0
+    freq = Counter(s)
+    n = len(s)
+    return -sum(c / n * math.log2(c / n) for c in freq.values())
 
 
 def _build_packet_detail(raw, rel_t, sip, dip, protocol, plen,

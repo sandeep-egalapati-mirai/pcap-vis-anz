@@ -74,6 +74,10 @@
 - [ ] Inline anomaly explanation panel — contextual explanation of what each anomaly means and why it's suspicious
 - [ ] Dashboard / summary view (5th view) — card-based overview: top talkers, protocol breakdown donut, anomaly severity bar, busiest connections
 
+## Completed (Enrichments)
+
+- [x] Backend: DNS tunneling detection — `dns_tunneling_suspected` anomaly using three signals: high-entropy subdomain labels (>24 chars, >4.5 bits), abnormally long average query names (>60 chars), or unique-subdomain flood (>20 labels under same parent). 5 unit tests added.
+
 ## Known Issues
 
 - OT Map: PNG export exports the current zoom/pan view; consider a "fit-to-full" export option

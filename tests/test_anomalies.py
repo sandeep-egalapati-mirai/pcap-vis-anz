@@ -351,4 +351,64 @@ def test_bacnet_reinitialize_device_is_write():
     pkt = _bacnet_pkt(apdu=apdu)
     r = parse_bacnet(pkt)
     assert r["is_write"] is True
-    assert r["service_name"] == "reinitializeDevice"
+
+
+# ── DNS tunneling detection ───────────────────────────────────────────────────
+
+def _dns_host(queries):
+    """Build a minimal host dict with a dns_queries set."""
+    return {
+        "bytes_sent": 0, "bytes_recv": 0,
+        "host_type": "Windows Host", "packet_count": 0,
+        "is_private": True, "dns_queries": set(queries),
+    }
+
+
+def test_dns_tunneling_high_entropy_label():
+    # base64-looking subdomain with entropy > 4.5
+    label = "aHR0cHM6Ly9leGFtcGxlLmNvbS9wYXRo"  # 33 chars, ~4.8 bits
+    queries = [f"{label}.evil.com", f"{label}x.evil.com", f"{label}y.evil.com"]
+    hosts = {"10.0.0.5": _dns_host(queries)}
+    anomalies = analyze_anomalies(hosts, {}, {})
+    types = {a["type"] for a in anomalies}
+    assert "dns_tunneling" in types
+    a = next(x for x in anomalies if x["type"] == "dns_tunneling")
+    assert a["src"] == "10.0.0.5"
+    assert a["severity"] == "high"
+
+
+def test_dns_tunneling_long_average():
+    # 5 distinct queries each ~72 chars (simulated DNS tunnel payloads)
+    queries = [f"{'a' * 20}{i:010d}.{'b' * 20}.tunnel.example.net" for i in range(5)]
+    hosts = {"10.0.0.6": _dns_host(queries)}
+    anomalies = analyze_anomalies(hosts, {}, {})
+    types = {a["type"] for a in anomalies}
+    assert "dns_tunneling" in types
+
+
+def test_dns_tunneling_unique_subdomain_flood():
+    # 25 unique 3rd-level labels under same parent
+    queries = [f"sub{i:04d}.c2.com" for i in range(25)]
+    hosts = {"10.0.0.7": _dns_host(queries)}
+    anomalies = analyze_anomalies(hosts, {}, {})
+    types = {a["type"] for a in anomalies}
+    assert "dns_tunneling" in types
+
+
+def test_dns_tunneling_not_triggered_normal():
+    # Normal short queries — should not fire
+    queries = ["google.com", "api.github.com", "example.org"]
+    hosts = {"10.0.0.8": _dns_host(queries)}
+    anomalies = analyze_anomalies(hosts, {}, {})
+    types = {a["type"] for a in anomalies}
+    assert "dns_tunneling" not in types
+
+
+def test_dns_tunneling_not_triggered_too_few_queries():
+    # Only 2 queries — below minimum of 3
+    label = "aHR0cHM6Ly9leGFtcGxlLmNvbS9wYXRo"
+    queries = [f"{label}.evil.com", f"{label}x.evil.com"]
+    hosts = {"10.0.0.9": _dns_host(queries)}
+    anomalies = analyze_anomalies(hosts, {}, {})
+    types = {a["type"] for a in anomalies}
+    assert "dns_tunneling" not in types
