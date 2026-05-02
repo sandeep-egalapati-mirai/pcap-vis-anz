@@ -403,6 +403,7 @@ function loadGraph(data) {
   buildLegend(data);
   buildAnomalySidebar(data.anomalies || []);
   buildCredentialsSidebar(data.credentials || []);
+  buildFilesSidebar(data.files || []);
   buildTimeline(data);
   renderGraph(data);
   setView("graph");
@@ -771,6 +772,46 @@ function buildCredentialsSidebar(creds) {
   });
 
   renderCredList();
+}
+
+/* ── File transfers sidebar ───────────────────────────────────────────────── */
+function buildFilesSidebar(files) {
+  const section = document.getElementById("files-section");
+  const list    = document.getElementById("files-list");
+  const badge   = document.getElementById("files-badge");
+  list.innerHTML = "";
+
+  if (!files || files.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  badge.textContent = files.length;
+
+  files.forEach(f => {
+    const card = document.createElement("div");
+    card.className = "file-card";
+    const ts = f.rel_time != null ? `+${f.rel_time}s` : "";
+    const size = f.size != null ? _fmtBytes(f.size) : "?";
+    const mime = f.mime_type || "application/octet-stream";
+    card.innerHTML = `
+      <div class="file-name" title="${escHtml(f.filename)}">${escHtml(f.filename)}</div>
+      <div class="file-meta">
+        <span class="file-mime">${escHtml(mime)}</span>
+        <span class="file-size">${size}</span>
+        <span style="margin-left:auto;color:var(--text2);font-size:10px">${ts}</span>
+      </div>
+      <div class="file-route">${escHtml(f.src)} → ${escHtml(f.dst)}</div>
+      <div class="file-hash" title="SHA-256">${escHtml(f.sha256)}</div>`;
+    list.appendChild(card);
+  });
+}
+
+function _fmtBytes(n) {
+  if (n == null) return "?";
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1048576).toFixed(1) + " MB";
 }
 
 function _anomalySummary(type, src, count, items) {
@@ -3982,6 +4023,7 @@ function generateAuditReport() {
   const edges = graphData.edges || [];
   const anomalies = graphData.anomalies || [];
   const creds = graphData.credentials || [];
+  const xfiles = graphData.files || [];
   const otCmds = graphData.ot_commands || [];
 
   const lines = [];
@@ -4003,6 +4045,7 @@ function generateAuditReport() {
   p(`| Bytes | ${s.bytes ? (s.bytes / 1e6).toFixed(2) + " MB" : "—"} |`);
   p(`| Anomalies | ${anomalies.length} |`);
   p(`| Credentials captured | ${creds.length} |`);
+  p(`| File transfers detected | ${xfiles.length} |`);
   p(`| OT commands | ${otCmds.length} |`);
   br();
 
@@ -4106,6 +4149,20 @@ function generateAuditReport() {
     br();
   }
 
+  // File transfers
+  if (xfiles.length) {
+    h(2, `File Transfers Detected (${xfiles.length})`);
+    p(`| Time | Filename | MIME | Size | SHA-256 | Src → Dst |`);
+    p(`|------|----------|------|------|---------|-----------|`);
+    xfiles.slice(0, 50).forEach(f => {
+      const t = f.rel_time != null ? `+${f.rel_time}s` : "—";
+      const sz = _fmtBytes(f.size);
+      p(`| ${t} | ${f.filename} | ${f.mime_type || "—"} | ${sz} | \`${f.sha256.slice(0, 16)}…\` | ${f.src} → ${f.dst} |`);
+    });
+    if (xfiles.length > 50) p(`_…and ${xfiles.length - 50} more_`);
+    br();
+  }
+
   // OT command summary
   if (otCmds.length) {
     h(2, `OT Command Summary (${otCmds.length} total)`);
@@ -4159,6 +4216,9 @@ document.getElementById("save-session-btn").addEventListener("click", () => {
     stats: graphData.stats,
     anomalies: graphData.anomalies || [],
     packets: graphData.packets || {},
+    credentials: graphData.credentials || [],
+    files: graphData.files || [],
+    ot_commands: graphData.ot_commands || [],
   };
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const blob = new Blob([JSON.stringify(sessionData)], { type: "application/json" });
