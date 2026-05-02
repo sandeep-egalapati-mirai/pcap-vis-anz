@@ -3287,7 +3287,7 @@ function renderOTMatrix(data) {
   const LABEL_H = 96;
   const ns      = "http://www.w3.org/2000/svg";
   const svgW    = LABEL_W + N * CELL + 16;
-  const svgH    = LABEL_H + N * CELL + 20;
+  const svgH    = LABEL_H + N * CELL + 28;  // extra 8px for protocol color key row
 
   const svgEl = document.getElementById("ot-matrix-svg");
   svgEl.setAttribute("width",   svgW);
@@ -3385,15 +3385,31 @@ function renderOTMatrix(data) {
     });
   });
 
-  // Legend note
-  const legTxt = document.createElementNS(ns, "text");
-  legTxt.setAttribute("x", LABEL_W);
-  legTxt.setAttribute("y", LABEL_H + N * CELL + 14);
-  legTxt.setAttribute("fill", "#555");
-  legTxt.setAttribute("font-size", "9");
-  legTxt.setAttribute("font-family", "monospace");
-  legTxt.textContent = "Cell = dominant protocol color · Orange = cross-zone · Red border = anomaly";
-  svgEl.appendChild(legTxt);
+  // Protocol color key
+  const OT_PROTO_KEY = ["Modbus","DNP3","S7comm","EtherNet/IP","IEC-104","BACnet","CoAP","MQTT"];
+  let lx = LABEL_W;
+  const ly = LABEL_H + N * CELL + 16;
+  OT_PROTO_KEY.forEach(p => {
+    const clr = PROTO_COLORS[p] || "#555";
+    const sw = document.createElementNS(ns, "rect");
+    sw.setAttribute("x", lx);   sw.setAttribute("y", ly - 8);
+    sw.setAttribute("width", 8); sw.setAttribute("height", 8);
+    sw.setAttribute("rx", "1"); sw.setAttribute("fill", clr);
+    svgEl.appendChild(sw);
+    const lbl = document.createElementNS(ns, "text");
+    lbl.setAttribute("x", lx + 10); lbl.setAttribute("y", ly);
+    lbl.setAttribute("fill", "#8b949e"); lbl.setAttribute("font-size", "8");
+    lbl.setAttribute("font-family", "monospace");
+    lbl.textContent = p;
+    svgEl.appendChild(lbl);
+    lx += 10 + p.length * 5.2 + 6;
+  });
+  const suffixTxt = document.createElementNS(ns, "text");
+  suffixTxt.setAttribute("x", lx); suffixTxt.setAttribute("y", ly);
+  suffixTxt.setAttribute("fill", "#555"); suffixTxt.setAttribute("font-size", "8");
+  suffixTxt.setAttribute("font-family", "monospace");
+  suffixTxt.textContent = "· orange = cross-zone · red border = anomaly";
+  svgEl.appendChild(suffixTxt);
 }
 
 /* ── DNS Map View ────────────────────────────────────────────────────────── */

@@ -1531,6 +1531,13 @@ header h1 span { color: var(--accent); }
   border-radius: 50%;
   flex-shrink: 0;
 }
+#ot-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+}
 
 /* ── Packet inspector tab buttons ────────────────────────────────────────── */
 .pkt-tab-btn {
