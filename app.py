@@ -1,7 +1,9 @@
+import base64
 import hashlib
 import ipaddress
 import math
 import os
+import re
 import tempfile
 import statistics
 from collections import defaultdict, Counter
@@ -1790,11 +1792,20 @@ def analyze_pcap(filepath):
 
     MAX_PACKETS = 1_000_000
     MAX_HOSTS = 50_000
+    MAX_CREDS = 500
     processed = 0
     packet_store = defaultdict(list)
     MAX_STORED_PER_CONN = 50
     first_pkt_time = None
     last_pkt_time = None
+    credentials = []
+    _cred_ftp   = {}   # conn_key → {"user": str}
+    _cred_pop3  = {}   # conn_key → {"user": str}
+    _cred_smtp  = {}   # conn_key → {"phase": "user"|"pass", "user": str}
+    _CRED_HTTP_PORTS  = {80, 8080, 8000, 3000, 8008, 8888}
+    _CRED_SMTP_PORTS  = {25, 587, 465}
+    _CRED_POP3_PORTS  = {110}
+    _CRED_IMAP_PORTS  = {143}
 
     try:
         with RawPcapReader(filepath) as reader:
@@ -1997,6 +2008,81 @@ def analyze_pcap(filepath):
                                 pass
 
                         connections[conn_key]["dst_ports"].add(dport)
+
+                        # ── Credential extraction ─────────────────────────────
+                        if payload and len(credentials) < MAX_CREDS:
+                            _cred_rec = None
+                            try:
+                                # HTTP Basic auth & POST form fields
+                                if dport in _CRED_HTTP_PORTS and payload[:5] in (b"GET /", b"POST ", b"PUT /", b"PATCH", b"DELET"):
+                                    _htxt = payload[:4000].decode("utf-8", errors="replace")
+                                    _am = re.search(r"Authorization:\s*Basic\s+([A-Za-z0-9+/=]+)", _htxt, re.IGNORECASE)
+                                    if _am:
+                                        _dec = base64.b64decode(_am.group(1) + "==").decode("utf-8", errors="replace")
+                                        if ":" in _dec:
+                                            _u, _p = _dec.split(":", 1)
+                                            _cred_rec = {"protocol": "HTTP", "type": "Basic Auth",
+                                                         "username": _u[:120], "password": _p[:120]}
+                                    if not _cred_rec and b"POST " == payload[:5]:
+                                        _pm = re.search(r"(?:password|passwd|pwd)=([^&\r\n ]{1,120})", _htxt, re.IGNORECASE)
+                                        if _pm:
+                                            _um = re.search(r"(?:username|user|login|email|name)=([^&\r\n ]{1,120})", _htxt, re.IGNORECASE)
+                                            _cred_rec = {"protocol": "HTTP", "type": "Form POST",
+                                                         "username": _um.group(1) if _um else "", "password": _pm.group(1)}
+                                # FTP USER / PASS sequence
+                                elif dport == 21 or sport == 21:
+                                    _ftxt = payload.decode("utf-8", errors="replace").strip()
+                                    _fcmd = _ftxt.upper()
+                                    if _fcmd.startswith("USER "):
+                                        _cred_ftp[conn_key] = {"user": _ftxt[5:].strip()[:120]}
+                                    elif _fcmd.startswith("PASS ") and conn_key in _cred_ftp:
+                                        _cred_rec = {"protocol": "FTP", "type": "USER/PASS",
+                                                     "username": _cred_ftp.pop(conn_key)["user"],
+                                                     "password": _ftxt[5:].strip()[:120]}
+                                # SMTP AUTH PLAIN / AUTH LOGIN
+                                elif dport in _CRED_SMTP_PORTS or sport in _CRED_SMTP_PORTS:
+                                    _stxt = payload.decode("utf-8", errors="replace").strip()
+                                    _m = re.match(r"AUTH PLAIN ([A-Za-z0-9+/=]+)", _stxt, re.IGNORECASE)
+                                    if _m:
+                                        _dec = base64.b64decode(_m.group(1) + "==").decode("utf-8", errors="replace")
+                                        _pts = _dec.split("\x00")
+                                        if len(_pts) >= 3:
+                                            _cred_rec = {"protocol": "SMTP", "type": "AUTH PLAIN",
+                                                         "username": _pts[1][:120], "password": _pts[2][:120]}
+                                    elif re.match(r"AUTH LOGIN", _stxt, re.IGNORECASE):
+                                        _cred_smtp[conn_key] = {"phase": "user"}
+                                    elif conn_key in _cred_smtp:
+                                        _cs = _cred_smtp[conn_key]
+                                        if _cs.get("phase") == "user":
+                                            _cs["user"] = base64.b64decode(_stxt + "==").decode("utf-8", errors="replace")[:120]
+                                            _cs["phase"] = "pass"
+                                        elif _cs.get("phase") == "pass":
+                                            _pw = base64.b64decode(_stxt + "==").decode("utf-8", errors="replace")[:120]
+                                            _cred_rec = {"protocol": "SMTP", "type": "AUTH LOGIN",
+                                                         "username": _cs.get("user", ""), "password": _pw}
+                                            del _cred_smtp[conn_key]
+                                # POP3 USER / PASS sequence
+                                elif dport in _CRED_POP3_PORTS or sport in _CRED_POP3_PORTS:
+                                    _ptxt = payload.decode("utf-8", errors="replace").strip()
+                                    if _ptxt.upper().startswith("USER "):
+                                        _cred_pop3[conn_key] = {"user": _ptxt[5:].strip()[:120]}
+                                    elif _ptxt.upper().startswith("PASS ") and conn_key in _cred_pop3:
+                                        _cred_rec = {"protocol": "POP3", "type": "USER/PASS",
+                                                     "username": _cred_pop3.pop(conn_key)["user"],
+                                                     "password": _ptxt[5:].strip()[:120]}
+                                # IMAP LOGIN command
+                                elif dport in _CRED_IMAP_PORTS or sport in _CRED_IMAP_PORTS:
+                                    _itxt = payload.decode("utf-8", errors="replace").strip()
+                                    _im = re.match(r'[A-Za-z0-9]+ LOGIN (\S+)\s+(\S+)', _itxt, re.IGNORECASE)
+                                    if _im:
+                                        _cred_rec = {"protocol": "IMAP", "type": "LOGIN",
+                                                     "username": _im.group(1)[:120], "password": _im.group(2)[:120]}
+                            except Exception:
+                                pass
+                            if _cred_rec:
+                                _cred_rec.update({"time": round(pkt_time, 3), "rel_time": round(rel_t, 3),
+                                                  "src": sip, "dst": dip, "dport": dport})
+                                credentials.append(_cred_rec)
 
                 # ── ICMP ─────────────────────────────────────────────────────
                 elif proto_num == 1:
@@ -2308,6 +2394,7 @@ def analyze_pcap(filepath):
         "edges": edges,
         "packets": packets_out,
         "anomalies": anomalies,
+        "credentials": credentials,
         "stats": {
             "total_packets": processed,
             "total_hosts": len(nodes),
@@ -2327,6 +2414,7 @@ def merge_results(results):
     merged_edges = {}
     merged_packets = {}
     merged_anomalies = []
+    merged_credentials = []
     anomaly_keys = set()
     total_packets = 0
     truncated = False
@@ -2432,6 +2520,11 @@ def merge_results(results):
                 anomaly_keys.add(akey)
                 merged_anomalies.append(a)
 
+        # Merge credentials (cap at 2000 total)
+        remaining_creds = 2000 - len(merged_credentials)
+        if remaining_creds > 0:
+            merged_credentials.extend(result.get("credentials", [])[:remaining_creds])
+
     # Serialize merged nodes
     nodes_out = []
     for ip, mn in merged_nodes.items():
@@ -2495,6 +2588,7 @@ def merge_results(results):
         "edges": edges_out,
         "packets": merged_packets,
         "anomalies": merged_anomalies,
+        "credentials": merged_credentials,
         "stats": {
             "total_packets": total_packets,
             "total_hosts": len(nodes_out),

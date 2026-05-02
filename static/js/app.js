@@ -400,6 +400,7 @@ function loadGraph(data) {
   buildFilters(data);
   buildLegend(data);
   buildAnomalySidebar(data.anomalies || []);
+  buildCredentialsSidebar(data.credentials || []);
   buildTimeline(data);
   renderGraph(data);
   setView("graph");
@@ -675,6 +676,86 @@ function buildAnomalySidebar(anomalies) {
     div.addEventListener("click", () => _jumpToAnomaly(rep));
     list.appendChild(div);
   });
+}
+
+/* ── Credentials sidebar ─────────────────────────────────────────────────── */
+function buildCredentialsSidebar(creds) {
+  const section = document.getElementById("cred-section");
+  const list    = document.getElementById("cred-list");
+  const badge   = document.getElementById("cred-badge");
+  const filterBar = document.getElementById("cred-filter-bar");
+  list.innerHTML = "";
+  filterBar.innerHTML = "";
+
+  if (!creds || creds.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  badge.textContent = creds.length;
+
+  // Build protocol filter buttons
+  const protos = [...new Set(creds.map(c => c.protocol))].sort();
+  const activeProtoFilter = new Set(protos);
+
+  function renderCredList() {
+    list.innerHTML = "";
+    const visible = creds.filter(c => activeProtoFilter.has(c.protocol));
+    if (visible.length === 0) {
+      list.innerHTML = '<div style="color:var(--text2);font-size:11px;padding:4px 0">No credentials match filter</div>';
+      return;
+    }
+    visible.forEach(c => {
+      const card = document.createElement("div");
+      card.className = "cred-card";
+      const protoClass = (c.protocol || "").toLowerCase();
+      const ts = c.rel_time != null ? `+${c.rel_time}s` : "";
+      const pwId = `pw-${Math.random().toString(36).slice(2)}`;
+      card.innerHTML = `
+        <div>
+          <span class="cred-proto ${protoClass}">${escHtml(c.protocol)}</span>
+          <span class="cred-type" style="color:var(--text2);font-size:10px">${escHtml(c.type || "")}</span>
+          <span style="float:right;color:var(--text2);font-size:10px">${ts}</span>
+        </div>
+        <div class="cred-route" style="margin-top:2px">${escHtml(c.src)} → ${escHtml(c.dst)}${c.dport ? ':' + c.dport : ''}</div>
+        <div style="margin-top:3px">
+          <span class="cred-user">${escHtml(c.username || "(no user)")}</span>
+          <span style="color:var(--text2);margin:0 4px">/</span>
+          <span class="cred-pw" id="${pwId}">●●●●●●</span>
+          <button class="cred-reveal" data-pw="${escHtml(c.password || "")}" data-id="${pwId}" title="Reveal password">show</button>
+        </div>`;
+      card.querySelector(".cred-reveal").addEventListener("click", function() {
+        const el = document.getElementById(this.dataset.id);
+        if (this.textContent === "show") {
+          el.textContent = this.dataset.pw || "(empty)";
+          this.textContent = "hide";
+        } else {
+          el.textContent = "●●●●●●";
+          this.textContent = "show";
+        }
+      });
+      list.appendChild(card);
+    });
+  }
+
+  protos.forEach(proto => {
+    const btn = document.createElement("button");
+    btn.className = "cred-filter-btn active";
+    btn.textContent = proto;
+    btn.addEventListener("click", () => {
+      if (activeProtoFilter.has(proto)) {
+        activeProtoFilter.delete(proto);
+        btn.classList.remove("active");
+      } else {
+        activeProtoFilter.add(proto);
+        btn.classList.add("active");
+      }
+      renderCredList();
+    });
+    filterBar.appendChild(btn);
+  });
+
+  renderCredList();
 }
 
 function _anomalySummary(type, src, count, items) {
