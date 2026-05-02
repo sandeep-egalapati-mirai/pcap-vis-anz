@@ -74,6 +74,11 @@
 - [ ] Inline anomaly explanation panel — contextual explanation of what each anomaly means and why it's suspicious
 - [ ] Dashboard / summary view (5th view) — card-based overview: top talkers, protocol breakdown donut, anomaly severity bar, busiest connections
 
+## Completed (Enrichments)
+
+- [x] Backend: Per-host risk score (0–100) — composite of anomaly severity, cross-zone egress (+15), suspicious port usage (capped +20), and OT write targeting (+10); emitted as `risk_score` on every node, propagated through `merge_results` (max of captures).
+- [x] Frontend: Risk score badge on graph nodes (colored ring with number: gray <40, yellow 40–69, red ≥70); risk line in node tooltip; risk badge row in detail panel.
+
 ## Known Issues
 
 - OT Map: PNG export exports the current zoom/pan view; consider a "fit-to-full" export option

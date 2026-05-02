@@ -13,7 +13,8 @@ def _node(ip, host_type="Windows Host", packet_count=10, bytes_sent=100,
           hostname="", mac="aa:bb:cc:dd:ee:ff", mac_vendor=None,
           dns_names=None, dns_queries=None, os_hint="Windows",
           is_private=True, geo=None, ot_role="unknown",
-          modbus_unit_ids=None, dnp3_addresses=None, flags=None):
+          modbus_unit_ids=None, dnp3_addresses=None, flags=None,
+          risk_score=0):
     return {
         "ip": ip,
         "id": ip,
@@ -36,6 +37,7 @@ def _node(ip, host_type="Windows Host", packet_count=10, bytes_sent=100,
         "ot_role": ot_role,
         "modbus_unit_ids": modbus_unit_ids or [],
         "dnp3_addresses": dnp3_addresses or [],
+        "risk_score": risk_score,
     }
 
 
@@ -290,3 +292,24 @@ def test_merge_output_has_required_keys():
         assert key in out
     for key in ("total_packets", "truncated"):
         assert key in out["stats"]
+
+
+# ── Risk score propagation ────────────────────────────────────────────────────
+
+def test_merge_risk_score_preserved():
+    r = _result(nodes=[_node("10.0.0.1", risk_score=75)], edges=[], total_packets=10)
+    out = merge_results([r])
+    assert out["nodes"][0]["risk_score"] == 75
+
+
+def test_merge_risk_score_takes_max_on_duplicate():
+    r1 = _result(nodes=[_node("10.0.0.1", risk_score=30)], edges=[], total_packets=5)
+    r2 = _result(nodes=[_node("10.0.0.1", risk_score=80)], edges=[], total_packets=5)
+    out = merge_results([r1, r2])
+    assert out["nodes"][0]["risk_score"] == 80
+
+
+def test_merge_risk_score_defaults_zero():
+    r = _result(nodes=[_node("10.0.0.1")], edges=[], total_packets=5)
+    out = merge_results([r])
+    assert out["nodes"][0]["risk_score"] == 0

@@ -948,6 +948,29 @@ function renderGraph(data) {
     }
   });
 
+  // Risk score badge (top-right corner of node)
+  nodeSel.each(function(d) {
+    const risk = d.risk_score || 0;
+    if (risk <= 0) return;
+    const r = nodeRadius(d);
+    const badgeClr = risk >= 70 ? "var(--red)" : risk >= 40 ? "var(--yellow)" : "#6e7681";
+    const g = d3.select(this);
+    g.append("circle")
+      .attr("cx", r - 1).attr("cy", -(r - 1))
+      .attr("r", 8)
+      .attr("fill", "#0d1117")
+      .attr("stroke", badgeClr)
+      .attr("stroke-width", 1.5);
+    g.append("text")
+      .attr("x", r - 1).attr("y", -(r - 5))
+      .attr("font-size", "7px")
+      .attr("fill", badgeClr)
+      .attr("text-anchor", "middle")
+      .attr("font-family", "var(--font-mono)")
+      .attr("font-weight", "bold")
+      .text(risk);
+  });
+
   // Click on background → deselect
   svg.on("click", () => {
     selectedNode = null;
@@ -1098,6 +1121,7 @@ function showTooltipNode(event, d) {
       ${fmtNum(d.packet_count)} pkts · ${fmtBytes(d.bytes_sent + d.bytes_recv)}
     </div>
     ${anomalyNodeIps[d.ip] ? `<div style="margin-top:4px;font-size:10px;color:${anomalyNodeIps[d.ip]==='high'?'var(--red)':'var(--yellow)'}">⚠ ${anomalyNodeIps[d.ip].toUpperCase()} anomaly</div>` : ""}
+    ${(d.risk_score || 0) > 0 ? `<div style="margin-top:2px;font-size:10px;color:${d.risk_score>=70?'var(--red)':d.risk_score>=40?'var(--yellow)':'#aaa'}">Risk: ${d.risk_score}/100</div>` : ""}
   `;
   tooltip.classList.add("visible");
   positionTooltip(event);
@@ -1152,6 +1176,10 @@ function showDetailPanel(d) {
     const levelLabel = levelRow ? levelRow.label : "? Unclassified";
     const levelColor = LEVEL_COLORS[lvl] ? LEVEL_COLORS[lvl] : "#444";
     rows.push(`<div style="margin-top:4px"><span style="background:${levelColor}55;border:1px solid ${levelColor}99;color:#ccc;padding:2px 8px;border-radius:10px;font-size:10px;font-family:var(--font-mono)">Purdue ${levelLabel}</span></div>`);
+  }
+  if ((d.risk_score || 0) > 0) {
+    const rc = d.risk_score >= 70 ? "#f85149" : d.risk_score >= 40 ? "#e3b341" : "#6e7681";
+    rows.push(`<div style="margin-top:4px"><span style="background:${rc}22;border:1px solid ${rc}88;color:${rc};padding:2px 10px;border-radius:10px;font-size:10px;font-family:var(--font-mono);font-weight:bold">&#9760; Risk Score: ${d.risk_score}/100</span></div>`);
   }
   if (IOT_TYPES.has(d.host_type)) {
     rows.push(`<div class="iot-device-badge">&#128267; IoT Device</div>`);
