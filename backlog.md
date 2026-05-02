@@ -81,6 +81,10 @@
 - General: GeoIP lookup is optional and silently skipped if MMDB absent; consider a warning banner
 - General: Test coverage for `analyze_pcap` and `merge_results` is thin — add integration tests with sample PCAPs
 
+## Completed (Enrichments)
+
+- [x] Feature #4: TCP Follow Stream — "Stream" tab in packet inspector; sorts packets by time, groups by direction (client=blue, server=green), decodes hex payload to ASCII with non-printables as `.`; tab hidden when no payloads captured
+
 ## Completed (Bug Fixes)
 
 - [x] Backend: IPv6 packet inspector crash — packet-inspector block unconditionally accessed `pkt[IP]`; now correctly branches `IP in pkt` / `IPv6 in pkt` and emits IPv6 header fields
