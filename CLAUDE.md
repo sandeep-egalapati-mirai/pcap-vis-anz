@@ -28,7 +28,8 @@ After completing any change:
 1. Update `README.md` to reflect the change (new protocols, updated limits, new features, etc.)
 2. Update `backlog.md` — mark completed items `[x]`, add newly discovered bugs or ideas.
 3. Run any relevant unit tests: `python -m pytest tests/ -q` (create tests in `tests/` if they don't exist yet).
-4. Commit and push to GitHub:
+4. Start the app and verify it runs without errors: `python app.py` — check the terminal for startup errors before reporting the task complete.
+5. Commit and push to GitHub:
 
 ```bash
 git add <changed files>
