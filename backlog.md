@@ -79,6 +79,9 @@
 - [x] Backend: DNS tunneling detection — `dns_tunneling_suspected` anomaly using three signals: high-entropy subdomain labels (>24 chars, >4.5 bits), abnormally long average query names (>60 chars), or unique-subdomain flood (>20 labels under same parent). 5 unit tests added.
 - [x] Backend: Per-host risk score (0–100) — composite of anomaly severity, cross-zone egress (+15), suspicious port usage (capped +20), and OT write targeting (+10); emitted as `risk_score` on every node, propagated through `merge_results` (max of captures).
 - [x] Frontend: Risk score badge on graph nodes (colored ring with number: gray <40, yellow 40–69, red ≥70); risk line in node tooltip; risk badge row in detail panel.
+- [x] Backend: TLS ClientHello parsing — `parse_tls_client_hello()` extracts SNI (cleartext server name) and computes JA3/MD5 fingerprint from cipher suites + extensions + elliptic curves; stored per host as `tls_sni` / `tls_ja3`; propagated through `merge_results`.
+- [x] Backend: `unusual_ja3` anomaly — fires when a host's JA3 matches a bundled known-bad fingerprint list (Metasploit, Cobalt Strike, Dridex, Emotet, Trickbot, AsyncRAT, QakBot, IcedID).
+- [x] Frontend: TLS SNI list shown in detail panel and node tooltip; JA3 hashes shown with threat label and red color when matching known-bad; 8 unit tests added.
 
 ## Known Issues
 

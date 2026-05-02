@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import parse_modbus, parse_dnp3, parse_s7comm, parse_enip, parse_iec104, parse_bacnet
+from app import parse_modbus, parse_dnp3, parse_s7comm, parse_enip, parse_iec104, parse_bacnet, parse_tls_client_hello, _is_grease
 
 
 # ── Modbus ────────────────────────────────────────────────────────────────────
@@ -275,3 +275,124 @@ def test_enip_unknown_command():
     r = parse_enip(pkt)
     assert r is not None
     assert "Unknown" in r["command_name"]
+
+
+# ── TLS ClientHello parser ────────────────────────────────────────────────────
+
+def _build_tls_client_hello(sni=None, ciphers=None, version=0x0303,
+                             client_version=0x0303):
+    """Build a minimal TLS ClientHello payload bytes for testing."""
+    ciphers = ciphers or [0x002F, 0x0035]  # RSA-AES128, RSA-AES256
+    random_bytes = b'\xAA' * 32
+
+    # session_id (empty)
+    session_id = b'\x00'
+
+    # cipher_suites
+    cs_bytes = b''
+    for c in ciphers:
+        cs_bytes += struct.pack('!H', c)
+    cipher_suites = struct.pack('!H', len(cs_bytes)) + cs_bytes
+
+    # compression_methods (null)
+    compression = b'\x01\x00'
+
+    # extensions
+    extensions = b''
+
+    # SNI extension (type 0)
+    if sni:
+        sni_bytes = sni.encode('utf-8')
+        sni_ext_data = (
+            struct.pack('!H', len(sni_bytes) + 3) +  # server_name_list_length
+            b'\x00' +                                  # type = host_name
+            struct.pack('!H', len(sni_bytes)) +        # server_name_length
+            sni_bytes
+        )
+        extensions += struct.pack('!HH', 0x0000, len(sni_ext_data)) + sni_ext_data
+
+    # supported_groups extension (type 0x000A) — curves 0x0017, 0x0018
+    curves_bytes = struct.pack('!HH', 0x0017, 0x0018)
+    curves_ext_data = struct.pack('!H', len(curves_bytes)) + curves_bytes
+    extensions += struct.pack('!HH', 0x000A, len(curves_ext_data)) + curves_ext_data
+
+    # ec_point_formats extension (type 0x000B)
+    pf_ext_data = b'\x01\x00'  # 1 format: uncompressed
+    extensions += struct.pack('!HH', 0x000B, len(pf_ext_data)) + pf_ext_data
+
+    # ClientHello body
+    ch_body = (
+        struct.pack('!H', client_version) +  # client_version
+        random_bytes +                         # random
+        session_id +                           # session_id
+        cipher_suites +                        # cipher_suites
+        compression +                          # compression_methods
+        struct.pack('!H', len(extensions)) +   # extensions_length
+        extensions                             # extensions
+    )
+
+    # Handshake header (ClientHello = 0x01)
+    hs = b'\x01' + struct.pack('!I', len(ch_body))[1:] + ch_body  # 3-byte len
+
+    # TLS record header
+    record = (
+        b'\x16' +                              # content_type = Handshake
+        struct.pack('!H', version) +           # version
+        struct.pack('!H', len(hs)) +           # length
+        hs
+    )
+    return record
+
+
+def test_tls_clienthello_basic():
+    payload = _build_tls_client_hello(sni="example.com")
+    r = parse_tls_client_hello(payload)
+    assert r is not None
+    assert r["sni"] == "example.com"
+    assert r["ja3"] is not None
+    assert len(r["ja3"]) == 32  # MD5 hex string
+
+
+def test_tls_clienthello_ja3_deterministic():
+    payload = _build_tls_client_hello(sni="test.local")
+    r1 = parse_tls_client_hello(payload)
+    r2 = parse_tls_client_hello(payload)
+    assert r1["ja3"] == r2["ja3"]
+
+
+def test_tls_clienthello_no_sni():
+    payload = _build_tls_client_hello(sni=None)
+    r = parse_tls_client_hello(payload)
+    assert r is not None
+    assert r["sni"] is None
+    assert r["ja3"] is not None
+
+
+def test_tls_clienthello_tls_version():
+    payload = _build_tls_client_hello(client_version=0x0303)
+    r = parse_tls_client_hello(payload)
+    assert r is not None
+    assert r["tls_version"] == 0x0303
+
+
+def test_tls_clienthello_too_short():
+    assert parse_tls_client_hello(b'\x16\x03\x03\x00\x05') is None
+
+
+def test_tls_clienthello_not_tls():
+    assert parse_tls_client_hello(b'GET / HTTP/1.1\r\n') is None
+
+
+def test_tls_clienthello_not_client_hello():
+    # ServerHello has msg_type=0x02
+    payload = b'\x16\x03\x03' + b'\x00\x05' + b'\x02' + b'\x00\x00\x01\x00'
+    assert parse_tls_client_hello(payload) is None
+
+
+def test_is_grease_values():
+    # GREASE values should return True
+    for v in [0x0A0A, 0x1A1A, 0x2A2A, 0xFAFA, 0xAAAA]:
+        assert _is_grease(v), f"Expected {v:#06x} to be GREASE"
+    # Non-GREASE values
+    for v in [0x002F, 0x0035, 0x0000, 0x0017]:
+        assert not _is_grease(v), f"Expected {v:#06x} to NOT be GREASE"
