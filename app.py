@@ -2009,6 +2009,43 @@ def analyze_pcap(filepath):
     # ── Anomaly detection ─────────────────────────────────────────────────────
     anomalies = analyze_anomalies(hosts, connections, packet_store)
 
+    # ── Per-host risk score (0–100) ───────────────────────────────────────────
+    _SEV_WEIGHT = {"high": 30, "medium": 15, "low": 5}
+    _OT_WRITE_TYPES = {
+        "ot_modbus_write", "ot_dnp3_control", "ot_s7_write", "ot_s7_critical",
+        "ot_enip_write", "ot_iec104_command", "ot_bacnet_write", "ot_s7_code_download",
+    }
+    ip_anomalies = defaultdict(list)
+    for a in anomalies:
+        if a.get("src"):
+            ip_anomalies[a["src"]].append(a)
+        if a.get("dst") and a["dst"] != a.get("src"):
+            ip_anomalies[a["dst"]].append(a)
+
+    host_risk = {}
+    for ip, h in hosts.items():
+        score = 0
+        # Anomaly severity contribution (capped at 60)
+        score += min(sum(_SEV_WEIGHT.get(a.get("severity", "low"), 5)
+                         for a in ip_anomalies[ip]), 60)
+        # Cross-zone egress to non-private IP (+15)
+        for (ca, cb) in connections:
+            peer = cb if ca == ip else (ca if cb == ip else None)
+            if peer and not is_private(peer):
+                score += 15
+                break
+        # Suspicious port usage (capped at 20)
+        sp_count = sum(
+            1 for (ca, cb), conn in connections.items()
+            if (ca == ip or cb == ip)
+            for p in conn["dst_ports"] if p in SUSPICIOUS_PORTS
+        )
+        score += min(sp_count * 5, 20)
+        # OT device targeted by write command (+10)
+        if any(a["type"] in _OT_WRITE_TYPES for a in ip_anomalies[ip]):
+            score += 10
+        host_risk[ip] = min(score, 100)
+
     # Attach absolute timestamps to anomalies for the timeline strip
     for a in anomalies:
         src, dst = a.get("src"), a.get("dst")
@@ -2059,6 +2096,7 @@ def analyze_pcap(filepath):
                 dnp3_addresses=h.get("dnp3_addresses"),
                 is_private=h.get("is_private", True),
             ),
+            "risk_score": host_risk.get(ip, 0),
         })
 
     edges = []
@@ -2165,6 +2203,7 @@ def merge_results(results):
                     mn["geo"] = n["geo"]
                 if mn.get("ot_role", "unknown") == "unknown" and n.get("ot_role", "unknown") != "unknown":
                     mn["ot_role"] = n["ot_role"]
+                mn["risk_score"] = max(mn.get("risk_score", 0), n.get("risk_score", 0))
 
         # Merge edges
         for e in result["edges"]:
@@ -2249,6 +2288,7 @@ def merge_results(results):
                 dnp3_addresses=mn.get("dnp3_addresses"),
                 is_private=mn.get("is_private", True),
             ),
+            "risk_score": mn.get("risk_score", 0),
         })
 
     edges_out = []
