@@ -209,7 +209,8 @@ let activeProtos = new Set();
 let activeTypes  = new Set();
 let searchTerm   = "";
 let packetData   = {};
-let currentView  = "graph";  // "graph" | "table" | "dns" | "ot"
+let currentView  = "graph";  // "graph" | "table" | "dns" | "ot" | "otlog" | "diff"
+let baselineData = null;
 let currentLayout = "force"; // "force" | "radial" | "cluster"
 let anomalyNodeIps = {};     // ip → highest severity
 let tableSort = { col: "packet_count", dir: "desc" };
@@ -243,6 +244,7 @@ const tableView      = document.getElementById("table-view");
 const dnsView        = document.getElementById("dns-view");
 const otMapView      = document.getElementById("ot-map-view");
 const otLogView      = document.getElementById("otlog-view");
+const diffView       = document.getElementById("diff-view");
 const ctxMenu        = document.getElementById("ctx-menu");
 
 /* ── SVG setup ───────────────────────────────────────────────────────────── */
@@ -406,6 +408,14 @@ function loadGraph(data) {
   buildFilesSidebar(data.files || []);
   buildTimeline(data);
   renderGraph(data);
+
+  // Show baseline button now that data is loaded
+  document.getElementById("baseline-btn").style.display = "";
+  // If a baseline was already set, show the diff tab
+  if (baselineData) {
+    document.getElementById("diff-tab-btn").classList.remove("hidden");
+  }
+
   setView("graph");
 
   // Load annotations from localStorage
@@ -433,6 +443,7 @@ function setView(view) {
     dnsView.classList.add("hidden");
     otMapView.classList.add("hidden");
     otLogView.classList.add("hidden");
+    diffView.classList.add("hidden");
     document.getElementById("graph-controls").style.display = "";
     document.getElementById("legend").style.display = "";
   } else if (view === "table") {
@@ -444,6 +455,7 @@ function setView(view) {
     dnsView.classList.add("hidden");
     otMapView.classList.add("hidden");
     otLogView.classList.add("hidden");
+    diffView.classList.add("hidden");
     renderConnTable();
   } else if (view === "dns") {
     graphWrap.style.display = "none";
@@ -453,6 +465,7 @@ function setView(view) {
     dnsView.classList.remove("hidden");
     otMapView.classList.add("hidden");
     otLogView.classList.add("hidden");
+    diffView.classList.add("hidden");
     renderDnsMap();
   } else if (view === "ot") {
     graphWrap.style.display = "none";
@@ -462,6 +475,7 @@ function setView(view) {
     dnsView.classList.add("hidden");
     otMapView.classList.remove("hidden");
     otLogView.classList.add("hidden");
+    diffView.classList.add("hidden");
     renderOTMap(graphData);
     renderOTTimeline();
   } else if (view === "otlog") {
@@ -472,7 +486,18 @@ function setView(view) {
     dnsView.classList.add("hidden");
     otMapView.classList.add("hidden");
     otLogView.classList.remove("hidden");
+    diffView.classList.add("hidden");
     renderOtLog(graphData.ot_commands || []);
+  } else if (view === "diff") {
+    graphWrap.style.display = "none";
+    tlBar.classList.add("hidden");
+    pktIns.classList.add("hidden");
+    tableView.classList.add("hidden");
+    dnsView.classList.add("hidden");
+    otMapView.classList.add("hidden");
+    otLogView.classList.add("hidden");
+    diffView.classList.remove("hidden");
+    renderDiff();
   }
 }
 
@@ -3730,6 +3755,117 @@ function showDnsQueries(node) {
       ${resolvedIps.length ? `<div class="dns-resolved">→ ${resolvedIps.join(", ")}</div>` : ""}
     `;
     list.appendChild(div);
+  });
+}
+
+/* ── Baseline Diff ───────────────────────────────────────────────────────── */
+document.getElementById("baseline-btn").addEventListener("click", () => {
+  if (!graphData) return;
+  baselineData = graphData;
+  document.getElementById("baseline-btn").textContent = "Baseline Set ✓";
+  document.getElementById("diff-tab-btn").classList.remove("hidden");
+  showToast("Baseline set. Upload another PCAP then click ⊕ Diff to compare.", "info");
+});
+
+document.getElementById("diff-clear-btn").addEventListener("click", () => {
+  baselineData = null;
+  document.getElementById("baseline-btn").textContent = "Set Baseline";
+  document.getElementById("diff-tab-btn").classList.add("hidden");
+  setView("graph");
+});
+
+function renderDiff() {
+  if (!baselineData || !graphData) return;
+  const bNodes = new Map((baselineData.nodes || []).map(n => [n.id, n]));
+  const cNodes = new Map((graphData.nodes || []).map(n => [n.id, n]));
+  const bEdges = new Set((baselineData.edges || []).map(e => `${e.source}|${e.target}`));
+  const cEdges = new Set((graphData.edges || []).map(e => `${e.source}|${e.target}`));
+  const bAnoms = new Set((baselineData.anomalies || []).map(a => `${a.type}|${a.src}|${a.dst}`));
+  const cAnoms = (graphData.anomalies || []).filter(a => !bAnoms.has(`${a.type}|${a.src}|${a.dst}`));
+
+  // Host diff
+  const newHosts  = [...cNodes.values()].filter(n => !bNodes.has(n.id));
+  const goneHosts = [...bNodes.values()].filter(n => !cNodes.has(n.id));
+  const changedHosts = [...cNodes.values()].filter(n => {
+    if (!bNodes.has(n.id)) return false;
+    const bn = bNodes.get(n.id);
+    const bProtos = new Set(bn.protocols || []);
+    return (n.protocols || []).some(p => !bProtos.has(p));
+  });
+
+  // Connection diff
+  const newConns  = (graphData.edges || []).filter(e => !bEdges.has(`${e.source}|${e.target}`));
+  const goneConns = (baselineData.edges || []).filter(e => !cEdges.has(`${e.source}|${e.target}`));
+
+  _renderDiffCol("diff-hosts-list", newHosts, goneHosts, changedHosts);
+  _renderDiffConnsCol("diff-conns-list", newConns, goneConns);
+  _renderDiffAnomsCol("diff-anomalies-list", cAnoms);
+}
+
+function _renderDiffCol(id, added, removed, changed) {
+  const el = document.getElementById(id);
+  el.innerHTML = "";
+  if (!added.length && !removed.length && !changed.length) {
+    el.innerHTML = '<div class="diff-empty">No host changes</div>';
+    return;
+  }
+  added.forEach(n => {
+    const d = document.createElement("div");
+    d.className = "diff-item diff-added";
+    d.innerHTML = `<span class="diff-badge add">+ NEW</span> <strong>${escHtml(n.id)}</strong> <span class="diff-sub">${escHtml(n.host_type || "")}</span>`;
+    el.appendChild(d);
+  });
+  removed.forEach(n => {
+    const d = document.createElement("div");
+    d.className = "diff-item diff-removed";
+    d.innerHTML = `<span class="diff-badge rem">− GONE</span> <strong>${escHtml(n.id)}</strong> <span class="diff-sub">${escHtml(n.host_type || "")}</span>`;
+    el.appendChild(d);
+  });
+  changed.forEach(n => {
+    const bn = (baselineData.nodes || []).find(x => x.id === n.id);
+    const bProtos = new Set(bn ? (bn.protocols || []) : []);
+    const newProtos = (n.protocols || []).filter(p => !bProtos.has(p));
+    const d = document.createElement("div");
+    d.className = "diff-item diff-changed";
+    d.innerHTML = `<span class="diff-badge chg">~ NEW PROTO</span> <strong>${escHtml(n.id)}</strong> <span class="diff-sub">${newProtos.map(escHtml).join(", ")}</span>`;
+    el.appendChild(d);
+  });
+}
+
+function _renderDiffConnsCol(id, added, removed) {
+  const el = document.getElementById(id);
+  el.innerHTML = "";
+  if (!added.length && !removed.length) {
+    el.innerHTML = '<div class="diff-empty">No connection changes</div>';
+    return;
+  }
+  added.forEach(e => {
+    const d = document.createElement("div");
+    d.className = "diff-item diff-added";
+    d.innerHTML = `<span class="diff-badge add">+ NEW</span> ${escHtml(e.source)} → ${escHtml(e.target)} <span class="diff-sub">${(e.protocols || []).map(escHtml).join(", ")}</span>`;
+    el.appendChild(d);
+  });
+  removed.forEach(e => {
+    const d = document.createElement("div");
+    d.className = "diff-item diff-removed";
+    d.innerHTML = `<span class="diff-badge rem">− GONE</span> ${escHtml(e.source)} → ${escHtml(e.target)}`;
+    el.appendChild(d);
+  });
+}
+
+function _renderDiffAnomsCol(id, newAnoms) {
+  const el = document.getElementById(id);
+  el.innerHTML = "";
+  if (!newAnoms.length) {
+    el.innerHTML = '<div class="diff-empty">No new anomalies</div>';
+    return;
+  }
+  newAnoms.forEach(a => {
+    const d = document.createElement("div");
+    d.className = `diff-item diff-added diff-anom-${a.severity || "low"}`;
+    const route = [a.src, a.dst].filter(Boolean).join(" → ");
+    d.innerHTML = `<span class="diff-badge add">+ NEW</span> <strong>${escHtml(a.type)}</strong><br><span class="diff-sub">${escHtml(route)} — ${escHtml(a.description)}</span>`;
+    el.appendChild(d);
   });
 }
 

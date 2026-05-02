@@ -62,6 +62,7 @@
       <button class="vt-btn" data-view="dns">DNS Map</button>
       <button class="vt-btn" data-view="ot">OT Map</button>
       <button class="vt-btn" data-view="otlog">OT Log</button>
+      <button class="vt-btn hidden" data-view="diff" id="diff-tab-btn">⊕ Diff</button>
     </div>
 
     <!-- Export dropdown -->
@@ -74,6 +75,9 @@
         <div class="dropdown-item" id="exp-report">Export Audit Report</div>
       </div>
     </div>
+
+    <!-- Baseline diff -->
+    <button class="header-btn" id="baseline-btn" style="display:none" title="Set current capture as baseline for diff comparison">Set Baseline</button>
 
     <!-- Session buttons -->
     <button class="header-btn icon-btn" id="save-session-btn" title="Save Session">💾</button>
@@ -340,6 +344,28 @@
           <tbody id="otlog-tbody"></tbody>
         </table>
         <div id="otlog-empty" class="hidden">No OT commands recorded in this capture</div>
+      </div>
+    </div>
+
+    <!-- Diff view -->
+    <div id="diff-view" class="hidden">
+      <div id="diff-header">
+        <div id="diff-label">Baseline vs Current Capture</div>
+        <button id="diff-clear-btn" class="header-btn">✕ Clear Baseline</button>
+      </div>
+      <div id="diff-body">
+        <div class="diff-col" id="diff-hosts-col">
+          <div class="diff-col-title">Hosts</div>
+          <div id="diff-hosts-list"></div>
+        </div>
+        <div class="diff-col" id="diff-conns-col">
+          <div class="diff-col-title">Connections</div>
+          <div id="diff-conns-list"></div>
+        </div>
+        <div class="diff-col" id="diff-anomalies-col">
+          <div class="diff-col-title">Anomalies</div>
+          <div id="diff-anomalies-list"></div>
+        </div>
       </div>
     </div>
 
