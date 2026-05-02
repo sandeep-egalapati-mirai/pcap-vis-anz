@@ -308,6 +308,60 @@ header h1 span { color: var(--accent); }
 }
 .ab-child:hover { background: var(--bg2); color: var(--text); }
 
+/* ── Credentials panel ───────────────────────────────────────────────────── */
+.cred-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.cred-card:hover { border-color: var(--accent); }
+.cred-proto {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #fff;
+  margin-right: 5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.cred-proto.ftp  { background: #d2a41a; }
+.cred-proto.smtp { background: #6e6e6e; }
+.cred-proto.pop3 { background: #8957e5; }
+.cred-proto.imap { background: #1f6feb; }
+.cred-proto.http { background: #238636; }
+.cred-route { color: var(--text2); }
+.cred-user  { color: var(--text); font-weight: 600; }
+.cred-pw    { color: var(--red); font-family: monospace; }
+.cred-reveal {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text2);
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  margin-left: 4px;
+}
+.cred-reveal:hover { border-color: var(--accent); color: var(--accent); }
+.cred-filter-btn {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text2);
+  cursor: pointer;
+}
+.cred-filter-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
 /* ── Graph area ───────────────────────────────────────────────────────────── */
 #graph-wrap {
   flex: 1;
