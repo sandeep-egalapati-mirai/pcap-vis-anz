@@ -592,7 +592,7 @@ document.getElementById("no-results-clear").addEventListener("click", () => {
   document.getElementById("clear-filters-btn").click();
 });
 
-function applyFilters() {
+function applyFilters(skipFit) {
   if (!graphData) return;
 
   const visibleNodeIds = new Set();
@@ -619,7 +619,7 @@ function applyFilters() {
   if (noResults) noResults.classList.toggle("visible", visibleNodeIds.size === 0 && !!graphData);
 
   // Fit viewport to visible nodes (debounced so it doesn't fire during simulation)
-  if (visibleNodeIds.size > 0 && visibleNodeIds.size < (graphData.nodes || []).length) {
+  if (!skipFit && visibleNodeIds.size > 0 && visibleNodeIds.size < (graphData.nodes || []).length) {
     clearTimeout(applyFilters._fitTimer);
     applyFilters._fitTimer = setTimeout(zoomFitVisible, 300);
   }
@@ -949,12 +949,12 @@ function renderGraph(data) {
     .filter(e => nodeById[e.source] && nodeById[e.target])
     .map(e => ({ ...e, source: e.source, target: e.target }));
 
-  const maxPkt = Math.max(...nodes.map(n => n.packet_count), 1);
+  const maxPkt = nodes.reduce((m, n) => Math.max(m, n.packet_count), 1);
   function nodeRadius(d) {
     return 6 + Math.log1p(d.packet_count / maxPkt * 200) * 3;
   }
 
-  const maxEdgePkt = Math.max(...links.map(e => e.packet_count), 1);
+  const maxEdgePkt = links.reduce((m, e) => Math.max(m, e.packet_count), 1);
   function edgeWidth(d) {
     return 1 + Math.log1p(d.packet_count / maxEdgePkt * 50) * 1.2;
   }
@@ -1185,7 +1185,7 @@ function renderGraph(data) {
 function buildSimulation(nodes, links, cx, cy, layout) {
   if (simulation) simulation.stop();
 
-  const _maxPkt = Math.max(...nodes.map(n => n.packet_count), 1);
+  const _maxPkt = nodes.reduce((m, n) => Math.max(m, n.packet_count), 1);
   const sim = d3.forceSimulation(nodes)
     .force("collide", d3.forceCollide().radius(d => {
       return 6 + Math.log1p(d.packet_count / _maxPkt * 200) * 3 + 12;
@@ -1282,7 +1282,7 @@ function highlightNode(d, linkSel, nodeSel) {
 function unhighlightAll(linkSel, nodeSel) {
   linkSel.classed("highlighted", false).classed("faded", false);
   nodeSel.classed("faded", false);
-  applyFilters();
+  applyFilters(true);
 }
 
 /* ── Tooltip helpers ─────────────────────────────────────────────────────── */
@@ -1778,12 +1778,15 @@ const pktHexEmpty   = document.getElementById("pkt-hex-empty");
 
 document.getElementById("pkt-close").addEventListener("click", closePktInspector);
 document.getElementById("pkt-tab-pkts").addEventListener("click", () => {
-  const key = pktConnLabel.textContent.split("  ↔  ").map(s => s.trim())[0];
-  _switchPktTab("pkts", []);
-  document.getElementById("pkt-list-wrap").classList.remove("hidden");
-  document.getElementById("pkt-cmd-log").classList.add("hidden");
-  document.getElementById("pkt-tab-pkts").classList.add("active");
-  document.getElementById("pkt-tab-cmds").classList.remove("active");
+  const label = pktConnLabel.textContent;
+  const m = label.match(/^(.+?)  ↔  (.+?)  ·/);
+  let curPkts = [];
+  if (m) {
+    const key = [m[1].trim(), m[2].trim()].sort().join("|");
+    curPkts = packetData[key] || [];
+  }
+  _switchPktTab("pkts", curPkts);
+  renderPktTable(curPkts);
 });
 document.getElementById("pkt-tab-cmds").addEventListener("click", () => {
   const label = pktConnLabel.textContent;
@@ -2397,7 +2400,8 @@ function buildHttpHeadersTable(headers) {
 }
 
 function escHtml(s) {
-  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 
 /* ── Packet inspector resize handle ──────────────────────────────────────── */
@@ -2915,7 +2919,7 @@ function renderOTMap(data) {
   const allEdgePaths = [];  // all drawn path elements
 
   // Log-scale edge width matching force-graph edgeWidth()
-  const maxPkt = Math.max(1, ...data.edges.map(e => e.packet_count || 1));
+  const maxPkt = data.edges.reduce((m, e) => Math.max(m, e.packet_count || 1), 1);
   const edgeW = (pkt) => 1 + Math.log1p(pkt) / Math.log1p(maxPkt) * 3;
 
   data.edges.forEach(e => {
@@ -3728,7 +3732,7 @@ function renderOTMatrix(data) {
           document.getElementById("ot-matrix-btn").classList.remove("active");
           document.getElementById("ot-map-svg").classList.remove("hidden");
           document.getElementById("ot-matrix-container").classList.add("hidden");
-          renderOTMap(data);
+          renderOTMap(graphData);
         });
       }
       svgEl.appendChild(rect);
@@ -3820,7 +3824,7 @@ function showDnsQueries(node) {
 /* ── Baseline Diff ───────────────────────────────────────────────────────── */
 document.getElementById("baseline-btn").addEventListener("click", () => {
   if (!graphData) return;
-  baselineData = graphData;
+  baselineData = JSON.parse(JSON.stringify(graphData));
   document.getElementById("baseline-btn").textContent = "Baseline Set ✓";
   document.getElementById("diff-tab-btn").classList.remove("hidden");
   showToast("Baseline set. Upload another PCAP then click ⊕ Diff to compare.", "info");
@@ -4172,6 +4176,11 @@ function exportPng() {
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#0d1117";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Composite canvas edges (drawn separately when node count exceeds threshold)
+    if (useCanvasEdges) {
+      const edgeCanvas = document.getElementById("edge-canvas");
+      if (edgeCanvas) ctx.drawImage(edgeCanvas, 0, 0);
+    }
     ctx.drawImage(img, 0, 0);
     URL.revokeObjectURL(url);
     const a = document.createElement("a");
@@ -4491,7 +4500,7 @@ function applyAnnotations() {
     const g = d3.select(this);
     g.selectAll(".node-note-icon").remove();
     if (note) {
-      const r = 6 + Math.log1p(d.packet_count / Math.max(...graphData.nodes.map(n => n.packet_count), 1) * 200) * 3;
+      const r = 6 + Math.log1p(d.packet_count / graphData.nodes.reduce((m, n) => Math.max(m, n.packet_count), 1) * 200) * 3;
       g.append("text")
         .attr("class", "node-note-icon")
         .attr("dy", -(r + 4))
@@ -4508,7 +4517,7 @@ function updateNoteIcon(ip, hasNote) {
     const g = d3.select(this);
     g.selectAll(".node-note-icon").remove();
     if (hasNote) {
-      const r = 6 + Math.log1p(d.packet_count / Math.max(...graphData.nodes.map(n => n.packet_count), 1) * 200) * 3;
+      const r = 6 + Math.log1p(d.packet_count / graphData.nodes.reduce((m, n) => Math.max(m, n.packet_count), 1) * 200) * 3;
       g.append("text")
         .attr("class", "node-note-icon")
         .attr("dy", -(r + 4))

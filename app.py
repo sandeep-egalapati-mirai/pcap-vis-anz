@@ -493,11 +493,13 @@ def parse_mqtt(payload_bytes):
             "retain": bool(msg_type_byte & 0x01),
             "details": {},
         }
-        # Decode remaining length (variable-length encoding)
+        # Decode remaining length (variable-length encoding, max 4 bytes per MQTT spec)
         idx = 1
         multiplier = 1
         remaining = 0
         while idx < len(payload_bytes):
+            if idx > 4:
+                return None
             byte = payload_bytes[idx]
             remaining += (byte & 0x7F) * multiplier
             multiplier *= 128
@@ -1174,6 +1176,7 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None):
         src_dst_ips[b].add(a)
         for p in conn["dst_ports"]:
             src_dst_ports[a].add(p)
+            src_dst_ports[b].add(p)
 
     for ip, dst_ips in src_dst_ips.items():
         if len(dst_ips) > 5 and len(src_dst_ports.get(ip, set())) > 15:
@@ -1872,8 +1875,8 @@ def analyze_pcap(filepath):
                 if len(raw) < 14:
                     continue
 
-                smac = ':'.join(f'{b:02x}' for b in raw[0:6])
-                dmac = ':'.join(f'{b:02x}' for b in raw[6:12])
+                dmac = ':'.join(f'{b:02x}' for b in raw[0:6])
+                smac = ':'.join(f'{b:02x}' for b in raw[6:12])
                 ethertype = (raw[12] << 8) | raw[13]
                 l2_off = 14
 
@@ -2001,61 +2004,6 @@ def analyze_pcap(filepath):
 
                         connections[conn_key]["dst_ports"].add(dport)
 
-                # ── UDP ──────────────────────────────────────────────────────
-                elif proto_num == 17:
-                    if len(raw) >= l4_off + 8:
-                        sport = (raw[l4_off] << 8) | raw[l4_off + 1]
-                        dport = (raw[l4_off + 2] << 8) | raw[l4_off + 3]
-                        udp_len = (raw[l4_off + 4] << 8) | raw[l4_off + 5]
-                        payload = raw[l4_off + 8:] if l4_off + 8 < len(raw) else b""
-                        protocol = "UDP"
-
-                        if dport in PORT_LOOKUP:
-                            proto_lbl, svc = PORT_LOOKUP[dport]
-                            protocol = proto_lbl
-                            dh["dst_ports"].add(dport)
-                            dh["services"].add(svc)
-                            dh["host_type_hints"][svc] += 1
-                        elif sport in PORT_LOOKUP:
-                            proto_lbl, svc = PORT_LOOKUP[sport]
-                            protocol = proto_lbl
-                            sh["dst_ports"].add(sport)
-                            sh["services"].add(svc)
-                            sh["host_type_hints"][svc] += 1
-                        else:
-                            dh["dst_ports"].add(dport)
-
-                        # DNS name extraction — reconstruct DNS layer from payload only for port 53
-                        if (dport == 53 or sport == 53) and payload:
-                            try:
-                                dns = _DNS(payload)
-                                if dns.qr == 0 and dns.qdcount > 0 and dns.qd:
-                                    qname = dns.qd.qname
-                                    if isinstance(qname, bytes):
-                                        qname = qname.decode("utf-8", errors="replace")
-                                    sh["dns_queries"].add(qname.rstrip("."))
-                                elif dns.qr == 1:
-                                    an = dns.an
-                                    while an and hasattr(an, "type"):
-                                        if an.type == 1:  # A record
-                                            rip = an.rdata
-                                            rname = an.rrname
-                                            if isinstance(rip, bytes):
-                                                rip = ".".join(str(b) for b in rip)
-                                            if isinstance(rname, bytes):
-                                                rname = rname.decode("utf-8", errors="replace")
-                                            rname = rname.rstrip(".")
-                                            rip_str = str(rip)
-                                            if rip_str in hosts:
-                                                if not hosts[rip_str]["hostname"]:
-                                                    hosts[rip_str]["hostname"] = rname
-                                                hosts[rip_str]["dns_names"].add(rname)
-                                        an = an.payload if hasattr(an, "payload") else None
-                            except Exception:
-                                pass
-
-                        connections[conn_key]["dst_ports"].add(dport)
-
                         # HTTP response file detection
                         if payload and len(files) < MAX_FILES and sport in _CRED_HTTP_PORTS and payload[:5] == b"HTTP/":
                             try:
@@ -2114,6 +2062,61 @@ def analyze_pcap(filepath):
                                         })
                             except Exception:
                                 pass
+
+                # ── UDP ──────────────────────────────────────────────────────
+                elif proto_num == 17:
+                    if len(raw) >= l4_off + 8:
+                        sport = (raw[l4_off] << 8) | raw[l4_off + 1]
+                        dport = (raw[l4_off + 2] << 8) | raw[l4_off + 3]
+                        udp_len = (raw[l4_off + 4] << 8) | raw[l4_off + 5]
+                        payload = raw[l4_off + 8:] if l4_off + 8 < len(raw) else b""
+                        protocol = "UDP"
+
+                        if dport in PORT_LOOKUP:
+                            proto_lbl, svc = PORT_LOOKUP[dport]
+                            protocol = proto_lbl
+                            dh["dst_ports"].add(dport)
+                            dh["services"].add(svc)
+                            dh["host_type_hints"][svc] += 1
+                        elif sport in PORT_LOOKUP:
+                            proto_lbl, svc = PORT_LOOKUP[sport]
+                            protocol = proto_lbl
+                            sh["dst_ports"].add(sport)
+                            sh["services"].add(svc)
+                            sh["host_type_hints"][svc] += 1
+                        else:
+                            dh["dst_ports"].add(dport)
+
+                        # DNS name extraction — reconstruct DNS layer from payload only for port 53
+                        if (dport == 53 or sport == 53) and payload:
+                            try:
+                                dns = _DNS(payload)
+                                if dns.qr == 0 and dns.qdcount > 0 and dns.qd:
+                                    qname = dns.qd.qname
+                                    if isinstance(qname, bytes):
+                                        qname = qname.decode("utf-8", errors="replace")
+                                    sh["dns_queries"].add(qname.rstrip("."))
+                                elif dns.qr == 1:
+                                    an = dns.an
+                                    while an and hasattr(an, "type"):
+                                        if an.type == 1:  # A record
+                                            rip = an.rdata
+                                            rname = an.rrname
+                                            if isinstance(rip, bytes):
+                                                rip = ".".join(str(b) for b in rip)
+                                            if isinstance(rname, bytes):
+                                                rname = rname.decode("utf-8", errors="replace")
+                                            rname = rname.rstrip(".")
+                                            rip_str = str(rip)
+                                            if rip_str in hosts:
+                                                if not hosts[rip_str]["hostname"]:
+                                                    hosts[rip_str]["hostname"] = rname
+                                                hosts[rip_str]["dns_names"].add(rname)
+                                        an = an.payload if hasattr(an, "payload") else None
+                            except Exception:
+                                pass
+
+                        connections[conn_key]["dst_ports"].add(dport)
 
                 # ── ICMP ─────────────────────────────────────────────────────
                 elif proto_num == 1:
@@ -2264,7 +2267,8 @@ def analyze_pcap(filepath):
                                         while _ti + 1 < len(_raw_tel) and not (
                                                 _raw_tel[_ti] == 0xFF and _raw_tel[_ti + 1] == 0xF0):
                                             _ti += 1
-                                        _ti += 2
+                                        if _ti + 2 <= len(_raw_tel):
+                                            _ti += 2
                                     elif 0xFB <= _nb <= 0xFE:
                                         _ti += 2
                                     else:
@@ -2331,6 +2335,7 @@ def analyze_pcap(filepath):
                         if payload and (dport == 502 or sport == 502):
                             mb = parse_modbus(payload)
                             if mb:
+                                mb["is_response"] = sport == 502
                                 pd["modbus"] = mb
                                 if mb.get("unit_id") is not None:
                                     sh["modbus_unit_ids"].add(mb["unit_id"])
@@ -2715,6 +2720,7 @@ def merge_results(results):
     merged_files = []
     merged_ot_commands = []
     anomaly_keys = set()
+    seen_hashes = set()
     total_packets = 0
     truncated = False
     capture_start = None
@@ -2798,6 +2804,9 @@ def merge_results(results):
                 me["ot_errors"] += e.get("ot_errors", 0)
                 for k, v in e.get("fc_counts", {}).items():
                     me["fc_counts"][k] = me["fc_counts"].get(k, 0) + v
+                if e.get("first_seen") is not None:
+                    if me["first_seen"] is None or e["first_seen"] < me["first_seen"]:
+                        me["first_seen"] = e["first_seen"]
                 if e.get("last_seen") is not None:
                     if me["last_seen"] is None or e["last_seen"] > me["last_seen"]:
                         me["last_seen"] = e["last_seen"]
@@ -2825,7 +2834,6 @@ def merge_results(results):
             merged_credentials.extend(result.get("credentials", [])[:remaining_creds])
 
         # Merge files (cap at 500 total, deduplicate by sha256)
-        seen_hashes = {f["sha256"] for f in merged_files}
         for _f in result.get("files", []):
             if len(merged_files) >= 500:
                 break
