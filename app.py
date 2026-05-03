@@ -1864,7 +1864,10 @@ def analyze_pcap(filepath):
                     break
                 processed += 1
 
-                pkt_time = meta.sec + meta.usec / 1_000_000.0
+                if hasattr(meta, "sec"):          # pcap (PacketMetadata)
+                    pkt_time = meta.sec + meta.usec / 1_000_000.0
+                else:                             # pcapng (PacketMetadataNg)
+                    pkt_time = ((meta.tshigh << 32) | meta.tslow) / meta.tsresol
                 if first_pkt_time is None:
                     first_pkt_time = pkt_time
                 last_pkt_time = pkt_time

@@ -124,3 +124,5 @@
 - [x] OT Matrix: Tooltip arrow changed from → to ↔ (edges are undirected)
 - [x] OT Matrix: Anomaly border stroke-width increased to 2 on cross-zone+anomaly cells for visibility
 - [x] OT Matrix: Diagonal cells rendered as visually inert dark rects (no hover/click)
+- [x] Bug fix: pcapng files crashed `analyze_pcap` with `'PacketMetadataNg' object has no attribute 'sec'` — fixed timestamp extraction to use `tshigh`/`tslow`/`tsresol` for pcapng vs `sec`/`usec` for pcap (`app.py:1867`)
+- [x] Tests: Added `tests/test_pcapng.py` — 4 integration tests covering pcapng parse, pcap/pcapng parity, and mixed-format merge
