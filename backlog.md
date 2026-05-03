@@ -112,3 +112,15 @@
 - [x] CSS: `#ot-legend` rule incorrectly removed as "dead code" — element is created dynamically by JS; restored with `display: flex; flex-wrap: wrap` so legend items flow horizontally instead of stacking as block rows (~200 px tall)
 - [x] OT Map: Matrix view color key — replaced plain-text legend note with inline SVG color swatches for each OT protocol (Modbus/DNP3/S7comm/EtherNet/IP/IEC-104/BACnet/CoAP/MQTT)
 - [x] Tests: Added 8 unit tests for `parse_enip` (register session, read/write tag, error status, malformed input)
+- [x] OT Matrix: Sticky row/column headers via CSS Grid (3-SVG layout: cols/rows/cells); headers remain visible while scrolling large captures
+- [x] OT Matrix: Click trap removed — cell click now navigates to graph view + opens packet inspector for that connection; tooltip shows "Click to inspect packets"
+- [x] OT Matrix: Row/column hover highlight — crosshair bands highlight the active row and column; hovered label turns bright white
+- [x] OT Matrix: Group nodes by zone (OT → DMZ → IT → Internet) before sorting by connection count; faint separator lines at zone boundaries on both axes
+- [x] OT Matrix: Middle-ellipsis label truncation with full-name `<title>` tooltip on hover (previously cut the front of long hostnames)
+- [x] OT Matrix: Empty state shows friendly message when no devices match current filters (was silent)
+- [x] OT Matrix: Re-renders automatically when sidebar filters change (was stale until manually toggled)
+- [x] OT Matrix: PNG export targets the matrix SVGs when in matrix mode (previously always exported the hidden Purdue map)
+- [x] OT Matrix: "Showing top 40 of N" hint rendered in legend area when capture has >40 devices
+- [x] OT Matrix: Tooltip arrow changed from → to ↔ (edges are undirected)
+- [x] OT Matrix: Anomaly border stroke-width increased to 2 on cross-zone+anomaly cells for visibility
+- [x] OT Matrix: Diagonal cells rendered as visually inert dark rects (no hover/click)

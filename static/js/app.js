@@ -623,6 +623,8 @@ function applyFilters(skipFit) {
     clearTimeout(applyFilters._fitTimer);
     applyFilters._fitTimer = setTimeout(zoomFitVisible, 300);
   }
+
+  if (otMatrixMode) renderOTMatrix(graphData);
 }
 
 function zoomFitVisible() {
@@ -3430,6 +3432,58 @@ function exportOTMapPng() {
   img.src = url;
 }
 
+function exportOTMatrixPng() {
+  if (!graphData) return;
+  const DPR = window.devicePixelRatio || 2;
+  const LABEL_W = 96, LABEL_H = 96;
+  const colsSvg  = document.getElementById("ot-matrix-cols");
+  const rowsSvg  = document.getElementById("ot-matrix-rows");
+  const cellsSvg = document.getElementById("ot-matrix-cells");
+  const colsW  = parseFloat(colsSvg.getAttribute("width"))  || 0;
+  const rowsH  = parseFloat(rowsSvg.getAttribute("height")) || 0;
+  const cellsW = parseFloat(cellsSvg.getAttribute("width")) || 0;
+  const cellsH = parseFloat(cellsSvg.getAttribute("height")) || 0;
+  if (cellsW === 0) return;
+  const totalW = LABEL_W + cellsW;
+  const totalH = LABEL_H + cellsH;
+
+  const serializeSvg = (svgEl, w, h) => {
+    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bg.setAttribute("width", w); bg.setAttribute("height", h); bg.setAttribute("fill", "#0d1117");
+    const clone = svgEl.cloneNode(true);
+    clone.insertBefore(bg, clone.firstChild);
+    return new XMLSerializer().serializeToString(clone);
+  };
+  const loadImg = (svgStr) => new Promise(resolve => {
+    const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
+    const img = new Image();
+    img.onload = () => resolve({ img, url });
+    img.src = url;
+  });
+
+  Promise.all([
+    loadImg(serializeSvg(colsSvg, colsW, LABEL_H)),
+    loadImg(serializeSvg(rowsSvg, LABEL_W, rowsH)),
+    loadImg(serializeSvg(cellsSvg, cellsW, cellsH)),
+  ]).then(([cols, rows, cells]) => {
+    const canvas = document.createElement("canvas");
+    canvas.width  = Math.round(totalW * DPR);
+    canvas.height = Math.round(totalH * DPR);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(DPR, DPR);
+    ctx.fillStyle = "#0d1117";
+    ctx.fillRect(0, 0, totalW, totalH);
+    ctx.drawImage(cols.img,  LABEL_W, 0,       colsW,  LABEL_H);
+    ctx.drawImage(rows.img,  0,       LABEL_H, LABEL_W, rowsH);
+    ctx.drawImage(cells.img, LABEL_W, LABEL_H, cellsW,  cellsH);
+    [cols, rows, cells].forEach(x => URL.revokeObjectURL(x.url));
+    const a = document.createElement("a");
+    a.download = `ot-matrix-${new Date().toISOString().slice(0, 10)}.png`;
+    a.href = canvas.toDataURL("image/png");
+    a.click();
+  });
+}
+
 function exportOTMapJson() {
   if (!graphData) return;
   const effectiveNodes = [
@@ -3587,27 +3641,63 @@ let otMatrixMode = false;
 
 function renderOTMatrix(data) {
   if (!data) return;
+  const ns = "http://www.w3.org/2000/svg";
+  const CELL = 20, LABEL_W = 96, LABEL_H = 96;
 
-  // Build the same effective node set as the Purdue view
+  const truncMid = (s, max) =>
+    s.length <= max ? s : s.slice(0, Math.ceil(max / 2 - 1)) + "…" + s.slice(-(Math.floor(max / 2 - 1)));
+
+  // Build effective node set
   let baseNodes = data.nodes.filter(n => !otRemovedIds.has(n.id));
   if (!otFilterAll && activeTypes.size > 0)
     baseNodes = baseNodes.filter(n => activeTypes.has(n.host_type));
   const effectiveNodes = [...baseNodes, ...otAddedNodes];
 
-  // Sort by connection count, cap at 40
   const connCount = {};
   effectiveNodes.forEach(n => { connCount[n.id] = 0; });
   data.edges.forEach(e => {
     if (connCount[e.source] !== undefined) connCount[e.source]++;
     if (connCount[e.target] !== undefined) connCount[e.target]++;
   });
+
+  const nodeZone = (n) => {
+    const lvl = (otOverrides && otOverrides[n.id] !== undefined) ? otOverrides[n.id] : n.purdue_level;
+    if (lvl === 6) return "Internet";
+    if (lvl >= 4)  return "IT";
+    if (lvl === 3.5) return "DMZ";
+    if (lvl >= 0)  return "OT";
+    return null;
+  };
+
+  // Sort by zone then connection count
+  const ZONE_ORDER = { OT: 0, DMZ: 1, IT: 2, Internet: 3 };
+  const totalNodes = effectiveNodes.length;
   const matrixNodes = [...effectiveNodes]
-    .sort((a, b) => (connCount[b.id] || 0) - (connCount[a.id] || 0))
+    .sort((a, b) => {
+      const za = ZONE_ORDER[nodeZone(a)] ?? 9;
+      const zb = ZONE_ORDER[nodeZone(b)] ?? 9;
+      if (za !== zb) return za - zb;
+      return (connCount[b.id] || 0) - (connCount[a.id] || 0);
+    })
     .slice(0, 40);
   const N = matrixNodes.length;
-  if (N === 0) return;
 
-  // Edge and anomaly lookup maps
+  const colsSvg  = document.getElementById("ot-matrix-cols");
+  const rowsSvg  = document.getElementById("ot-matrix-rows");
+  const cellsSvg = document.getElementById("ot-matrix-cells");
+
+  if (N === 0) {
+    [colsSvg, rowsSvg].forEach(s => { s.innerHTML = ""; s.setAttribute("width", "0"); s.setAttribute("height", "0"); });
+    cellsSvg.innerHTML = "";
+    cellsSvg.setAttribute("width", "320"); cellsSvg.setAttribute("height", "60");
+    const t = document.createElementNS(ns, "text");
+    t.setAttribute("x", "12"); t.setAttribute("y", "32");
+    t.setAttribute("fill", "#8b949e"); t.setAttribute("font-size", "12");
+    t.textContent = "No devices match the current filters.";
+    cellsSvg.appendChild(t);
+    return;
+  }
+
   const edgeMap = {};
   data.edges.forEach(e => {
     edgeMap[`${e.source}|${e.target}`] = e;
@@ -3618,17 +3708,6 @@ function renderOTMatrix(data) {
     if (a.src && a.dst) anomalyEdgeSet.add(`${a.src}|${a.dst}`);
   });
 
-  // Zone helper
-  const nodeZone = (n) => {
-    const lvl = (otOverrides && otOverrides[n.id] !== undefined) ? otOverrides[n.id] : n.purdue_level;
-    if (lvl === 6) return "Internet";
-    if (lvl >= 4)  return "IT";
-    if (lvl === 3.5) return "DMZ";
-    if (lvl >= 0)  return "OT";
-    return null;
-  };
-
-  // Dominant OT protocol helper
   const OT_PROTO_ORDER = ["Modbus","DNP3","S7comm","EtherNet/IP","IEC-104","BACnet","CoAP","MQTT"];
   const dominantProto = (e) => {
     if (!e) return null;
@@ -3636,24 +3715,15 @@ function renderOTMatrix(data) {
     return e.protocols[0] || null;
   };
 
-  // Layout constants
-  const CELL    = 20;
-  const LABEL_W = 96;
-  const LABEL_H = 96;
-  const ns      = "http://www.w3.org/2000/svg";
-  const svgW    = LABEL_W + N * CELL + 16;
-  const svgH    = LABEL_H + N * CELL + 28;  // extra 8px for protocol color key row
+  // ── Column headers SVG ──────────────────────────────────────────────────────
+  colsSvg.innerHTML = "";
+  colsSvg.setAttribute("width", N * CELL);
+  colsSvg.setAttribute("height", LABEL_H);
 
-  const svgEl = document.getElementById("ot-matrix-svg");
-  svgEl.setAttribute("width",   svgW);
-  svgEl.setAttribute("height",  svgH);
-  svgEl.setAttribute("viewBox", `0 0 ${svgW} ${svgH}`);
-  svgEl.innerHTML = "";
-
-  // Column headers (rotated)
+  const colLabelEls = [];
   matrixNodes.forEach((n, j) => {
-    const x   = LABEL_W + j * CELL + CELL / 2;
-    const lbl = (n.hostname || n.ip);
+    const x = j * CELL + CELL / 2;
+    const lbl = n.hostname || n.ip;
     const txt = document.createElementNS(ns, "text");
     txt.setAttribute("x", x);
     txt.setAttribute("y", LABEL_H - 4);
@@ -3662,101 +3732,175 @@ function renderOTMatrix(data) {
     txt.setAttribute("font-size", "9");
     txt.setAttribute("font-family", "monospace");
     txt.setAttribute("text-anchor", "end");
-    txt.textContent = lbl.length > 14 ? lbl.slice(-14) : lbl;
-    svgEl.appendChild(txt);
+    txt.textContent = truncMid(lbl, 14);
+    const ttl = document.createElementNS(ns, "title"); ttl.textContent = lbl;
+    txt.appendChild(ttl);
+    colsSvg.appendChild(txt);
+    colLabelEls.push(txt);
   });
 
-  // Rows
-  matrixNodes.forEach((rowNode, i) => {
-    const y   = LABEL_H + i * CELL;
-    const lbl = (rowNode.hostname || rowNode.ip);
+  // ── Row headers SVG ─────────────────────────────────────────────────────────
+  rowsSvg.innerHTML = "";
+  rowsSvg.setAttribute("width", LABEL_W);
+  rowsSvg.setAttribute("height", N * CELL);
 
-    // Row label
+  const rowLabelEls = [];
+  matrixNodes.forEach((n, i) => {
+    const lbl = n.hostname || n.ip;
     const txt = document.createElementNS(ns, "text");
     txt.setAttribute("x", LABEL_W - 4);
-    txt.setAttribute("y", y + CELL / 2 + 3);
+    txt.setAttribute("y", i * CELL + CELL / 2 + 3);
     txt.setAttribute("fill", "#8b949e");
     txt.setAttribute("font-size", "9");
     txt.setAttribute("font-family", "monospace");
     txt.setAttribute("text-anchor", "end");
-    txt.textContent = lbl.length > 15 ? lbl.slice(-15) : lbl;
-    svgEl.appendChild(txt);
+    txt.textContent = truncMid(lbl, 15);
+    const ttl = document.createElementNS(ns, "title"); ttl.textContent = lbl;
+    txt.appendChild(ttl);
+    rowsSvg.appendChild(txt);
+    rowLabelEls.push(txt);
+  });
 
+  // ── Cells SVG ───────────────────────────────────────────────────────────────
+  const LEGEND_H = 28;
+  const cellsW = N * CELL;
+  const cellsH = N * CELL + LEGEND_H;
+  cellsSvg.innerHTML = "";
+  cellsSvg.setAttribute("width", cellsW);
+  cellsSvg.setAttribute("height", cellsH);
+
+  // Crosshair highlight rects (behind cells)
+  const rowHi = document.createElementNS(ns, "rect");
+  rowHi.setAttribute("fill", "#58a6ff"); rowHi.setAttribute("opacity", "0.07");
+  rowHi.setAttribute("x", "0"); rowHi.setAttribute("height", CELL);
+  rowHi.setAttribute("width", cellsW); rowHi.setAttribute("pointer-events", "none");
+  rowHi.style.display = "none";
+  cellsSvg.appendChild(rowHi);
+
+  const colHi = document.createElementNS(ns, "rect");
+  colHi.setAttribute("fill", "#58a6ff"); colHi.setAttribute("opacity", "0.07");
+  colHi.setAttribute("y", "0"); colHi.setAttribute("width", CELL);
+  colHi.setAttribute("height", N * CELL); colHi.setAttribute("pointer-events", "none");
+  colHi.style.display = "none";
+  cellsSvg.appendChild(colHi);
+
+  // Zone boundary indices
+  const zoneBoundaries = [];
+  let prevZone = nodeZone(matrixNodes[0]);
+  matrixNodes.forEach((n, i) => {
+    const z = nodeZone(n);
+    if (i > 0 && z !== prevZone) zoneBoundaries.push(i);
+    prevZone = z;
+  });
+
+  // Draw cells
+  matrixNodes.forEach((rowNode, i) => {
     matrixNodes.forEach((colNode, j) => {
-      const x    = LABEL_W + j * CELL;
-      const edge = edgeMap[`${rowNode.id}|${colNode.id}`];
-      const rzn  = nodeZone(rowNode);
-      const czn  = nodeZone(colNode);
-      const isCrossZone = edge && rzn && czn && rzn !== czn;
-      const isAnomaly   = anomalyEdgeSet.has(`${rowNode.id}|${colNode.id}`)
-                       || anomalyEdgeSet.has(`${colNode.id}|${rowNode.id}`);
+      if (i === j) {
+        const rect = document.createElementNS(ns, "rect");
+        rect.setAttribute("x", j * CELL + 1); rect.setAttribute("y", i * CELL + 1);
+        rect.setAttribute("width", CELL - 2); rect.setAttribute("height", CELL - 2);
+        rect.setAttribute("rx", "2"); rect.setAttribute("fill", "#0a0f15");
+        rect.setAttribute("opacity", "0.8");
+        cellsSvg.appendChild(rect);
+        return;
+      }
 
-      const proto   = dominantProto(edge);
-      let   fill    = edge ? (PROTO_COLORS[proto] || "#555") : "#161b22";
-      let   opacity = edge ? "0.8" : "0.15";
+      const edge = edgeMap[`${rowNode.id}|${colNode.id}`];
+      const rzn = nodeZone(rowNode), czn = nodeZone(colNode);
+      const isCrossZone = edge && rzn && czn && rzn !== czn;
+      const isAnomaly = anomalyEdgeSet.has(`${rowNode.id}|${colNode.id}`)
+                     || anomalyEdgeSet.has(`${colNode.id}|${rowNode.id}`);
+      const proto = dominantProto(edge);
+      let fill    = edge ? (PROTO_COLORS[proto] || "#555") : "#161b22";
+      let opacity = edge ? "0.8" : "0.15";
       if (isCrossZone) { fill = "#ff8c00"; opacity = "0.7"; }
 
       const rect = document.createElementNS(ns, "rect");
-      rect.setAttribute("x",       x + 1);
-      rect.setAttribute("y",       y + 1);
-      rect.setAttribute("width",   CELL - 2);
-      rect.setAttribute("height",  CELL - 2);
-      rect.setAttribute("rx",      "2");
-      rect.setAttribute("fill",    fill);
+      rect.setAttribute("x", j * CELL + 1); rect.setAttribute("y", i * CELL + 1);
+      rect.setAttribute("width", CELL - 2); rect.setAttribute("height", CELL - 2);
+      rect.setAttribute("rx", "2");
+      rect.setAttribute("fill", fill);
       rect.setAttribute("opacity", opacity);
       if (isAnomaly) {
-        rect.setAttribute("stroke",       "#f85149");
-        rect.setAttribute("stroke-width", "1.5");
+        rect.setAttribute("stroke", "#f85149");
+        rect.setAttribute("stroke-width", isCrossZone ? "2" : "1.5");
       }
       if (edge) rect.style.cursor = "pointer";
+      cellsSvg.appendChild(rect);
 
       if (edge) {
         rect.addEventListener("mouseenter", (ev) => {
+          rowHi.setAttribute("y", i * CELL); rowHi.style.display = "";
+          colHi.setAttribute("x", j * CELL); colHi.style.display = "";
+          rowLabelEls.forEach((el, k) => el.setAttribute("fill", k === i ? "#e6edf3" : "#8b949e"));
+          colLabelEls.forEach((el, k) => el.setAttribute("fill", k === j ? "#e6edf3" : "#8b949e"));
           const otR = edge.ot_reads || 0, otW = edge.ot_writes || 0;
           tooltip.innerHTML = `
-            <div class="tip-ip" style="font-size:11px">${escHtml(rowNode.ip)} → ${escHtml(colNode.ip)}</div>
+            <div class="tip-ip" style="font-size:11px">${escHtml(rowNode.ip)} ↔ ${escHtml(colNode.ip)}</div>
             <div class="tip-type">${fmtNum(edge.packet_count)} pkts · ${fmtBytes(edge.bytes)}</div>
             <div class="tip-proto">${edge.protocols.slice(0, 5).map(escHtml).join(" · ")}</div>
             ${otR || otW ? `<div class="tip-type">OT reads: ${otR} · writes: ${otW}</div>` : ""}
             ${isCrossZone ? `<div style="color:#ff8c00;font-size:10px">⚠ Cross-zone</div>` : ""}
             ${isAnomaly   ? `<div style="color:#f85149;font-size:10px">⚠ Anomaly detected</div>` : ""}
+            <div style="color:#555;font-size:10px;margin-top:4px">Click to inspect packets</div>
           `;
           tooltip.classList.add("visible");
           positionTooltip(ev);
         });
         rect.addEventListener("mousemove", positionTooltip);
-        rect.addEventListener("mouseleave", hideTooltip);
-
-        // Click: flip back to Purdue view
-        rect.addEventListener("click", () => {
+        rect.addEventListener("mouseleave", () => {
+          hideTooltip();
+          rowHi.style.display = "none"; colHi.style.display = "none";
+          rowLabelEls.forEach(el => el.setAttribute("fill", "#8b949e"));
+          colLabelEls.forEach(el => el.setAttribute("fill", "#8b949e"));
+        });
+        rect.addEventListener("click", (ev) => {
+          ev.stopPropagation();
           otMatrixMode = false;
           document.getElementById("ot-matrix-btn").classList.remove("active");
           document.getElementById("ot-map-svg").classList.remove("hidden");
           document.getElementById("ot-matrix-container").classList.add("hidden");
-          renderOTMap(graphData);
+          setView("graph");
+          setTimeout(() => openPktInspector(rowNode.id, colNode.id), 50);
         });
       }
-      svgEl.appendChild(rect);
     });
   });
 
-  // Protocol color key
+  // Zone boundary separator lines
+  zoneBoundaries.forEach(idx => {
+    const hl = document.createElementNS(ns, "line");
+    hl.setAttribute("x1", "0"); hl.setAttribute("x2", cellsW);
+    hl.setAttribute("y1", idx * CELL); hl.setAttribute("y2", idx * CELL);
+    hl.setAttribute("stroke", "#30363d"); hl.setAttribute("stroke-width", "1");
+    hl.setAttribute("pointer-events", "none");
+    cellsSvg.appendChild(hl);
+    const vl = document.createElementNS(ns, "line");
+    vl.setAttribute("y1", "0"); vl.setAttribute("y2", N * CELL);
+    vl.setAttribute("x1", idx * CELL); vl.setAttribute("x2", idx * CELL);
+    vl.setAttribute("stroke", "#30363d"); vl.setAttribute("stroke-width", "1");
+    vl.setAttribute("pointer-events", "none");
+    cellsSvg.appendChild(vl);
+  });
+
+  // Protocol color legend
   const OT_PROTO_KEY = ["Modbus","DNP3","S7comm","EtherNet/IP","IEC-104","BACnet","CoAP","MQTT"];
-  let lx = LABEL_W;
-  const ly = LABEL_H + N * CELL + 16;
+  let lx = 0;
+  const ly = N * CELL + 16;
   OT_PROTO_KEY.forEach(p => {
     const clr = PROTO_COLORS[p] || "#555";
     const sw = document.createElementNS(ns, "rect");
-    sw.setAttribute("x", lx);   sw.setAttribute("y", ly - 8);
-    sw.setAttribute("width", 8); sw.setAttribute("height", 8);
+    sw.setAttribute("x", lx); sw.setAttribute("y", ly - 8);
+    sw.setAttribute("width", "8"); sw.setAttribute("height", "8");
     sw.setAttribute("rx", "1"); sw.setAttribute("fill", clr);
-    svgEl.appendChild(sw);
+    cellsSvg.appendChild(sw);
     const lbl = document.createElementNS(ns, "text");
     lbl.setAttribute("x", lx + 10); lbl.setAttribute("y", ly);
     lbl.setAttribute("fill", "#8b949e"); lbl.setAttribute("font-size", "8");
     lbl.setAttribute("font-family", "monospace");
     lbl.textContent = p;
-    svgEl.appendChild(lbl);
+    cellsSvg.appendChild(lbl);
     lx += 10 + p.length * 5.2 + 6;
   });
   const suffixTxt = document.createElementNS(ns, "text");
@@ -3764,7 +3908,16 @@ function renderOTMatrix(data) {
   suffixTxt.setAttribute("fill", "#555"); suffixTxt.setAttribute("font-size", "8");
   suffixTxt.setAttribute("font-family", "monospace");
   suffixTxt.textContent = "· orange = cross-zone · red border = anomaly";
-  svgEl.appendChild(suffixTxt);
+  cellsSvg.appendChild(suffixTxt);
+
+  if (totalNodes > 40) {
+    const hint = document.createElementNS(ns, "text");
+    hint.setAttribute("x", "0"); hint.setAttribute("y", N * CELL + 26);
+    hint.setAttribute("fill", "#555"); hint.setAttribute("font-size", "8");
+    hint.setAttribute("font-family", "monospace");
+    hint.textContent = `· Showing top 40 of ${totalNodes} devices (by zone + connection count)`;
+    cellsSvg.appendChild(hint);
+  }
 }
 
 /* ── DNS Map View ────────────────────────────────────────────────────────── */
@@ -4136,7 +4289,10 @@ new ResizeObserver(() => {
   }, 150);
 }).observe(document.getElementById("ot-map-view"));
 
-document.getElementById("ot-export-png-btn").addEventListener("click", exportOTMapPng);
+document.getElementById("ot-export-png-btn").addEventListener("click", () => {
+  if (otMatrixMode) exportOTMatrixPng();
+  else exportOTMapPng();
+});
 document.getElementById("ot-export-json-btn").addEventListener("click", exportOTMapJson);
 
 document.getElementById("ot-matrix-btn").addEventListener("click", () => {
