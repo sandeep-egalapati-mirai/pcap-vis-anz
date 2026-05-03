@@ -13,26 +13,29 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **OS fingerprinting** — TTL / hop-limit heuristic (Linux/Unix, Windows, Network Device)
 - **MAC vendor lookup** — OUI lookup covering IT, OT, and IoT vendors (VMware, Cisco, Siemens, Amazon Echo, …)
 - **DNS name resolution** — Extracts hostnames and query logs from captured DNS traffic
+- **TLS inspection** — Parses TLS ClientHello to extract SNI (server name) and compute JA3 fingerprints; matches against a curated known-bad JA3 list to flag malware/C2 TLS sessions
+- **Credentials extraction** — Captures cleartext credentials from HTTP Basic Auth, HTML form POSTs, FTP, Telnet, MQTT CONNECT, and CoAP; shown in sidebar with reveal-password toggle and exportable to CSV
+- **Per-host risk score** — 0–100 composite score based on anomaly severity, OT write/error counts, internet exposure, and TLS anomalies; shown in node detail panel and ranked in the audit report
 - **Filtering** — Filter graph by protocol or host type via sidebar checkboxes
 - **Search** — Find nodes by IP address or hostname (300ms debounce)
-- **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, anomalies, OT analysis, conversations)
-- **Four views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout)
+- **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, TLS SNI names, anomalies, OT analysis, conversations, and captured credentials)
+- **Six views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout), OT Log (chronological OT command history), and Diff (baseline comparison)
 - **OT Map** — Full Purdue Model swimlane view (L0 Field → L6 Public Internet) with automatic Public Internet zone for non-RFC1918 IPs (no GeoIP required), D3 zoom/pan (Ctrl+scroll, toolbar buttons), traffic-weighted edges, anomaly callouts (! badge on affected nodes, lane tint for high-severity), cross-zone vs. cross-level edge counting, zone legend, Purdue level tooltips, activeTypes filter integration with sidebar bypass toggle ("Respect filters" button), OT protocol evidence-based Purdue level assignment, and editable mode: drag-to-reclassify, add/remove devices (inline error on duplicate IP), risk annotation (Critical → Info, panel positioned near clicked node), and PNG/JSON export
+- **OT Communication Matrix** — Toggle within the OT Map view (⊞ Matrix button) to switch to a device×device adjacency matrix: each cell is coloured by dominant OT protocol, orange for cross-zone traffic, and red-bordered when an anomaly is present; hover for packet count, byte total, OT read/write counts, and cross-zone/anomaly warnings
 - **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap (rAF-throttled for smooth playback)
-- **Packet inspector** — Click any edge or node to open a Wireshark-style panel showing per-packet protocol trees and hex dumps
-- **OT Command Log** — Dedicated tab in the packet inspector showing a chronological OT command history (protocol, direction, function code, result)
+- **Packet inspector** — Click any edge or node to open a Wireshark-style panel with three tabs: **Packets** (per-packet protocol tree and hex dump), **Cmd Log** (OT command history for OT connections), and **Stream** (ASCII/hex payload reassembly for TCP sessions)
 - **OT Analysis panel** — Per-node read/write/error ratio bar, master/outstation role badge, Modbus unit IDs, DNP3 link addresses
 - **Exports** — PNG graph screenshot, connections CSV, anomalies CSV, credentials CSV (with passwords), Markdown audit report (capture summary, risk ranking, anomalies by severity, OT inventory, TLS/SNI observations, captured credentials, file transfers, OT write log)
-- **File transfer detection** — detects HTTP file downloads (Content-Disposition: attachment + interesting Content-Type); sidebar "File Transfers" panel with filename, MIME, size, SHA-256 hash; 200 files/capture, 500/merge (deduped by hash)
+- **File transfer detection** — Detects HTTP file downloads (Content-Disposition: attachment + interesting Content-Type); sidebar "File Transfers" panel with filename, MIME, size, SHA-256 hash; 200 files/capture, 500/merge (deduped by hash)
 - **PCAP baseline diff** — "Set Baseline" button in header; upload a second PCAP and open the "⊕ Diff" tab to compare: new/disappeared hosts, new connections (with protocols), new anomalies vs baseline; three-column diff view, no server round-trip
 - **Session save / load** — Export full analysis to JSON and reload without re-uploading the capture file
 - **Node annotations** — Right-click any node to attach a persistent note (stored in browser localStorage)
-- **Anomaly detection** — 23 detection rules across general network, OT/ICS, and IoT threat categories
+- **Anomaly detection** — 25 detection rules across general network, OT/ICS, and IoT threat categories
 - **Large capture support** — Streams up to 1,000,000 packets without loading into memory (up to 1 GB upload); multi-file uploads processed in parallel
 
 ## Anomaly Detection
 
-23 detection rules fire automatically after analysis:
+25 detection rules fire automatically after analysis:
 
 **General network**
 - Port scan — single source contacting >5 IPs across >15 unique ports
@@ -41,6 +44,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - Beaconing — connection with highly regular inter-packet timing (coefficient of variation < 0.2)
 - Data exfiltration — host sending >10 MB to a non-private IP
 - Suspicious ports — known C2/hack-tool ports (4444, 1337, 31337, 6666, 6667)
+- **Known-bad TLS fingerprint** — JA3 hash matches a curated list of malware/C2 tool signatures (Cobalt Strike, Metasploit, AsyncRAT, and others)
 
 **OT / ICS**
 - Modbus write commands (FC 5/6/15/16) — unauthorized PLC writes
@@ -210,7 +214,14 @@ pcap-vis-anz/
 │   ├── css/style.css       # Dark GitHub-style theme
 │   └── js/app.js           # D3.js force graph + UI logic
 └── tests/
-    └── test_parsers.py     # pytest unit tests for protocol parsers
+    ├── test_parsers.py         # Protocol parser unit tests (Modbus, DNP3, S7, CoAP, …)
+    ├── test_anomalies.py       # Anomaly detection rule tests
+    ├── test_credentials.py     # Credential extraction tests
+    ├── test_file_extraction.py # HTTP file transfer detection tests
+    ├── test_helpers.py         # Helper function tests (is_private, mac_vendor, geo_lookup)
+    ├── test_http_mqtt_coap.py  # HTTP / MQTT / CoAP parser tests
+    ├── test_merge.py           # Multi-file merge tests
+    └── test_utils.py           # Utility function tests
 ```
 
 ## Testing
@@ -219,6 +230,8 @@ pcap-vis-anz/
 pip install pytest
 python -m pytest tests/ -q
 ```
+
+The suite contains 224 tests across 8 files covering protocol parsers, anomaly detection, credential extraction, file transfer detection, and multi-file merging.
 
 ## Configuration
 
