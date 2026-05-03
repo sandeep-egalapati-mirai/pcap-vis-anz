@@ -88,6 +88,9 @@
     <button id="upload-btn">Upload File</button>
   </header>
 
+  <!-- Tooltip (outside any view container so it is never hidden by display:none) -->
+  <div id="tooltip"></div>
+
   <!-- Main -->
   <div id="main">
 
@@ -172,9 +175,6 @@
         <h4>Host Types</h4>
         <div id="legend-hosts"></div>
       </div>
-
-      <!-- Tooltip -->
-      <div id="tooltip"></div>
 
       <!-- Timeline -->
       <div id="timeline-bar" class="hidden">

@@ -515,7 +515,7 @@ header h1 span { color: var(--accent); }
 
 /* ── Tooltip ──────────────────────────────────────────────────────────────── */
 #tooltip {
-  position: absolute;
+  position: fixed;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
