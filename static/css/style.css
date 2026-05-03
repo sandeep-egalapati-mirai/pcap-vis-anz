@@ -438,11 +438,6 @@ header h1 span { color: var(--accent); }
   z-index: 0;
 }
 
-/* ── GPU badge ────────────────────────────────────────────────────────────── */
-#gpu-badge { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 4px; }
-#gpu-badge.gpu-active   { color: #4caf50; border: 1px solid #4caf5066; }
-#gpu-badge.gpu-inactive { color: var(--text2); border: 1px solid #ffffff22; }
-
 /* ── Graph elements ───────────────────────────────────────────────────────── */
 .link {
   stroke-opacity: 0.55;

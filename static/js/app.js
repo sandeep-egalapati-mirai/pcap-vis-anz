@@ -389,15 +389,6 @@ function loadGraph(data) {
   document.getElementById("stat-conns").textContent = fmtNum(data.stats.total_connections);
   document.getElementById("stat-pkts").textContent  = fmtNum(data.stats.total_packets);
 
-  // GPU badge
-  const gpuBadge = document.getElementById("gpu-badge");
-  if (gpuBadge) {
-    const hasGpu = !!data.stats.gpu;
-    gpuBadge.textContent = hasGpu ? "⚡ GPU" : "CPU";
-    gpuBadge.className = hasGpu ? "stat gpu-active" : "stat gpu-inactive";
-    gpuBadge.style.display = "";
-  }
-
   // Build filter sets
   activeProtos = new Set(data.stats.protocols);
   activeTypes  = new Set(data.stats.host_types);
@@ -4308,10 +4299,6 @@ document.getElementById("exp-csv").addEventListener("click", () => {
 });
 document.getElementById("exp-anomalies").addEventListener("click", () => {
   exportAnomalies();
-  document.getElementById("export-menu").classList.add("hidden");
-});
-document.getElementById("exp-cred-csv").addEventListener("click", () => {
-  exportCredentialsCsv();
   document.getElementById("export-menu").classList.add("hidden");
 });
 document.getElementById("exp-report").addEventListener("click", () => {
