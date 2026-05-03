@@ -592,7 +592,7 @@ document.getElementById("no-results-clear").addEventListener("click", () => {
   document.getElementById("clear-filters-btn").click();
 });
 
-function applyFilters() {
+function applyFilters(skipFit) {
   if (!graphData) return;
 
   const visibleNodeIds = new Set();
@@ -619,7 +619,7 @@ function applyFilters() {
   if (noResults) noResults.classList.toggle("visible", visibleNodeIds.size === 0 && !!graphData);
 
   // Fit viewport to visible nodes (debounced so it doesn't fire during simulation)
-  if (visibleNodeIds.size > 0 && visibleNodeIds.size < (graphData.nodes || []).length) {
+  if (!skipFit && visibleNodeIds.size > 0 && visibleNodeIds.size < (graphData.nodes || []).length) {
     clearTimeout(applyFilters._fitTimer);
     applyFilters._fitTimer = setTimeout(zoomFitVisible, 300);
   }
@@ -949,12 +949,12 @@ function renderGraph(data) {
     .filter(e => nodeById[e.source] && nodeById[e.target])
     .map(e => ({ ...e, source: e.source, target: e.target }));
 
-  const maxPkt = Math.max(...nodes.map(n => n.packet_count), 1);
+  const maxPkt = nodes.reduce((m, n) => Math.max(m, n.packet_count), 1);
   function nodeRadius(d) {
     return 6 + Math.log1p(d.packet_count / maxPkt * 200) * 3;
   }
 
-  const maxEdgePkt = Math.max(...links.map(e => e.packet_count), 1);
+  const maxEdgePkt = links.reduce((m, e) => Math.max(m, e.packet_count), 1);
   function edgeWidth(d) {
     return 1 + Math.log1p(d.packet_count / maxEdgePkt * 50) * 1.2;
   }
@@ -1185,7 +1185,7 @@ function renderGraph(data) {
 function buildSimulation(nodes, links, cx, cy, layout) {
   if (simulation) simulation.stop();
 
-  const _maxPkt = Math.max(...nodes.map(n => n.packet_count), 1);
+  const _maxPkt = nodes.reduce((m, n) => Math.max(m, n.packet_count), 1);
   const sim = d3.forceSimulation(nodes)
     .force("collide", d3.forceCollide().radius(d => {
       return 6 + Math.log1p(d.packet_count / _maxPkt * 200) * 3 + 12;
@@ -1282,25 +1282,25 @@ function highlightNode(d, linkSel, nodeSel) {
 function unhighlightAll(linkSel, nodeSel) {
   linkSel.classed("highlighted", false).classed("faded", false);
   nodeSel.classed("faded", false);
-  applyFilters();
+  applyFilters(true);
 }
 
 /* ── Tooltip helpers ─────────────────────────────────────────────────────── */
 function showTooltipNode(event, d) {
-  const geoStr = d.geo ? ` · ${d.geo.country_code || d.geo.country || ""}${d.geo.city ? ", " + d.geo.city : ""}` : "";
+  const geoStr = d.geo ? ` · ${escHtml(d.geo.country_code || d.geo.country || "")}${d.geo.city ? ", " + escHtml(d.geo.city) : ""}` : "";
   tooltip.innerHTML = `
-    <div class="tip-ip">${d.ip}${geoStr ? `<span style="color:var(--text2)">${geoStr}</span>` : ""}</div>
+    <div class="tip-ip">${escHtml(d.ip)}${geoStr ? `<span style="color:var(--text2)">${geoStr}</span>` : ""}</div>
     ${d.hostname ? `<div class="tip-type">${escHtml(d.hostname)}</div>` : ""}
-    <div class="tip-type">${d.host_type}${d.os_hint ? " · " + d.os_hint : ""}</div>
+    <div class="tip-type">${escHtml(d.host_type)}${d.os_hint ? " · " + escHtml(d.os_hint) : ""}</div>
     <div class="tip-proto">
       ${d.protocols.slice(0, 6).map(p =>
-        `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${p}</span>`
+        `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${escHtml(p)}</span>`
       ).join(" · ")}
     </div>
     <div class="tip-type" style="margin-top:4px">
       ${fmtNum(d.packet_count)} pkts · ${fmtBytes(d.bytes_sent + d.bytes_recv)}
     </div>
-    ${anomalyNodeIps[d.ip] ? `<div style="margin-top:4px;font-size:10px;color:${anomalyNodeIps[d.ip]==='high'?'var(--red)':'var(--yellow)'}">⚠ ${anomalyNodeIps[d.ip].toUpperCase()} anomaly</div>` : ""}
+    ${anomalyNodeIps[d.ip] ? `<div style="margin-top:4px;font-size:10px;color:${anomalyNodeIps[d.ip]==='high'?'var(--red)':'var(--yellow)'}">⚠ ${escHtml(anomalyNodeIps[d.ip].toUpperCase())} anomaly</div>` : ""}
     ${(d.risk_score || 0) > 0 ? `<div style="margin-top:2px;font-size:10px;color:${d.risk_score>=70?'var(--red)':d.risk_score>=40?'var(--yellow)':'#aaa'}">Risk: ${d.risk_score}/100</div>` : ""}
     ${d.tls_sni && d.tls_sni.length ? `<div style="margin-top:2px;font-size:10px;color:#58a6ff">TLS: ${d.tls_sni.slice(0,2).map(escHtml).join(", ")}</div>` : ""}
   `;
@@ -1310,14 +1310,14 @@ function showTooltipNode(event, d) {
 
 function showTooltipEdge(event, d) {
   tooltip.innerHTML = `
-    <div class="tip-ip" style="font-size:11px">${d.source.id || d.source} ↔ ${d.target.id || d.target}</div>
+    <div class="tip-ip" style="font-size:11px">${escHtml(d.source.id || d.source)} ↔ ${escHtml(d.target.id || d.target)}</div>
     <div class="tip-type">${fmtNum(d.packet_count)} pkts · ${fmtBytes(d.bytes)}</div>
     <div class="tip-proto" style="margin-top:4px">
       ${d.protocols.slice(0, 6).map(p =>
-        `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${p}</span>`
+        `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${escHtml(p)}</span>`
       ).join(" · ")}
     </div>
-    ${d.ports.length ? `<div class="tip-type" style="margin-top:4px">Ports: ${d.ports.slice(0,8).join(", ")}</div>` : ""}
+    ${d.ports.length ? `<div class="tip-type" style="margin-top:4px">Ports: ${escHtml(d.ports.slice(0,8).join(", "))}</div>` : ""}
   `;
   tooltip.classList.add("visible");
   positionTooltip(event);
@@ -1702,7 +1702,7 @@ function buildLegend(data) {
   data.stats.host_types.forEach(ht => {
     const div = document.createElement("div");
     div.className = "legend-row";
-    div.innerHTML = `<span class="legend-icon">${hostIcon(ht)}</span><div class="legend-dot" style="background:${hostColor(ht)}"></div><span>${ht}</span>`;
+    div.innerHTML = `<span class="legend-icon">${hostIcon(ht)}</span><div class="legend-dot" style="background:${hostColor(ht)}"></div><span>${escHtml(ht)}</span>`;
     hostLegend.appendChild(div);
   });
 }
@@ -1778,12 +1778,15 @@ const pktHexEmpty   = document.getElementById("pkt-hex-empty");
 
 document.getElementById("pkt-close").addEventListener("click", closePktInspector);
 document.getElementById("pkt-tab-pkts").addEventListener("click", () => {
-  const key = pktConnLabel.textContent.split("  ↔  ").map(s => s.trim())[0];
-  _switchPktTab("pkts", []);
-  document.getElementById("pkt-list-wrap").classList.remove("hidden");
-  document.getElementById("pkt-cmd-log").classList.add("hidden");
-  document.getElementById("pkt-tab-pkts").classList.add("active");
-  document.getElementById("pkt-tab-cmds").classList.remove("active");
+  const label = pktConnLabel.textContent;
+  const m = label.match(/^(.+?)  ↔  (.+?)  ·/);
+  let curPkts = [];
+  if (m) {
+    const key = [m[1].trim(), m[2].trim()].sort().join("|");
+    curPkts = packetData[key] || [];
+  }
+  _switchPktTab("pkts", curPkts);
+  renderPktTable(curPkts);
 });
 document.getElementById("pkt-tab-cmds").addEventListener("click", () => {
   const label = pktConnLabel.textContent;
@@ -2007,13 +2010,14 @@ function _appendPktRows(pkts, t0, start, end) {
     tr.className = protoRowClass(p.protocol);
     const srcStr = p.src + (p.sport != null ? ":" + p.sport : "");
     const dstStr = p.dst + (p.dport != null ? ":" + p.dport : "");
+    const eSrc = escHtml(srcStr), eDst = escHtml(dstStr);
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td>${(p.time - t0).toFixed(6)}</td>
-      <td title="${srcStr}">${srcStr}</td>
-      <td title="${dstStr}">${dstStr}</td>
-      <td>${p.protocol}</td>
-      <td>${p.len}</td>
+      <td title="${eSrc}">${eSrc}</td>
+      <td title="${eDst}">${eDst}</td>
+      <td>${escHtml(p.protocol || "")}</td>
+      <td>${p.len | 0}</td>
       <td title="${escHtml(p.info || "")}">${escHtml(p.info || "")}</td>
     `;
     tr.addEventListener("click", () => {
@@ -2065,7 +2069,7 @@ function renderPktDetail(p) {
     div.className = "pkt-layer";
     const hdr = document.createElement("div");
     hdr.className = "pkt-layer-header";
-    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> ${layer.name}`;
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> ${escHtml(layer.name || "")}`;
     hdr.addEventListener("click", () => div.classList.toggle("collapsed"));
     const fields = document.createElement("div");
     fields.className = "pkt-layer-fields";
@@ -2397,7 +2401,8 @@ function buildHttpHeadersTable(headers) {
 }
 
 function escHtml(s) {
-  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 
 /* ── Packet inspector resize handle ──────────────────────────────────────── */
@@ -2915,7 +2920,7 @@ function renderOTMap(data) {
   const allEdgePaths = [];  // all drawn path elements
 
   // Log-scale edge width matching force-graph edgeWidth()
-  const maxPkt = Math.max(1, ...data.edges.map(e => e.packet_count || 1));
+  const maxPkt = data.edges.reduce((m, e) => Math.max(m, e.packet_count || 1), 1);
   const edgeW = (pkt) => 1 + Math.log1p(pkt) / Math.log1p(maxPkt) * 3;
 
   data.edges.forEach(e => {
@@ -3728,7 +3733,7 @@ function renderOTMatrix(data) {
           document.getElementById("ot-matrix-btn").classList.remove("active");
           document.getElementById("ot-map-svg").classList.remove("hidden");
           document.getElementById("ot-matrix-container").classList.add("hidden");
-          renderOTMap(data);
+          renderOTMap(graphData);
         });
       }
       svgEl.appendChild(rect);
@@ -3820,7 +3825,7 @@ function showDnsQueries(node) {
 /* ── Baseline Diff ───────────────────────────────────────────────────────── */
 document.getElementById("baseline-btn").addEventListener("click", () => {
   if (!graphData) return;
-  baselineData = graphData;
+  baselineData = JSON.parse(JSON.stringify(graphData));
   document.getElementById("baseline-btn").textContent = "Baseline Set ✓";
   document.getElementById("diff-tab-btn").classList.remove("hidden");
   showToast("Baseline set. Upload another PCAP then click ⊕ Diff to compare.", "info");
@@ -4172,6 +4177,11 @@ function exportPng() {
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#0d1117";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Composite canvas edges (drawn separately when node count exceeds threshold)
+    if (useCanvasEdges) {
+      const edgeCanvas = document.getElementById("edge-canvas");
+      if (edgeCanvas) ctx.drawImage(edgeCanvas, 0, 0);
+    }
     ctx.drawImage(img, 0, 0);
     URL.revokeObjectURL(url);
     const a = document.createElement("a");
@@ -4491,7 +4501,7 @@ function applyAnnotations() {
     const g = d3.select(this);
     g.selectAll(".node-note-icon").remove();
     if (note) {
-      const r = 6 + Math.log1p(d.packet_count / Math.max(...graphData.nodes.map(n => n.packet_count), 1) * 200) * 3;
+      const r = 6 + Math.log1p(d.packet_count / graphData.nodes.reduce((m, n) => Math.max(m, n.packet_count), 1) * 200) * 3;
       g.append("text")
         .attr("class", "node-note-icon")
         .attr("dy", -(r + 4))
@@ -4508,7 +4518,7 @@ function updateNoteIcon(ip, hasNote) {
     const g = d3.select(this);
     g.selectAll(".node-note-icon").remove();
     if (hasNote) {
-      const r = 6 + Math.log1p(d.packet_count / Math.max(...graphData.nodes.map(n => n.packet_count), 1) * 200) * 3;
+      const r = 6 + Math.log1p(d.packet_count / graphData.nodes.reduce((m, n) => Math.max(m, n.packet_count), 1) * 200) * 3;
       g.append("text")
         .attr("class", "node-note-icon")
         .attr("dy", -(r + 4))
@@ -4562,11 +4572,16 @@ function buildTimeline(data) {
     return;
   }
 
-  tlBar.classList.remove("hidden");
-
   const minT = Math.min(...allTimes);
   const maxT = Math.max(...allTimes);
   const span = maxT - minT;
+
+  if (span === 0) {
+    tlBar.classList.add("hidden");
+    return;
+  }
+
+  tlBar.classList.remove("hidden");
 
   // Build minimap
   const minimap = document.getElementById("tl-minimap");
