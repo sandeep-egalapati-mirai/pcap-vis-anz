@@ -4616,6 +4616,7 @@ document.getElementById("session-file-input").addEventListener("change", (e) => 
       const data = JSON.parse(ev.target.result);
       if (!data.nodes || !data.edges) throw new Error("Invalid session file");
       loadGraph(data);
+      closeModal();
     } catch (err) {
       showToast("Failed to load session: " + err.message, "error");
     }
