@@ -54,11 +54,11 @@ python -m pytest tests/ -q
 ```bash
 pip install -r requirements.txt          # first time; add --break-system-packages on Kali/Debian
 python app.py                            # serves on http://localhost:5000
+python app.py --public                   # bind to 0.0.0.0 (LAN-reachable)
+python app.py --port 8080                # use a different port
 ```
 
 No build step, no test suite, no linter config. Changes to Python or JS/CSS take effect on the next request (Flask debug mode is on).
-
-To change the port, edit the last line of `app.py`.
 
 ## Architecture
 

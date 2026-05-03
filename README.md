@@ -177,14 +177,12 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python app.py
+python app.py                # localhost only (default, safe)
+python app.py --public       # expose to your local network (LAN)
+python app.py --port 8080    # use a different port
 ```
 
-Then open your browser and go to:
-
-```
-http://localhost:5000
-```
+Then open your browser and go to `http://localhost:5000` (or your machine's LAN IP if `--public` was used).
 
 Upload a capture file (`.pcap`, `.pcapng`, or `.cap`, up to 1 GB) and the graph will render automatically.
 
@@ -245,13 +243,7 @@ The suite contains 224 tests across 8 files covering protocol parsers, anomaly d
 | Ports shown per node | 30 | Open ports listed in the detail panel |
 | DNS names per node | 5 | Resolved hostnames shown in the detail panel |
 | DNS queries per node | 10 | DNS queries shown in the detail panel |
-| Port | 5000 | HTTP port (last line of `app.py`) |
-
-To change the port, edit the last line of `app.py`:
-
-```python
-app.run(debug=False, host="127.0.0.1", port=5000)
-```
+| Port | 5000 | HTTP port (`--port` flag) |
 
 ## Security & self-containment
 
@@ -262,7 +254,7 @@ This tool is designed for **air-gapped / offline use**:
 - The only outbound browser request is `POST /upload` to the same origin
 - PNG export uses `blob:` URLs — no third-party image host
 
-HTTP security headers are set on every response (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`). The app binds to `127.0.0.1` by default so it is not reachable from the network.
+HTTP security headers are set on every response (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`). The app binds to `127.0.0.1` by default so it is not reachable from the network. Pass `--public` to bind to `0.0.0.0` for LAN access — only do this on trusted networks, as the app processes potentially sensitive capture files.
 
 ## Troubleshooting
 

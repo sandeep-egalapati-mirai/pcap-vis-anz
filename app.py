@@ -3016,4 +3016,20 @@ def session_schema():
 
 
 if __name__ == "__main__":
-    app.run(debug=False, host="127.0.0.1", port=5000)
+    import argparse
+    parser = argparse.ArgumentParser(description="PCAP Network Visualizer")
+    parser.add_argument(
+        "--public",
+        action="store_true",
+        help="Bind to 0.0.0.0 so the app is reachable from other devices on the network. "
+             "Default is 127.0.0.1 (localhost only).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="HTTP port to listen on (default: 5000).",
+    )
+    args = parser.parse_args()
+    host = "0.0.0.0" if args.public else "127.0.0.1"
+    app.run(debug=False, host=host, port=args.port)
