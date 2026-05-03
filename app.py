@@ -2383,8 +2383,10 @@ def analyze_pcap(filepath):
                                 dh["dnp3_addresses"].add(dn["dst_address"])
                                 if dn.get("role") == "master":
                                     sh["ot_role"] = "master"
+                                    dh["ot_role"] = "outstation"
                                 elif dn.get("role") == "outstation":
                                     sh["ot_role"] = "outstation"
+                                    dh["ot_role"] = "master"
                                 if dn["is_write"]:
                                     conn["ot_writes"] += 1
                                 elif not dn["is_error"]:

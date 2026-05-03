@@ -1287,20 +1287,20 @@ function unhighlightAll(linkSel, nodeSel) {
 
 /* ── Tooltip helpers ─────────────────────────────────────────────────────── */
 function showTooltipNode(event, d) {
-  const geoStr = d.geo ? ` · ${d.geo.country_code || d.geo.country || ""}${d.geo.city ? ", " + d.geo.city : ""}` : "";
+  const geoStr = d.geo ? ` · ${escHtml(d.geo.country_code || d.geo.country || "")}${d.geo.city ? ", " + escHtml(d.geo.city) : ""}` : "";
   tooltip.innerHTML = `
-    <div class="tip-ip">${d.ip}${geoStr ? `<span style="color:var(--text2)">${geoStr}</span>` : ""}</div>
+    <div class="tip-ip">${escHtml(d.ip)}${geoStr ? `<span style="color:var(--text2)">${geoStr}</span>` : ""}</div>
     ${d.hostname ? `<div class="tip-type">${escHtml(d.hostname)}</div>` : ""}
-    <div class="tip-type">${d.host_type}${d.os_hint ? " · " + d.os_hint : ""}</div>
+    <div class="tip-type">${escHtml(d.host_type)}${d.os_hint ? " · " + escHtml(d.os_hint) : ""}</div>
     <div class="tip-proto">
       ${d.protocols.slice(0, 6).map(p =>
-        `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${p}</span>`
+        `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${escHtml(p)}</span>`
       ).join(" · ")}
     </div>
     <div class="tip-type" style="margin-top:4px">
       ${fmtNum(d.packet_count)} pkts · ${fmtBytes(d.bytes_sent + d.bytes_recv)}
     </div>
-    ${anomalyNodeIps[d.ip] ? `<div style="margin-top:4px;font-size:10px;color:${anomalyNodeIps[d.ip]==='high'?'var(--red)':'var(--yellow)'}">⚠ ${anomalyNodeIps[d.ip].toUpperCase()} anomaly</div>` : ""}
+    ${anomalyNodeIps[d.ip] ? `<div style="margin-top:4px;font-size:10px;color:${anomalyNodeIps[d.ip]==='high'?'var(--red)':'var(--yellow)'}">⚠ ${escHtml(anomalyNodeIps[d.ip].toUpperCase())} anomaly</div>` : ""}
     ${(d.risk_score || 0) > 0 ? `<div style="margin-top:2px;font-size:10px;color:${d.risk_score>=70?'var(--red)':d.risk_score>=40?'var(--yellow)':'#aaa'}">Risk: ${d.risk_score}/100</div>` : ""}
     ${d.tls_sni && d.tls_sni.length ? `<div style="margin-top:2px;font-size:10px;color:#58a6ff">TLS: ${d.tls_sni.slice(0,2).map(escHtml).join(", ")}</div>` : ""}
   `;
@@ -1310,14 +1310,14 @@ function showTooltipNode(event, d) {
 
 function showTooltipEdge(event, d) {
   tooltip.innerHTML = `
-    <div class="tip-ip" style="font-size:11px">${d.source.id || d.source} ↔ ${d.target.id || d.target}</div>
+    <div class="tip-ip" style="font-size:11px">${escHtml(d.source.id || d.source)} ↔ ${escHtml(d.target.id || d.target)}</div>
     <div class="tip-type">${fmtNum(d.packet_count)} pkts · ${fmtBytes(d.bytes)}</div>
     <div class="tip-proto" style="margin-top:4px">
       ${d.protocols.slice(0, 6).map(p =>
-        `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${p}</span>`
+        `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${escHtml(p)}</span>`
       ).join(" · ")}
     </div>
-    ${d.ports.length ? `<div class="tip-type" style="margin-top:4px">Ports: ${d.ports.slice(0,8).join(", ")}</div>` : ""}
+    ${d.ports.length ? `<div class="tip-type" style="margin-top:4px">Ports: ${escHtml(d.ports.slice(0,8).join(", "))}</div>` : ""}
   `;
   tooltip.classList.add("visible");
   positionTooltip(event);
@@ -1702,7 +1702,7 @@ function buildLegend(data) {
   data.stats.host_types.forEach(ht => {
     const div = document.createElement("div");
     div.className = "legend-row";
-    div.innerHTML = `<span class="legend-icon">${hostIcon(ht)}</span><div class="legend-dot" style="background:${hostColor(ht)}"></div><span>${ht}</span>`;
+    div.innerHTML = `<span class="legend-icon">${hostIcon(ht)}</span><div class="legend-dot" style="background:${hostColor(ht)}"></div><span>${escHtml(ht)}</span>`;
     hostLegend.appendChild(div);
   });
 }
@@ -2010,13 +2010,14 @@ function _appendPktRows(pkts, t0, start, end) {
     tr.className = protoRowClass(p.protocol);
     const srcStr = p.src + (p.sport != null ? ":" + p.sport : "");
     const dstStr = p.dst + (p.dport != null ? ":" + p.dport : "");
+    const eSrc = escHtml(srcStr), eDst = escHtml(dstStr);
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td>${(p.time - t0).toFixed(6)}</td>
-      <td title="${srcStr}">${srcStr}</td>
-      <td title="${dstStr}">${dstStr}</td>
-      <td>${p.protocol}</td>
-      <td>${p.len}</td>
+      <td title="${eSrc}">${eSrc}</td>
+      <td title="${eDst}">${eDst}</td>
+      <td>${escHtml(p.protocol || "")}</td>
+      <td>${p.len | 0}</td>
       <td title="${escHtml(p.info || "")}">${escHtml(p.info || "")}</td>
     `;
     tr.addEventListener("click", () => {
@@ -2068,7 +2069,7 @@ function renderPktDetail(p) {
     div.className = "pkt-layer";
     const hdr = document.createElement("div");
     hdr.className = "pkt-layer-header";
-    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> ${layer.name}`;
+    hdr.innerHTML = `<span class="pkt-arrow">&#9660;</span> ${escHtml(layer.name || "")}`;
     hdr.addEventListener("click", () => div.classList.toggle("collapsed"));
     const fields = document.createElement("div");
     fields.className = "pkt-layer-fields";
@@ -4571,11 +4572,16 @@ function buildTimeline(data) {
     return;
   }
 
-  tlBar.classList.remove("hidden");
-
   const minT = Math.min(...allTimes);
   const maxT = Math.max(...allTimes);
   const span = maxT - minT;
+
+  if (span === 0) {
+    tlBar.classList.add("hidden");
+    return;
+  }
+
+  tlBar.classList.remove("hidden");
 
   // Build minimap
   const minimap = document.getElementById("tl-minimap");
