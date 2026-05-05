@@ -228,6 +228,7 @@ let _canvasMaxEdgePkt = 1;
 let tlPlaying = false;
 let tlTimer = null;
 let tlWindowPct = 100; // full width by default
+let tlSpeed = 1;
 
 /* ── DOM refs ────────────────────────────────────────────────────────────── */
 const svg            = d3.select("#graph-svg");
@@ -1769,38 +1770,24 @@ const pktHex        = document.getElementById("pkt-hex");
 const pktTreeEmpty  = document.getElementById("pkt-tree-empty");
 const pktHexEmpty   = document.getElementById("pkt-hex-empty");
 
+function _pktsForCurrentConn() {
+  const m = pktConnLabel.textContent.match(/^(.+?)  ↔  (.+?)  ·/);
+  if (!m) return [];
+  return packetData[[m[1].trim(), m[2].trim()].sort().join("|")] || [];
+}
+
 document.getElementById("pkt-close").addEventListener("click", closePktInspector);
 document.getElementById("pkt-tab-pkts").addEventListener("click", () => {
-  const label = pktConnLabel.textContent;
-  const m = label.match(/^(.+?)  ↔  (.+?)  ·/);
-  let curPkts = [];
-  if (m) {
-    const key = [m[1].trim(), m[2].trim()].sort().join("|");
-    curPkts = packetData[key] || [];
-  }
-  _switchPktTab("pkts", curPkts);
-  renderPktTable(curPkts);
+  const pkts = _pktsForCurrentConn();
+  _switchPktTab("pkts", pkts);
+  renderPktTable(pkts);
 });
 document.getElementById("pkt-tab-cmds").addEventListener("click", () => {
-  const label = pktConnLabel.textContent;
-  const m = label.match(/^(.+?)  ↔  (.+?)  ·/);
-  let curPkts = [];
-  if (m) {
-    const key = [m[1].trim(), m[2].trim()].sort().join("|");
-    curPkts = packetData[key] || [];
-  }
-  _switchPktTab("cmds", curPkts);
+  _switchPktTab("cmds", _pktsForCurrentConn());
 });
 
 document.getElementById("pkt-tab-stream").addEventListener("click", () => {
-  const label = pktConnLabel.textContent;
-  const m = label.match(/^(.+?)  ↔  (.+?)  ·/);
-  let curPkts = [];
-  if (m) {
-    const key = [m[1].trim(), m[2].trim()].sort().join("|");
-    curPkts = packetData[key] || [];
-  }
-  _switchPktTab("stream", curPkts);
+  _switchPktTab("stream", _pktsForCurrentConn());
 });
 
 const OT_PKT_FIELDS = ["modbus","dnp3","s7comm","enip","iec104","bacnet"];
@@ -3924,11 +3911,21 @@ function renderDnsMap() {
     return;
   }
 
+  const tunnelSuspects = new Set(
+    (graphData.anomalies || [])
+      .filter(a => a.type === "dns_tunneling" && a.src)
+      .map(a => a.src)
+  );
+
   dnsHosts.forEach(n => {
     const row = document.createElement("div");
     row.className = "dns-host-row";
+    const tunnelBadge = tunnelSuspects.has(n.ip)
+      ? `<span class="badge badge-warn" title="DNS tunneling indicators detected">DNS Tunnel?</span>`
+      : "";
     row.innerHTML = `
       <span style="font-family:var(--font-mono);font-size:11px">${n.ip}</span>
+      ${tunnelBadge}
       <span class="dns-count">${n.dns_queries.length}</span>
     `;
     row.addEventListener("click", () => {
@@ -4214,13 +4211,21 @@ document.getElementById("ot-am-close").addEventListener("click", () =>
 document.getElementById("ot-am-confirm").addEventListener("click", () => {
   const ip = document.getElementById("ot-am-ip").value.trim();
   if (!ip) { document.getElementById("ot-am-ip").focus(); return; }
+  const errEl = document.getElementById("ot-am-error");
+  const _showErr = (msg) => {
+    errEl.textContent = msg;
+    setTimeout(() => { errEl.textContent = ""; }, 3000);
+  };
+  if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip) || ip.split(".").some(o => parseInt(o) > 255)) {
+    _showErr("Invalid IP address format."); return;
+  }
   const lvl = parseFloat(document.getElementById("ot-am-level").value);
+  if (!isNaN(lvl) && (lvl < -1 || lvl > 6)) {
+    _showErr("Purdue level must be between -1 and 6."); return;
+  }
   // Prevent duplicate IDs
   if (otAddedNodes.some(a => a.id === ip) || (graphData && graphData.nodes.some(n => n.id === ip))) {
-    const errEl = document.getElementById("ot-am-error");
-    errEl.textContent = `A device with IP ${ip} already exists.`;
-    setTimeout(() => { errEl.textContent = ""; }, 3000);
-    return;
+    _showErr(`A device with IP ${ip} already exists.`); return;
   }
   otAddedNodes.push({
     id: ip, ip,
@@ -4831,6 +4836,37 @@ document.getElementById("tl-play-btn").addEventListener("click", () => {
       }
       slider.value = cur + 1;
       slider.dispatchEvent(new Event("input"));
-    }, 80);
+    }, Math.round(80 / tlSpeed));
+  }
+});
+
+document.getElementById("tl-speed").addEventListener("change", (e) => {
+  tlSpeed = parseFloat(e.target.value) || 1;
+  if (tlPlaying) {
+    const btn = document.getElementById("tl-play-btn");
+    clearInterval(tlTimer);
+    tlPlaying = false;
+    btn.click(); // restart with new speed
+  }
+});
+
+// Timeline keyboard shortcuts (Space = play/pause, ←/→ = step)
+document.addEventListener("keydown", (e) => {
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  const tlBar = document.getElementById("timeline-bar");
+  if (!tlBar || tlBar.classList.contains("hidden")) return;
+  const slider = document.getElementById("tl-slider");
+  if (e.code === "Space") {
+    e.preventDefault();
+    document.getElementById("tl-play-btn").click();
+  } else if (e.code === "ArrowRight") {
+    e.preventDefault();
+    slider.value = Math.min(100, parseInt(slider.value) + 1);
+    slider.dispatchEvent(new Event("input"));
+  } else if (e.code === "ArrowLeft") {
+    e.preventDefault();
+    slider.value = Math.max(0, parseInt(slider.value) - 1);
+    slider.dispatchEvent(new Event("input"));
   }
 });

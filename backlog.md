@@ -57,7 +57,7 @@
 ## Timeline
 
 - [ ] Brush selection on minimap — click-drag to select a time window (Wireshark mental model)
-- [ ] Playback speed control — 0.5×, 1×, 2×, 5× selector next to the play button
+- [x] Playback speed control — 0.5×, 1×, 2×, 5× selector next to the play button
 - [ ] Timestamp format toggle — switch between absolute (HH:MM:SS) and relative (seconds from first packet)
 
 ## Polish & Accessibility
@@ -82,6 +82,11 @@
 - [x] Backend: TLS ClientHello parsing — `parse_tls_client_hello()` extracts SNI (cleartext server name) and computes JA3/MD5 fingerprint from cipher suites + extensions + elliptic curves; stored per host as `tls_sni` / `tls_ja3`; propagated through `merge_results`.
 - [x] Backend: `unusual_ja3` anomaly — fires when a host's JA3 matches a bundled known-bad fingerprint list (Metasploit, Cobalt Strike, Dridex, Emotet, Trickbot, AsyncRAT, QakBot, IcedID).
 - [x] Frontend: TLS SNI list shown in detail panel and node tooltip; JA3 hashes shown with threat label and red color when matching known-bad; 8 unit tests added.
+
+- [x] UI: Timeline keyboard shortcuts — Space toggles play/pause; ←/→ step the slider by one tick; shortcuts disabled when focus is inside an input/select
+- [x] OT Map: Add Device validation — IP format check (reject non-IPv4) and Purdue level bounds check (−1 to 6) with inline error display; refactored duplicate error display into shared `_showErr` helper
+- [x] DNS view: DNS tunnel suspect badges — hosts flagged by `dns_tunneling` anomaly now show an amber "DNS Tunnel?" badge in the DNS host list
+- [x] Code: Packet inspector tab label parsing refactored — `_pktsForCurrentConn()` helper replaces three identical regex blocks in pkt-tab-pkts / pkt-tab-cmds / pkt-tab-stream click handlers
 
 ## Known Issues
 
