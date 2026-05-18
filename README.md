@@ -178,11 +178,17 @@ pip install -r requirements.txt
 
 ```bash
 python app.py                # localhost only (default, safe)
-python app.py --public       # expose to your local network (LAN)
+python app.py --public       # expose to your local network — see warning below
 python app.py --port 8080    # use a different port
 ```
 
 Then open your browser and go to `http://localhost:5000` (or your machine's LAN IP if `--public` was used).
+
+> **Security note — `--public` flag:** This flag binds the Werkzeug **development** server to `0.0.0.0`, making it reachable from other devices on your network. The development server is **not hardened** for production use. Anyone on the same network can upload arbitrary files to this process. Use `--public` only on fully trusted, isolated networks (e.g. a dedicated analysis VLAN). For long-running or multi-user deployments, run behind gunicorn instead:
+> ```bash
+> pip install gunicorn
+> gunicorn -w 2 -b 0.0.0.0:5000 'app:app'
+> ```
 
 Upload a capture file (`.pcap`, `.pcapng`, or `.cap`, up to 1 GB) and the graph will render automatically.
 
@@ -214,22 +220,25 @@ pcap-vis-anz/
 └── tests/
     ├── test_parsers.py         # Protocol parser unit tests (Modbus, DNP3, S7, CoAP, …)
     ├── test_anomalies.py       # Anomaly detection rule tests
+    ├── test_anomalies_ot.py    # OT/IoT anomaly rule tests (Modbus writes, DNP3 control, S7, EtherNet/IP, IEC-104, BACnet, IoT)
     ├── test_credentials.py     # Credential extraction tests
     ├── test_file_extraction.py # HTTP file transfer detection tests
     ├── test_helpers.py         # Helper function tests (is_private, mac_vendor, geo_lookup)
     ├── test_http_mqtt_coap.py  # HTTP / MQTT / CoAP parser tests
     ├── test_merge.py           # Multi-file merge tests
+    ├── test_pcapng.py          # pcapng parse and parity tests
+    ├── test_routes.py          # /upload endpoint HTTP tests (happy path, errors, file count cap)
     └── test_utils.py           # Utility function tests
 ```
 
 ## Testing
 
 ```bash
-pip install pytest
-python -m pytest tests/ -q
+pip install pytest            # or: pip install -r requirements-dev.txt
+pytest tests/ -q
 ```
 
-The suite contains 224 tests across 8 files covering protocol parsers, anomaly detection, credential extraction, file transfer detection, and multi-file merging.
+The suite contains 271 tests across 11 files covering protocol parsers, anomaly detection (including all 16 OT/IoT rules), credential extraction, file transfer detection, multi-file merging, and the `/upload` HTTP endpoint.
 
 ## Configuration
 

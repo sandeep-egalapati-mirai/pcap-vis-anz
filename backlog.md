@@ -131,3 +131,33 @@
 - [x] OT Matrix: Diagonal cells rendered as visually inert dark rects (no hover/click)
 - [x] Bug fix: pcapng files crashed `analyze_pcap` with `'PacketMetadataNg' object has no attribute 'sec'` — fixed timestamp extraction to use `tshigh`/`tslow`/`tsresol` for pcapng vs `sec`/`usec` for pcap (`app.py:1867`)
 - [x] Tests: Added `tests/test_pcapng.py` — 4 integration tests covering pcapng parse, pcap/pcapng parity, and mixed-format merge
+
+## Robustness Review — MED/LOW Deferred Items
+
+Items surfaced in the 2026-05-17 robustness review (`REVIEW.md`) that were not addressed in `feature/robustness-fixes` (all HIGH items are fixed). Sorted roughly by risk.
+
+- [ ] **E3** — `except Exception: pass` in packet-store enrichment loop drops errors silently; surface a `parse_errors` count in `stats`
+- [ ] **E4** — Non-JSON 502 responses from `/upload` show a cryptic SyntaxError in the UI; wrap `resp.json()` in a try and show raw response head
+- [ ] **E5** — `FileReader` in session-load has no `onerror` handler; corrupt file silently does nothing
+- [ ] **U4** — Tempfile path appended to `tmp_paths` *after* `f.save()`; if save raises, the tempfile leaks — reverse the order
+- [ ] **U5** — `secure_filename` on a unicode-only name returns empty string; suffix becomes the full name → whitelist suffix to `.pcap/.pcapng/.cap`
+- [ ] **P3** — BACnet NPDU routing-field truncation falls through instead of returning `None`; can produce garbage `apdu_offset`
+- [ ] **P4** — IEC104 `apdu_len = payload_bytes[1]` never validated against `len(payload_bytes)`
+- [ ] **X5** — `c.dport` in nodeCreds block interpolated raw into innerHTML (`':'+c.dport`)
+- [ ] **X6** — `d.modbus_unit_ids.join()` / `d.dnp3_addresses.join()` inserted unescaped into innerHTML
+- [ ] **X7** — OT-edge tooltip (`app.js:2930`): `e.source`/`e.target` raw
+- [ ] **X8** — `resolvedIps.join(", ")` inserted raw into innerHTML in DNS view
+- [ ] **X9** — `d.open_ports.slice(0,20).join(", ")` inserted raw
+- [ ] **N5** — `f.sha256.slice(0,16)` crashes if backend omits `sha256` field
+- [ ] **N6** — `s7.function_code.toString(16)` crashes if backend sends `null` (not `undefined`)
+- [ ] **L2** — D3 simulation tick/end handlers not nulled out before `stop()` — old closures fire briefly
+- [ ] **L3** — `setTimeout(() => zoomFit(), 2500)` not cleared on re-upload; stale fit fires on new graph
+- [ ] **PF3** — `openPktInspectorForHost` concatenates all packets and sorts in main thread (150k packets → jank)
+- [ ] **PF4** — `renderConnTable` re-sorts entire edges array on each filter toggle
+- [ ] **S2** — No CSRF protection on `/upload` POST (low risk on localhost; medium when `--public`)
+- [ ] **S3** — `_get_geoip_reader` double-init not protected by a lock (thread safety)
+- [ ] **S4** — No `app.secret_key` from env var; any future session/flash use will break on restart
+- [ ] **T5** — No `tests/conftest.py`; packet-builder helpers duplicated across test files
+- [ ] **D1** — `geoip2` version not pinned in requirements.txt
+- [ ] **H3** — README does not warn that `--public` exposes a Werkzeug dev server (see also `--public` banner added in B6)
+- [ ] **General** — No `prompt()` modal replacement (blocks page, disabled by Firefox after 2 dialogs); affects OT risk note input and annotation input
