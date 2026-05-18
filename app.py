@@ -1,14 +1,16 @@
 import base64
 import hashlib
 import ipaddress
+import logging
 import math
 import os
 import re
 import tempfile
+import threading
 import statistics
 from collections import defaultdict, Counter
 from urllib.parse import parse_qs
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 from functools import lru_cache
 from flask import Flask, request, jsonify, render_template
 from flask_compress import Compress
@@ -27,7 +29,23 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
 Compress(app)
 
+logger = logging.getLogger(__name__)
+
 ALLOWED_EXTENSIONS = {"pcap", "pcapng", "cap"}
+
+# Max concurrent PCAP analysis workers and per-task timeout (seconds)
+_UPLOAD_MAX_WORKERS = 4
+_UPLOAD_TASK_TIMEOUT = 120
+_executor_lock = threading.Lock()
+_executor: ThreadPoolExecutor | None = None
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    global _executor
+    with _executor_lock:
+        if _executor is None or _executor._shutdown:
+            _executor = ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS)
+        return _executor
 
 # ── MAC OUI vendor table (common prefixes) ────────────────────────────────────
 MAC_VENDORS = {
@@ -263,8 +281,25 @@ def purdue_level_py(
     return -1
 
 
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+_PCAP_MAGIC = {
+    b"\xa1\xb2\xc3\xd4",  # pcap big-endian
+    b"\xd4\xc3\xb2\xa1",  # pcap little-endian
+    b"\xa1\xb2\x3c\x4d",  # pcap ns big-endian
+    b"\x4d\x3c\xb2\xa1",  # pcap ns little-endian
+    b"\x0a\x0d\x0d\x0a",  # pcapng
+}
+
+
+def allowed_file(filename, file_stream=None):
+    if "." not in filename:
+        return False
+    if filename.rsplit(".", 1)[1].lower() not in ALLOWED_EXTENSIONS:
+        return False
+    if file_stream is not None:
+        header = file_stream.read(4)
+        file_stream.seek(0)
+        return header in _PCAP_MAGIC
+    return True
 
 
 def mac_vendor(mac):
@@ -307,15 +342,20 @@ def is_private(ip):
 
 
 _geoip_reader = None
+_geoip_lock = threading.Lock()
+
 
 def _get_geoip_reader():
     global _geoip_reader
-    if _geoip_reader is None:
-        try:
-            import geoip2.database
-            _geoip_reader = geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-City.mmdb')
-        except Exception:
-            pass
+    if _geoip_reader is not None:
+        return _geoip_reader
+    with _geoip_lock:
+        if _geoip_reader is None:
+            try:
+                import geoip2.database
+                _geoip_reader = geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-City.mmdb')
+            except Exception:
+                pass
     return _geoip_reader
 
 
@@ -339,12 +379,18 @@ def geo_lookup(ip):
 
 def _ber_len(data, off):
     """Parse a BER length field. Returns (length, new_offset)."""
+    if off >= len(data):
+        return 0, off
     b = data[off]
     if b < 0x80:
         return b, off + 1
     elif b == 0x81:
+        if off + 1 >= len(data):
+            return 0, off
         return data[off + 1], off + 2
     elif b == 0x82:
+        if off + 2 >= len(data):
+            return 0, off
         return (data[off + 1] << 8) | data[off + 2], off + 3
     return 0, off + 1
 
@@ -950,13 +996,15 @@ def parse_bacnet(payload_bytes):
         # Skip NPDU routing fields: DNET(2)+DLEN(1)+DADR(DLEN)+hop_count(1) / SNET(2)+SLEN(1)+SADR(SLEN)
         apdu_offset = 6
         if npdu_ctrl & 0x04:  # Destination specifier present
-            if apdu_offset + 2 < len(payload_bytes):
-                dlen = payload_bytes[apdu_offset + 2]   # DLEN is after the 2-byte DNET field
-                apdu_offset += 2 + 1 + dlen + 1         # DNET + DLEN + DADR + hop_count
+            if apdu_offset + 2 >= len(payload_bytes):
+                return None
+            dlen = payload_bytes[apdu_offset + 2]   # DLEN is after the 2-byte DNET field
+            apdu_offset += 2 + 1 + dlen + 1         # DNET + DLEN + DADR + hop_count
         if npdu_ctrl & 0x08:  # Source specifier present
-            if apdu_offset + 2 < len(payload_bytes):
-                slen = payload_bytes[apdu_offset + 2]   # SLEN is after the 2-byte SNET field
-                apdu_offset += 2 + 1 + slen              # SNET + SLEN + SADR
+            if apdu_offset + 2 >= len(payload_bytes):
+                return None
+            slen = payload_bytes[apdu_offset + 2]   # SLEN is after the 2-byte SNET field
+            apdu_offset += 2 + 1 + slen              # SNET + SLEN + SADR
 
         if apdu_offset >= len(payload_bytes):
             return {
@@ -2101,7 +2149,9 @@ def analyze_pcap(filepath):
                                     sh["dns_queries"].add(qname.rstrip("."))
                                 elif dns.qr == 1:
                                     an = dns.an
-                                    while an and hasattr(an, "type"):
+                                    for _ in range(100):
+                                        if not (an and hasattr(an, "type")):
+                                            break
                                         if an.type == 1:  # A record
                                             rip = an.rdata
                                             rname = an.rrname
@@ -2525,8 +2575,9 @@ def analyze_pcap(filepath):
                     except Exception:
                         pass
 
-    except Exception as e:
-        return {"error": f"Failed to parse file: {e}"}
+    except Exception:
+        logger.warning("analyze_pcap failed", exc_info=True)
+        return {"error": "Failed to parse PCAP file"}
 
     # ── Host type classification ──────────────────────────────────────────────
     for ip, h in hosts.items():
@@ -2965,22 +3016,33 @@ def upload():
     if not files or all(not f.filename for f in files):
         return jsonify({"error": "No file provided"}), 400
 
+    files = [f for f in files if f.filename]
+    if len(files) > 10:
+        return jsonify({"error": "Too many files. Upload at most 10 at a time."}), 400
+
     results = []
     tmp_paths = []
     try:
         for f in files:
-            if not f.filename:
-                continue
-            if not allowed_file(f.filename):
+            if not allowed_file(f.filename, f.stream):
                 return jsonify({"error": f"Unsupported file type: {f.filename}. Upload .pcap, .pcapng, or .cap files."}), 400
-            suffix = "." + secure_filename(f.filename).rsplit(".", 1)[-1]
-            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-            f.save(tmp.name)
+            ext = f.filename.rsplit(".", 1)[-1].lower()
+            if ext not in ALLOWED_EXTENSIONS:
+                ext = "pcap"
+            tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
             tmp.close()
-            tmp_paths.append(tmp.name)
+            tmp_paths.append(tmp.name)  # register before save so cleanup always runs
+            f.save(tmp.name)
 
-        with ThreadPoolExecutor() as ex:
-            results = list(ex.map(analyze_pcap, tmp_paths))
+        ex = _get_executor()
+        futures = [ex.submit(analyze_pcap, p) for p in tmp_paths]
+        results = []
+        for fut in futures:
+            try:
+                results.append(fut.result(timeout=_UPLOAD_TASK_TIMEOUT))
+            except Exception:
+                logger.warning("analyze_pcap task failed or timed out", exc_info=True)
+                results.append({"error": "Failed to parse PCAP file"})
 
         if not results:
             return jsonify({"error": "No valid files processed"}), 400
@@ -3035,4 +3097,14 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     host = "0.0.0.0" if args.public else "127.0.0.1"
+    if args.public:
+        print(
+            "\n"
+            "  WARNING: --public binds the Werkzeug development server to 0.0.0.0.\n"
+            "  This server is NOT hardened for production use. Anyone on your network\n"
+            "  can upload arbitrary files to this process.\n"
+            "  For production/LAN use, run behind gunicorn:\n"
+            "    gunicorn -w 2 -b 0.0.0.0:5000 'app:app'\n",
+            flush=True,
+        )
     app.run(debug=False, host=host, port=args.port)

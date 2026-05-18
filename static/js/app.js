@@ -378,21 +378,29 @@ function loadGraph(data) {
   searchBox.value = "";
   detailPanel.classList.remove("open");
 
+  // Reset OT edit state so stale overrides from a prior PCAP don't linger
+  Object.keys(otOverrides).forEach(k => delete otOverrides[k]);
+  otRemovedIds.clear();
+  Object.keys(otRiskLabels).forEach(k => delete otRiskLabels[k]);
+  otAddedNodes.length = 0;
+
+  const stats = data.stats || {};
+
   // Truncation banner
-  if (data.stats.truncated) {
+  if (stats.truncated) {
     truncBanner.classList.add("visible");
   } else {
     truncBanner.classList.remove("visible");
   }
 
   // Stats
-  document.getElementById("stat-hosts").textContent = fmtNum(data.stats.total_hosts);
-  document.getElementById("stat-conns").textContent = fmtNum(data.stats.total_connections);
-  document.getElementById("stat-pkts").textContent  = fmtNum(data.stats.total_packets);
+  document.getElementById("stat-hosts").textContent = fmtNum(stats.total_hosts   || 0);
+  document.getElementById("stat-conns").textContent = fmtNum(stats.total_connections || 0);
+  document.getElementById("stat-pkts").textContent  = fmtNum(stats.total_packets  || 0);
 
   // Build filter sets
-  activeProtos = new Set(data.stats.protocols);
-  activeTypes  = new Set(data.stats.host_types);
+  activeProtos = new Set(stats.protocols || []);
+  activeTypes  = new Set(stats.host_types || []);
 
   buildFilters(data);
   buildLegend(data);
@@ -421,6 +429,7 @@ document.querySelectorAll(".vt-btn").forEach(btn => {
 });
 
 function setView(view) {
+  if (!graphData && view !== "graph") return;
   currentView = view;
   document.querySelectorAll(".vt-btn").forEach(b => b.classList.toggle("active", b.dataset.view === view));
 
@@ -496,8 +505,9 @@ function setView(view) {
 
 /* ── Filters ─────────────────────────────────────────────────────────────── */
 function buildFilters(data) {
-  buildFilterList("proto-filters", data.stats.protocols, activeProtos, PROTO_COLORS, "proto");
-  buildFilterList("type-filters",  data.stats.host_types, activeTypes,  HOST_COLORS,  "type");
+  const stats = data.stats || {};
+  buildFilterList("proto-filters", stats.protocols || [], activeProtos, PROTO_COLORS, "proto");
+  buildFilterList("type-filters",  stats.host_types || [], activeTypes,  HOST_COLORS,  "type");
   updateFilterUI();
 }
 
@@ -508,12 +518,12 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
   const counts = {};
   if (graphData) {
     if (kind === "proto") {
-      graphData.edges.forEach(e => e.protocols.forEach(p => {
+      graphData.edges.forEach(e => (e.protocols || []).forEach(p => {
         counts[p] = (counts[p] || 0) + 1;
       }));
     } else {
       graphData.nodes.forEach(n => {
-        counts[n.host_type] = (counts[n.host_type] || 0) + 1;
+        counts[n.host_type || "Unknown Host"] = (counts[n.host_type || "Unknown Host"] || 0) + 1;
       });
     }
   }
@@ -1287,7 +1297,7 @@ function showTooltipNode(event, d) {
     ${d.hostname ? `<div class="tip-type">${escHtml(d.hostname)}</div>` : ""}
     <div class="tip-type">${escHtml(d.host_type)}${d.os_hint ? " · " + escHtml(d.os_hint) : ""}</div>
     <div class="tip-proto">
-      ${d.protocols.slice(0, 6).map(p =>
+      ${(d.protocols || []).slice(0, 6).map(p =>
         `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${escHtml(p)}</span>`
       ).join(" · ")}
     </div>
@@ -1307,11 +1317,11 @@ function showTooltipEdge(event, d) {
     <div class="tip-ip" style="font-size:11px">${escHtml(d.source.id || d.source)} ↔ ${escHtml(d.target.id || d.target)}</div>
     <div class="tip-type">${fmtNum(d.packet_count)} pkts · ${fmtBytes(d.bytes)}</div>
     <div class="tip-proto" style="margin-top:4px">
-      ${d.protocols.slice(0, 6).map(p =>
+      ${(d.protocols || []).slice(0, 6).map(p =>
         `<span style="color:${PROTO_COLORS[p] || '#aaa'}">${escHtml(p)}</span>`
       ).join(" · ")}
     </div>
-    ${d.ports.length ? `<div class="tip-type" style="margin-top:4px">Ports: ${escHtml(d.ports.slice(0,8).join(", "))}</div>` : ""}
+    ${(d.ports || []).length ? `<div class="tip-type" style="margin-top:4px">Ports: ${escHtml((d.ports || []).slice(0,8).join(", "))}</div>` : ""}
   `;
   tooltip.classList.add("visible");
   positionTooltip(event);
@@ -1377,31 +1387,31 @@ function showDetailPanel(d) {
     rows.push(row("Location", `${flagStr}${geoStr || "Unknown"}`));
   }
 
-  if (d.protocols.length) {
+  if ((d.protocols || []).length) {
     rows.push(sectionTitle("Protocols"));
     rows.push(tagList(d.protocols, p => PROTO_COLORS[p] || "#607D8B", true));
   }
 
-  if (d.services.length) {
+  if ((d.services || []).length) {
     rows.push(sectionTitle("Services detected"));
     rows.push(tagList(d.services, () => null, false));
   }
 
-  if (d.open_ports.length) {
+  if ((d.open_ports || []).length) {
     rows.push(sectionTitle("Ports seen"));
     rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;padding-left:0;margin-bottom:6px">${
-      d.open_ports.slice(0, 20).join(", ")
+      (d.open_ports || []).slice(0, 20).join(", ")
     }</div>`);
   }
 
-  if (d.dns_names.length) {
+  if ((d.dns_names || []).length) {
     rows.push(sectionTitle("DNS names"));
-    d.dns_names.forEach(n => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px">${escHtml(n)}</div>`));
+    (d.dns_names || []).forEach(n => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px">${escHtml(n)}</div>`));
   }
 
-  if (d.dns_queries.length) {
+  if ((d.dns_queries || []).length) {
     rows.push(sectionTitle("DNS queries sent"));
-    d.dns_queries.forEach(q => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px;color:var(--text2)">${escHtml(q)}</div>`));
+    (d.dns_queries || []).forEach(q => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px;color:var(--text2)">${escHtml(q)}</div>`));
   }
 
   if (d.tls_sni && d.tls_sni.length) {
@@ -1540,9 +1550,11 @@ function showDetailPanel(d) {
         <thead><tr><th>Peer</th><th>Proto</th><th>Pkts</th><th>Bytes</th></tr></thead>
         <tbody>`;
       convEdges.forEach(e => {
-        const peer = e.source === d.ip ? e.target : e.source;
-        const proto = e.protocols.slice(0, 2).join("/");
-        tableHtml += `<tr data-sid="${e.source}" data-tid="${e.target}">
+        const peer  = escHtml(e.source === d.ip ? e.target : e.source);
+        const proto = (e.protocols || []).slice(0, 2).map(escHtml).join("/");
+        const sid   = escHtml(e.source);
+        const tid   = escHtml(e.target);
+        tableHtml += `<tr data-sid="${sid}" data-tid="${tid}">
           <td title="${peer}">${peer}</td>
           <td>${proto}</td>
           <td>${fmtNum(e.packet_count)}</td>
@@ -2447,13 +2459,17 @@ function _buildConnRows() {
 function _buildConnTr({ e, faded, duration }) {
   const tr = document.createElement("tr");
   if (faded) tr.className = "ct-faded";
+  const src   = escHtml(e.source);
+  const dst   = escHtml(e.target);
+  const protos = (e.protocols || []).map(escHtml).join(", ");
+  const ports  = (e.ports || []).slice(0, 8).map(escHtml).join(", ");
   tr.innerHTML = `
-    <td title="${e.source}">${e.source}</td>
-    <td title="${e.target}">${e.target}</td>
-    <td>${e.protocols.join(", ")}</td>
+    <td title="${src}">${src}</td>
+    <td title="${dst}">${dst}</td>
+    <td>${protos}</td>
     <td>${fmtNum(e.packet_count)}</td>
     <td>${fmtBytes(e.bytes)}</td>
-    <td>${e.ports.slice(0, 8).join(", ")}</td>
+    <td>${ports}</td>
     <td>${duration}</td>
   `;
   tr.addEventListener("click", () => {
@@ -2653,14 +2669,17 @@ function renderOTMap(data) {
       : (n.purdue_level !== undefined ? n.purdue_level : purdueLevel(n));
   });
 
-  // ── Identify bridge nodes ─────────────────────────────────────────────────
+  // ── Identify bridge nodes (O(E) via adjacency index, not O(N·E)) ────────────
+  const peerLevelsByNode = {};
+  data.edges.forEach(e => {
+    if (!(e.source in peerLevelsByNode)) peerLevelsByNode[e.source] = new Set();
+    if (!(e.target in peerLevelsByNode)) peerLevelsByNode[e.target] = new Set();
+    peerLevelsByNode[e.source].add(nodeLevel[e.target] ?? -1);
+    peerLevelsByNode[e.target].add(nodeLevel[e.source] ?? -1);
+  });
   const bridgeIds = new Set();
   effectiveNodes.forEach(n => {
-    const peerLevels = new Set();
-    data.edges.forEach(e => {
-      if (e.source === n.id) peerLevels.add(nodeLevel[e.target] ?? -1);
-      if (e.target === n.id) peerLevels.add(nodeLevel[e.source] ?? -1);
-    });
+    const peerLevels = peerLevelsByNode[n.id] || new Set();
     const hasOT = [...peerLevels].some(l => l >= 0 && l <= 3);
     const hasIT = [...peerLevels].some(l => l >= 4 && l <= 6);
     if (hasOT && hasIT) bridgeIds.add(n.id);
@@ -3064,16 +3083,19 @@ function renderOTMap(data) {
       }
       if (!otEditMode) g.setAttribute("transform", `translate(${pos.x},${pos.y}) scale(1.1)`);
 
-      const levelLabel = levelRow ? levelRow.label : "Unclassified";
+      const levelLabel = escHtml(levelRow ? levelRow.label : "Unclassified");
+      const safeIp      = escHtml(n.ip);
+      const safeType    = escHtml(n.host_type || "Unknown Host");
       const anomalyLine = anomalySev
-        ? `<div style="color:${anomalySev === "high" ? "var(--red)" : anomalySev === "medium" ? "var(--yellow)" : "var(--accent)"};margin-top:3px;font-size:10px">⚠ ${anomalySev.toUpperCase()} anomaly</div>`
+        ? `<div style="color:${anomalySev === "high" ? "var(--red)" : anomalySev === "medium" ? "var(--yellow)" : "var(--accent)"};margin-top:3px;font-size:10px">⚠ ${escHtml(anomalySev.toUpperCase())} anomaly</div>`
         : "";
+      const protos = (n.protocols || []);
       tooltip.innerHTML = `
-        <div class="tip-ip">${n.ip}${n.hostname ? `<span style="color:var(--text2)"> (${escHtml(n.hostname)})</span>` : ""}</div>
-        <div class="tip-type">${n.host_type} · ${levelLabel}</div>
-        ${n.protocols.length ? `<div class="tip-proto">${n.protocols.slice(0,6).map(p => `<span style="color:${PROTO_COLORS[p]||'#aaa'}">${p}</span>`).join(" · ")}</div>` : ""}
+        <div class="tip-ip">${safeIp}${n.hostname ? `<span style="color:var(--text2)"> (${escHtml(n.hostname)})</span>` : ""}</div>
+        <div class="tip-type">${safeType} · ${levelLabel}</div>
+        ${protos.length ? `<div class="tip-proto">${protos.slice(0,6).map(p => `<span style="color:${PROTO_COLORS[p]||'#aaa'}">${escHtml(p)}</span>`).join(" · ")}</div>` : ""}
         <div class="tip-type" style="margin-top:4px">${connCount} connection${connCount !== 1 ? "s" : ""}${isBridge ? " · <span style='color:#ff8c00'>⚠ bridge</span>" : ""}</div>
-        ${risk?.label ? `<div style="color:${OT_RISK_COLORS[risk.label]};font-size:10px">Risk: ${risk.label}${risk.note ? " — " + risk.note : ""}</div>` : ""}
+        ${risk?.label ? `<div style="color:${OT_RISK_COLORS[risk.label]};font-size:10px">Risk: ${escHtml(risk.label)}${risk.note ? " — " + escHtml(risk.note) : ""}</div>` : ""}
         ${anomalyLine}
       `;
       tooltip.classList.add("visible");
@@ -3924,9 +3946,9 @@ function renderDnsMap() {
       ? `<span class="badge badge-warn" title="DNS tunneling indicators detected">DNS Tunnel?</span>`
       : "";
     row.innerHTML = `
-      <span style="font-family:var(--font-mono);font-size:11px">${n.ip}</span>
+      <span style="font-family:var(--font-mono);font-size:11px">${escHtml(n.ip)}</span>
       ${tunnelBadge}
-      <span class="dns-count">${n.dns_queries.length}</span>
+      <span class="dns-count">${(n.dns_queries || []).length}</span>
     `;
     row.addEventListener("click", () => {
       document.querySelectorAll(".dns-host-row").forEach(r => r.classList.remove("selected"));
@@ -4497,9 +4519,22 @@ function generateAuditReport() {
       h(3, n.id);
       if (n.tls_sni && n.tls_sni.length) p(`- SNI destinations: ${n.tls_sni.slice(0, 10).join(", ")}`);
       if (n.tls_ja3 && n.tls_ja3.length) {
+        const _knownBadJa3 = {
+          "e7d705a3286e19ea42f587b344ee6865": "Metasploit Meterpreter",
+          "6734f37431670b3ab4292b8f60f29984": "Cobalt Strike",
+          "b386946a5a44d1ddcc843bc75336dfce": "Dridex",
+          "a0e9f5d64349fb13191bc781f81f42e1": "AgentTesla",
+          "c12f54a3f91dc7bafd92cb59fe009a35": "Cobalt Strike Beacon",
+          "ada79f3a9e63d0f1f4c6cb3ba9e99fa0": "Emotet",
+          "de350869b8c85de67a350c8d186f11e6": "Trickbot",
+          "51c64c77e60f3980eea90869b68c58a8": "AsyncRAT",
+          "6bca5a6d9bf5b08f9cd95feefc1c2c7e": "QakBot",
+          "a106ce68aee22e2f5d82ee41fb5fb22a": "IcedID",
+        };
         n.tls_ja3.forEach(j => {
-          const flag = j.label ? ` ⚠ ${j.label}` : "";
-          p(`- JA3: \`${j.hash}\`${flag}`);
+          const threat = _knownBadJa3[j];
+          const flag = threat ? ` ⚠ ${threat}` : "";
+          p(`- JA3: \`${j}\`${flag}`);
         });
       }
       br();
@@ -4721,8 +4756,11 @@ function buildTimeline(data) {
     return;
   }
 
-  const minT = Math.min(...allTimes);
-  const maxT = Math.max(...allTimes);
+  let minT = Infinity, maxT = -Infinity;
+  for (let i = 0; i < allTimes.length; i++) {
+    if (allTimes[i] < minT) minT = allTimes[i];
+    if (allTimes[i] > maxT) maxT = allTimes[i];
+  }
   const span = maxT - minT;
 
   if (span === 0) {
@@ -4741,7 +4779,7 @@ function buildTimeline(data) {
     const idx = Math.min(Math.floor(((t - minT) / span) * BINS), BINS - 1);
     bins[idx]++;
   });
-  const maxBin = Math.max(...bins, 1);
+  const maxBin = Math.max(1, ...bins);  // bins is only 60 elements — spread safe here
   bins.forEach(count => {
     const bar = document.createElement("div");
     bar.className = "tl-bar";
