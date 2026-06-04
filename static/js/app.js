@@ -4213,14 +4213,26 @@ function renderVlanGraph(data) {
     };
   });
 
+  // Cap host count to keep the simulation responsive for large captures
+  const MAX_VLAN_HOSTS = 300;
+  if (hostNodes.length > MAX_VLAN_HOSTS) {
+    showToast(`VLAN graph: showing top ${MAX_VLAN_HOSTS} hosts by traffic (${hostNodes.length} total — see VLAN inventory CSV for full list).`, "info");
+    hostNodes.sort((a, b) => (b.packet_count || 0) - (a.packet_count || 0));
+    hostNodes.splice(MAX_VLAN_HOSTS);
+    // hostCount on super-nodes reflects the full capture (tallied before truncation) — intentional
+  }
+
   // Scale VLAN super-node radius by host count (min 30, max 80)
   vlanNodes.forEach(v => { v.r = Math.min(80, Math.max(30, 20 + v.hostCount * 4)); });
+
+  // Pre-built lookup: eliminates O(hosts) linear search per edge in the loop below
+  const nodeByIp = Object.fromEntries(data.nodes.map(n => [n.ip, n]));
 
   // Build cross-VLAN traffic links (VLAN → VLAN, aggregated across all VLAN pairs)
   const crossVlanMap = {};
   data.edges.forEach(e => {
-    const src = data.nodes.find(n => n.ip === e.source);
-    const dst = data.nodes.find(n => n.ip === e.target);
+    const src = nodeByIp[e.source];
+    const dst = nodeByIp[e.target];
     if (!src || !dst) return;
     const sv = (src.vlans || []).map(v => `vlan-${v}`).concat(src.vlan_untagged ? ["vlan-untagged"] : []);
     const dv = (dst.vlans || []).map(v => `vlan-${v}`).concat(dst.vlan_untagged ? ["vlan-untagged"] : []);
@@ -4370,15 +4382,42 @@ function renderVlanGraph(data) {
         }
       });
 
-  // Rich node decorations — reuses main graph helper (anomaly rings, risk badges, glyphs, etc.)
-  appendNodeDecorations(hostCircles, () => 7, { ipVersionStroke: true, showGeo: false });
+  // Lightweight host decorations — 2-3 elements per node (main graph helper is 4-8, too heavy here)
+  // Anomaly ring: single colored circle, visible even at 7px
+  hostCircles.each(function(d) {
+    const sev = anomalyNodeIps[d.ip];
+    if (sev) {
+      d3.select(this).append("circle")
+        .attr("class", `anomaly-ring-${sev}`)
+        .attr("r", 11);
+    }
+  });
+  // Circle — host-type color; IPv6 gets a dashed stroke
+  hostCircles.append("circle")
+    .attr("r", 6)
+    .attr("fill", d => hostColor(d.host_type))
+    .attr("fill-opacity", 0.9)
+    .attr("stroke", d => d3.color(hostColor(d.host_type)).brighter(0.4))
+    .attr("stroke-width", d => d.ip_version === 6 ? 1.5 : 0.8)
+    .attr("stroke-dasharray", d => d.ip_version === 6 ? "2,1.5" : null);
+  // IP / hostname label below the dot
+  hostCircles.append("text")
+    .attr("class", "ip-label")
+    .attr("dy", 16)
+    .attr("font-size", "8px")
+    .attr("fill", "#8b949e")
+    .text(d => d.hostname || d.ip);
 
   // Force simulation
   vlanSimulation = d3.forceSimulation(allNodes)
+    .alphaDecay(0.05)       // converges ~2× faster than default 0.0228 (~130 ticks vs ~300)
+    .velocityDecay(0.5)     // slightly more damping for a smoother stop
     .force("link", d3.forceLink(allLinks).id(d => d.id)
       .distance(d => d.kind === "member" ? 60 : 200)
       .strength(d => d.kind === "member" ? 0.6 : 0.2))
-    .force("charge", d3.forceManyBody().strength(d => d.kind === "vlan" ? -300 : -30))
+    .force("charge", d3.forceManyBody()
+      .strength(d => d.kind === "vlan" ? -300 : -30)
+      .distanceMax(250))    // cap pairwise repulsion range — removes O(n²) long-range work
     .force("collide", d3.forceCollide(d => d.kind === "vlan" ? (d.r + 20) : 14))
     .force("center", d3.forceCenter(W / 2, H / 2).strength(0.05))
     .on("tick", () => {
@@ -4490,22 +4529,14 @@ function renderVlanGraph(data) {
 
   // ── Inner helper functions (closures over the VLAN graph selections) ────────
 
-  // Neighbor highlighting for host nodes
+  // Neighbor highlighting for host nodes.
+  // Cross edges connect VLAN↔VLAN IDs (e.g. "vlan-10"↔"vlan-20"), never host IPs,
+  // so there's no point searching crossEdgeSel for host d.id — they never match.
   function highlightVlanNode(d) {
-    const conn = new Set([d.id]);
-    crossEdgeSel.each(e => {
-      const s = typeof e.source === "object" ? e.source.id : e.source;
-      const t = typeof e.target === "object" ? e.target.id : e.target;
-      if (s === d.id || t === d.id) { conn.add(s); conn.add(t); }
-    });
-    (d.parentVlans || []).forEach(p => conn.add(p));
+    const conn = new Set([d.id, ...(d.parentVlans || [])]);
     hostCircles.classed("faded", n => !conn.has(n.id));
     vlanCircles.classed("faded", v => !conn.has(v.id));
-    crossEdgeSel.classed("faded", e => {
-      const s = typeof e.source === "object" ? e.source.id : e.source;
-      const t = typeof e.target === "object" ? e.target.id : e.target;
-      return s !== d.id && t !== d.id;
-    });
+    crossEdgeSel.classed("faded", true);   // all cross-VLAN edges fade on host hover
   }
 
   function unhighlightVlan() {
