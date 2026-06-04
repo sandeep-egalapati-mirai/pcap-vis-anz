@@ -457,6 +457,9 @@ function loadGraph(data) {
   buildCredentialsSidebar(data.credentials || []);
   buildFilesSidebar(data.files || []);
   buildTimeline(data);
+  // setView("graph") before renderGraph so graphWrap is visible when renderGraph
+  // reads svg.clientWidth/Height (needed for correct cx/cy and canvas sizing)
+  setView("graph");
   renderGraph(data);
 
   // Show baseline button now that data is loaded
@@ -465,8 +468,6 @@ function loadGraph(data) {
   if (baselineData) {
     document.getElementById("diff-tab-btn").classList.remove("hidden");
   }
-
-  setView("graph");
 
   // Load annotations from localStorage
   applyAnnotations();
@@ -1265,6 +1266,7 @@ function buildSimulation(nodes, links, cx, cy, layout) {
 document.querySelectorAll(".layout-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     if (!graphData) return;
+    if (!btn.dataset.layout) return;   // skip VLAN layout buttons (they use data-vlan-layout)
     currentLayout = btn.dataset.layout;
     document.querySelectorAll(".layout-btn").forEach(b => b.classList.toggle("active", b.dataset.layout === currentLayout));
     // Reheat with new forces
