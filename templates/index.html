@@ -401,20 +401,23 @@
     <!-- VLAN Graph view -->
     <div id="vlan-view" class="hidden">
       <div id="vlan-stats-bar"></div>
-      <svg id="vlan-svg"></svg>
-      <div id="vlan-legend">
-        <div id="vlan-legend-title">VLAN Segments</div>
-        <div id="vlan-legend-items"></div>
-      </div>
-      <div id="vlan-controls">
-        <div class="layout-group">
-          <button class="gc-btn layout-btn active" data-vlan-layout="force" title="Force layout">⊙</button>
-          <button class="gc-btn layout-btn" data-vlan-layout="radial" title="Radial layout">◎</button>
-          <button class="gc-btn layout-btn" data-vlan-layout="cluster" title="Cluster layout">⊞</button>
+      <!-- vlan-canvas-wrap is the positioning context for the legend/controls overlays -->
+      <div id="vlan-canvas-wrap">
+        <svg id="vlan-svg"></svg>
+        <div id="vlan-legend">
+          <div id="vlan-legend-title">VLAN Segments</div>
+          <div id="vlan-legend-items"></div>
         </div>
-        <button class="gc-btn" id="vlan-zoom-fit" title="Fit to screen">⊡</button>
+        <div id="vlan-controls">
+          <div class="layout-group">
+            <button class="gc-btn layout-btn active" data-vlan-layout="force" title="Force layout">⊙</button>
+            <button class="gc-btn layout-btn" data-vlan-layout="radial" title="Radial layout">◎</button>
+            <button class="gc-btn layout-btn" data-vlan-layout="cluster" title="Cluster layout">⊞</button>
+          </div>
+          <button class="gc-btn" id="vlan-zoom-fit" title="Fit to screen">⊡</button>
+        </div>
+        <div id="vlan-empty" style="display:none">No VLAN-tagged traffic found in this capture</div>
       </div>
-      <div id="vlan-empty" style="display:none">No VLAN-tagged traffic found in this capture</div>
     </div>
 
     <!-- DNS Map view -->
