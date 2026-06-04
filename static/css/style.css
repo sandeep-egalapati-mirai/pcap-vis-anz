@@ -1967,11 +1967,31 @@ header h1 span { color: var(--accent); }
   flex: 1;
   overflow: hidden;
   background: var(--bg1);
+  display: flex;
+  flex-direction: column;
+}
+#vlan-stats-bar {
+  display: flex;
+  gap: 16px;
+  padding: 5px 14px;
+  font-size: 11px;
+  color: var(--text2);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  background: var(--bg2);
+}
+#vlan-stats-bar strong {
+  color: var(--text);
 }
 #vlan-svg {
+  flex: 1;
   width: 100%;
-  height: 100%;
   display: block;
+}
+/* Faded nodes/edges in the VLAN graph (uses .faded class, distinct selectors from main graph) */
+#vlan-svg .faded {
+  opacity: 0.12;
 }
 #vlan-legend {
   position: absolute;

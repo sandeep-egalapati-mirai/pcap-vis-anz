@@ -12,6 +12,7 @@ try:
     from scapy.utils import wrpcap
     from scapy.layers.l2 import Ether, Dot1Q, Dot1AD
     from scapy.layers.inet import IP, TCP, UDP
+    from scapy.layers.inet6 import IPv6
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
@@ -280,3 +281,87 @@ def test_no_vlan_cross_segment_same_vlan():
     anomalies = analyze_anomalies(hosts, connections, {})
     types = {a["type"] for a in anomalies}
     assert "vlan_cross_segment_ot" not in types
+
+
+# ── ip_version field + stats (both serialization paths) ──────────────────────
+
+def test_node_has_ip_version_v4():
+    """IPv4 hosts are emitted with ip_version=4."""
+    pkts = [
+        Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1234, dport=80),
+    ]
+    r = _analyze(pkts)
+    node = _node(r, IP_A)
+    assert node is not None
+    assert node["ip_version"] == 4
+
+
+def test_node_has_ip_version_v6():
+    """IPv6 hosts are emitted with ip_version=6."""
+    IPV6_SRC = "fe80::1"
+    IPV6_DST = "fe80::2"
+    pkts = [
+        Ether(src=MAC_A, dst=MAC_B) / IPv6(src=IPV6_SRC, dst=IPV6_DST) / TCP(sport=1234, dport=80),
+    ]
+    r = _analyze(pkts)
+    node = _node(r, IPV6_SRC)
+    assert node is not None
+    assert node["ip_version"] == 6
+
+
+def test_stats_ip_versions_and_counts():
+    """stats carries ip_versions list and correct ipv4_count/ipv6_count."""
+    IPV6_SRC = "2001:db8::1"
+    pkts = [
+        Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1, dport=80),
+        Ether(src=MAC_A, dst=MAC_B) / IPv6(src=IPV6_SRC, dst="2001:db8::2") / TCP(sport=2, dport=80),
+    ]
+    r = _analyze(pkts)
+    s = r["stats"]
+    assert sorted(s["ip_versions"]) == [4, 6]
+    # Counts must be positive; exact values depend on how many IPs scapy assigns
+    assert s["ipv4_count"] >= 1
+    assert s["ipv6_count"] >= 1
+
+
+def test_stats_has_untagged_true():
+    """has_untagged is True when untagged frames are present."""
+    pkts = [
+        Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1, dport=80),
+    ]
+    r = _analyze(pkts)
+    assert r["stats"]["has_untagged"] is True
+
+
+def test_stats_has_untagged_false():
+    """has_untagged is False when all frames are VLAN-tagged."""
+    pkts = [
+        Ether(src=MAC_A, dst=MAC_B) / Dot1Q(vlan=10) / IP(src=IP_A, dst=IP_B) / TCP(sport=1, dport=80),
+    ]
+    r = _analyze(pkts)
+    assert r["stats"]["has_untagged"] is False
+
+
+def test_merge_ip_version_preserved():
+    """merge_results preserves ip_version on each node and unions ip_versions in stats."""
+    IPV6_SRC = "fd00::1"
+    pkts_v4 = [
+        Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1, dport=80),
+    ]
+    pkts_v6 = [
+        Ether(src=MAC_C, dst=MAC_D) / IPv6(src=IPV6_SRC, dst="fd00::2") / TCP(sport=2, dport=80),
+    ]
+    r4 = _analyze(pkts_v4)
+    r6 = _analyze(pkts_v6)
+    merged = merge_results([r4, r6])
+
+    # Each node carries ip_version
+    node_v4 = _node(merged, IP_A)
+    node_v6 = _node(merged, IPV6_SRC)
+    assert node_v4 is not None and node_v4["ip_version"] == 4
+    assert node_v6 is not None and node_v6["ip_version"] == 6
+
+    # Stats unions ip_versions
+    assert sorted(merged["stats"]["ip_versions"]) == [4, 6]
+    assert merged["stats"]["ipv4_count"] >= 1
+    assert merged["stats"]["ipv6_count"] >= 1

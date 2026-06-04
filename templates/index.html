@@ -53,6 +53,7 @@
       <div class="stat">Connections: <strong id="stat-conns">—</strong></div>
       <div class="stat">Packets: <strong id="stat-pkts">—</strong></div>
       <div class="stat" id="stat-vlans-wrap" style="display:none">VLANs: <strong id="stat-vlans">—</strong></div>
+      <div class="stat" id="stat-ipver-wrap" style="display:none">IPv6: <strong id="stat-ipver">—</strong></div>
     </div>
 
     <!-- View toggle -->
@@ -121,6 +122,13 @@
           <h3>VLANs <span class="filter-badge" id="vlan-badge"></span></h3>
         </div>
         <div id="vlan-filters"></div>
+      </div>
+
+      <div class="sidebar-section" id="ipver-filters-section" style="display:none">
+        <div class="filter-section-header">
+          <h3>IP Version <span class="filter-badge" id="ipver-badge"></span></h3>
+        </div>
+        <div id="ipver-filters"></div>
       </div>
 
       <div class="sidebar-section" id="clear-filters-section" style="display:none">
@@ -390,6 +398,7 @@
 
     <!-- VLAN Graph view -->
     <div id="vlan-view" class="hidden">
+      <div id="vlan-stats-bar"></div>
       <svg id="vlan-svg"></svg>
       <div id="vlan-legend">
         <div id="vlan-legend-title">VLAN Segments</div>

@@ -2844,6 +2844,7 @@ def analyze_pcap(filepath):
                 is_private=h.get("is_private", True),
             ),
             "risk_score": host_risk.get(ip, 0),
+            "ip_version": 6 if ":" in ip else 4,
         })
 
     edges = []
@@ -2895,6 +2896,10 @@ def analyze_pcap(filepath):
             "host_types": all_host_types,
             "vlans": all_vlans,
             "vlans_detected": len(all_vlans),
+            "ip_versions": sorted({n["ip_version"] for n in nodes}),
+            "has_untagged": any(n["vlan_untagged"] for n in nodes),
+            "ipv4_count": sum(1 for n in nodes if n["ip_version"] == 4),
+            "ipv6_count": sum(1 for n in nodes if n["ip_version"] == 6),
             "truncated": processed >= MAX_PACKETS,
             "capture_start": first_pkt_time,
             "capture_end": last_pkt_time,
@@ -3091,6 +3096,7 @@ def merge_results(results):
                 is_private=mn.get("is_private", True),
             ),
             "risk_score": mn.get("risk_score", 0),
+            "ip_version": 6 if ":" in ip else 4,
         })
 
     edges_out = []
@@ -3131,6 +3137,10 @@ def merge_results(results):
             "host_types": all_host_types,
             "vlans": all_vlans,
             "vlans_detected": len(all_vlans),
+            "ip_versions": sorted({n["ip_version"] for n in nodes_out}),
+            "has_untagged": any(n.get("vlan_untagged") for n in nodes_out),
+            "ipv4_count": sum(1 for n in nodes_out if n["ip_version"] == 4),
+            "ipv6_count": sum(1 for n in nodes_out if n["ip_version"] == 6),
             "truncated": truncated,
             "gpu": GPU_AVAILABLE,
             "capture_start": capture_start,
