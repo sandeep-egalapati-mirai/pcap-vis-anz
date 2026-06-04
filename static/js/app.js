@@ -674,9 +674,48 @@ function updateFilterUI() {
     ipVerBadge.classList.toggle("visible", hiddenIpVers > 0);
   }
 
+  const protoClearBtn = document.getElementById("proto-clear-btn");
+  const typeClearBtn  = document.getElementById("type-clear-btn");
+  const vlanClearBtn  = document.getElementById("vlan-clear-btn");
+  const ipVerClearBtn = document.getElementById("ipver-clear-btn");
+  if (protoClearBtn) protoClearBtn.style.display = hiddenProtos > 0 ? "" : "none";
+  if (typeClearBtn)  typeClearBtn.style.display  = hiddenTypes  > 0 ? "" : "none";
+  if (vlanClearBtn)  vlanClearBtn.style.display  = hiddenVlans  > 0 ? "" : "none";
+  if (ipVerClearBtn) ipVerClearBtn.style.display = hiddenIpVers > 0 ? "" : "none";
+
   const clearSection = document.getElementById("clear-filters-section");
   if (clearSection) clearSection.style.display = isFiltered ? "" : "none";
 }
+
+document.getElementById("proto-clear-btn").addEventListener("click", () => {
+  if (!graphData) return;
+  activeProtos = new Set(graphData.stats.protocols);
+  document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
+  updateFilterUI(); applyFilters();
+  if (currentView === "table") renderConnTable();
+});
+document.getElementById("type-clear-btn").addEventListener("click", () => {
+  if (!graphData) return;
+  activeTypes = new Set(graphData.stats.host_types);
+  document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
+  updateFilterUI(); applyFilters();
+  if (currentView === "table") renderConnTable();
+});
+document.getElementById("vlan-clear-btn").addEventListener("click", () => {
+  if (!graphData) return;
+  activeVlans = new Set((graphData.stats.vlans || []).map(String));
+  if ((graphData.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
+  document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
+  updateFilterUI(); applyFilters();
+  if (currentView === "table") renderConnTable();
+});
+document.getElementById("ipver-clear-btn").addEventListener("click", () => {
+  if (!graphData) return;
+  activeIpVersions = new Set((graphData.stats.ip_versions || []).map(String));
+  document.querySelectorAll("#ipver-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
+  updateFilterUI(); applyFilters();
+  if (currentView === "table") renderConnTable();
+});
 
 document.getElementById("clear-filters-btn").addEventListener("click", () => {
   searchBox.value = "";
