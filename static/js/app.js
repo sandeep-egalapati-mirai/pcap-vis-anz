@@ -218,8 +218,7 @@ let simulation   = null;
 let selectedNode = null;
 let activeProtos = new Set();
 let activeTypes  = new Set();
-let activeVlans      = new Set();
-let activeIpVersions = new Set();
+let activeVlans  = new Set();
 let searchTerm   = "";
 let packetData   = {};
 let currentView  = "graph";  // "graph" | "table" | "dns" | "ot" | "otlog" | "vlangraph" | "diff"
@@ -428,16 +427,9 @@ function loadGraph(data) {
   }
 
   // Build filter sets
-  activeProtos     = new Set(stats.protocols || []);
-  activeTypes      = new Set(stats.host_types || []);
-  activeVlans      = new Set([...(stats.vlans || []).map(String),
-                               ...(stats.has_untagged ? ["untagged"] : [])]);
-  activeIpVersions = new Set((stats.ip_versions || []).map(String));
-
-  const ipVerSection = document.getElementById("ipver-filters-section");
-  if (ipVerSection) {
-    ipVerSection.style.display = (stats.ip_versions || []).length > 1 ? "" : "none";
-  }
+  activeProtos = new Set(stats.protocols || []);
+  activeTypes  = new Set(stats.host_types || []);
+  activeVlans  = new Set((stats.vlans || []).map(String));
 
   buildFilters(data);
   buildLegend(data);
@@ -560,11 +552,8 @@ function buildFilters(data) {
   const stats = data.stats || {};
   buildFilterList("proto-filters", stats.protocols || [], activeProtos, PROTO_COLORS, "proto");
   buildFilterList("type-filters",  stats.host_types || [], activeTypes,  HOST_COLORS,  "type");
-  const vlanItems = [...(stats.vlans || []).map(String),
-                     ...(stats.has_untagged ? ["untagged"] : [])];
-  buildFilterList("vlan-filters",  vlanItems, activeVlans, {}, "vlan");
-  buildFilterList("ipver-filters", (stats.ip_versions || []).map(String),
-                  activeIpVersions, {}, "ipver");
+  const vlans = (stats.vlans || []).map(String);
+  buildFilterList("vlan-filters",  vlans, activeVlans, {}, "vlan");
   updateFilterUI();
 }
 
@@ -583,12 +572,6 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
         (n.vlans || []).forEach(v => {
           counts[String(v)] = (counts[String(v)] || 0) + 1;
         });
-        if (n.vlan_untagged) counts["untagged"] = (counts["untagged"] || 0) + 1;
-      });
-    } else if (kind === "ipver") {
-      graphData.nodes.forEach(n => {
-        const v = String(n.ip_version || 4);
-        counts[v] = (counts[v] || 0) + 1;
       });
     } else {
       graphData.nodes.forEach(n => {
@@ -597,17 +580,12 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
     }
   }
 
-  const IPVER_COLORS = { "4": "#42A5F5", "6": "#AB47BC" };
   items.forEach(item => {
-    const color = kind === "vlan"  ? vlanColor(item)
-                : kind === "ipver" ? (IPVER_COLORS[item] || "#546E7A")
-                : (colorMap[item] || "#546E7A");
+    const color = kind === "vlan" ? vlanColor(item) : (colorMap[item] || "#546E7A");
     const div = document.createElement("div");
     div.className = "filter-item";
     const iconSpan = kind === "type" ? `<span class="fi-icon">${hostIcon(item)}</span>` : "";
-    const label = kind === "vlan"  ? (item === "untagged" ? "Untagged" : `VLAN ${item}`)
-                : kind === "ipver" ? (item === "4" ? "IPv4" : "IPv6")
-                : item;
+    const label = kind === "vlan" ? `VLAN ${item}` : item;
     div.innerHTML = `
       <input type="checkbox" id="f-${kind}-${CSS.escape(item)}" checked>
       <div class="dot" style="background:${color}"></div>
@@ -628,23 +606,18 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
 
 function updateFilterUI() {
   if (!graphData) return;
-  const totalProtos  = graphData.stats.protocols.length;
-  const totalTypes   = graphData.stats.host_types.length;
-  const totalVlans   = (graphData.stats.vlans || []).length +
-                       (graphData.stats.has_untagged ? 1 : 0);
-  const totalIpVers  = (graphData.stats.ip_versions || []).length;
+  const totalProtos = graphData.stats.protocols.length;
+  const totalTypes  = graphData.stats.host_types.length;
+  const totalVlans  = (graphData.stats.vlans || []).length;
   const hiddenProtos = totalProtos - activeProtos.size;
   const hiddenTypes  = totalTypes  - activeTypes.size;
   const hiddenVlans  = totalVlans  - activeVlans.size;
-  const hiddenIpVers = totalIpVers - activeIpVersions.size;
   const hasSearch    = searchTerm.length > 0;
-  const isFiltered   = hiddenProtos > 0 || hiddenTypes > 0 || hiddenVlans > 0 ||
-                       hiddenIpVers > 0 || hasSearch;
+  const isFiltered   = hiddenProtos > 0 || hiddenTypes > 0 || hiddenVlans > 0 || hasSearch;
 
-  const protoBadge  = document.getElementById("proto-badge");
-  const typeBadge   = document.getElementById("type-badge");
-  const vlanBadge   = document.getElementById("vlan-badge");
-  const ipVerBadge  = document.getElementById("ipver-badge");
+  const protoBadge = document.getElementById("proto-badge");
+  const typeBadge  = document.getElementById("type-badge");
+  const vlanBadge  = document.getElementById("vlan-badge");
   if (protoBadge) {
     protoBadge.textContent = hiddenProtos > 0 ? hiddenProtos + " hidden" : "";
     protoBadge.classList.toggle("visible", hiddenProtos > 0);
@@ -657,10 +630,6 @@ function updateFilterUI() {
     vlanBadge.textContent = hiddenVlans > 0 ? hiddenVlans + " hidden" : "";
     vlanBadge.classList.toggle("visible", hiddenVlans > 0);
   }
-  if (ipVerBadge) {
-    ipVerBadge.textContent = hiddenIpVers > 0 ? hiddenIpVers + " hidden" : "";
-    ipVerBadge.classList.toggle("visible", hiddenIpVers > 0);
-  }
 
   const clearSection = document.getElementById("clear-filters-section");
   if (clearSection) clearSection.style.display = isFiltered ? "" : "none";
@@ -671,15 +640,12 @@ document.getElementById("clear-filters-btn").addEventListener("click", () => {
   searchTerm = "";
   // Re-check all checkboxes and restore full sets
   if (graphData) {
-    activeProtos     = new Set(graphData.stats.protocols);
-    activeTypes      = new Set(graphData.stats.host_types);
-    activeVlans      = new Set([...(graphData.stats.vlans || []).map(String),
-                                 ...(graphData.stats.has_untagged ? ["untagged"] : [])]);
-    activeIpVersions = new Set((graphData.stats.ip_versions || []).map(String));
+    activeProtos = new Set(graphData.stats.protocols);
+    activeTypes  = new Set(graphData.stats.host_types);
+    activeVlans  = new Set((graphData.stats.vlans || []).map(String));
     document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
     document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
     document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
-    document.querySelectorAll("#ipver-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
   }
   updateFilterUI();
   applyFilters();
@@ -694,17 +660,13 @@ function applyFilters(skipFit) {
   if (!graphData) return;
 
   const visibleNodeIds = new Set();
-  const allVlans = [...(graphData.stats.vlans || []).map(String),
-                    ...(graphData.stats.has_untagged ? ["untagged"] : [])];
+  const allVlans = (graphData.stats.vlans || []).map(String);
   const vlanFilterActive = allVlans.length > 0 && activeVlans.size < allVlans.length;
-  const allIpVers = (graphData.stats.ip_versions || []).map(String);
-  const ipVerFilterActive = allIpVers.length > 1 && activeIpVersions.size < allIpVers.length;
   nodesGroup.selectAll(".node").each(function(d) {
     const vlanOk = !vlanFilterActive ||
       (d.vlans || []).some(v => activeVlans.has(String(v))) ||
       (d.vlan_untagged && activeVlans.has("untagged"));
-    const ipVerOk = !ipVerFilterActive || activeIpVersions.has(String(d.ip_version || 4));
-    const visible = activeTypes.has(d.host_type) && vlanOk && ipVerOk &&
+    const visible = activeTypes.has(d.host_type) && vlanOk &&
       (!searchTerm || d.ip.includes(searchTerm) ||
        (d.hostname && d.hostname.toLowerCase().includes(searchTerm)));
     d3.select(this).classed("faded", !visible);
@@ -4179,6 +4141,8 @@ function renderVlanGraph(data) {
   // Build cross-VLAN traffic links (VLAN → VLAN, aggregated)
   const crossVlanMap = {};
   data.edges.forEach(e => {
+    const srcNode = data.nodes.find(n => n.ip === e.source || n.ip === e.target);
+    const dstNode = data.nodes.find(n => n.ip === (srcNode && srcNode.ip === e.source ? e.target : e.source));
     const src = data.nodes.find(n => n.ip === e.source);
     const dst = data.nodes.find(n => n.ip === e.target);
     if (!src || !dst) return;
@@ -4392,42 +4356,13 @@ function renderVlanGraph(data) {
     vlanSimulation.alpha(0.5).restart();
   }
 
-  // Compute per-VLAN protocol breakdown from edges
-  const vlanProtos = {};
-  data.edges.forEach(e => {
-    (e.vlans || []).forEach(v => {
-      const key = String(v);
-      if (!vlanProtos[key]) vlanProtos[key] = {};
-      (e.protocols || []).forEach(p => { vlanProtos[key][p] = (vlanProtos[key][p] || 0) + 1; });
-    });
-  });
-
-  // Stats bar above SVG
-  let statsBar = document.getElementById("vlan-stats-bar");
-  if (!statsBar) {
-    statsBar = document.createElement("div");
-    statsBar.id = "vlan-stats-bar";
-    statsBar.style.cssText = "display:flex;gap:16px;padding:6px 12px;font-size:11px;color:#8b949e;background:rgba(0,0,0,0.15);border-bottom:1px solid #30363d;flex-wrap:wrap";
-    svgEl.parentNode.insertBefore(statsBar, svgEl);
-  }
-  statsBar.innerHTML = [
-    `<span>VLANs: <strong style="color:#cdd9e5">${vlanNodes.length}</strong></span>`,
-    `<span>Cross-VLAN links: <strong style="color:#ef5350">${crossLinks.length}</strong></span>`,
-    ...(hasUntagged ? [`<span>Untagged hosts: <strong style="color:#cdd9e5">${data.nodes.filter(n => n.vlan_untagged).length}</strong></span>`] : []),
-  ].join("");
-
-  // Legend with per-VLAN protocol breakdown
+  // Legend
   const legendItems = document.getElementById("vlan-legend-items");
   legendItems.innerHTML = "";
   vlanNodes.forEach(v => {
-    const topProtos = Object.entries(vlanProtos[v.vid] || {})
-      .sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]).join(", ");
     const el = document.createElement("div");
-    el.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12px";
-    el.innerHTML = `<div style="width:14px;height:14px;border-radius:50%;background:${v.color};border:2px solid ${v.color};flex-shrink:0"></div>` +
-      `<div><div>${v.label} <span style="color:#8b949e">(${v.hostCount} host${v.hostCount !== 1 ? "s" : ""})</span></div>` +
-      (topProtos ? `<div style="color:#8b949e;font-size:10px;margin-top:1px">${topProtos}</div>` : "") +
-      `</div>`;
+    el.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:12px";
+    el.innerHTML = `<div style="width:14px;height:14px;border-radius:50%;background:${v.color};border:2px solid ${v.color};flex-shrink:0"></div>${v.label} <span style="color:#8b949e">(${v.hostCount})</span>`;
     legendItems.appendChild(el);
   });
 }
