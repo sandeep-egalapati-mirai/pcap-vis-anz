@@ -30,6 +30,7 @@
 - [x] Performance: Virtual scrolling in connection table and packet inspector (windowed rendering)
 - [x] Performance: Anomaly deduplication summary — collapses repeated same-source anomalies into one entry
 - [x] Performance: Replace `PcapReader` with `RawPcapReader` + manual byte parsing in `analyze_pcap()` hot loop (~30× speedup; 150K-packet capture: ~44s → ~1.5s)
+- [x] VLAN: Full 802.1Q + 802.1ad QinQ parsing (VID, PCP, DEI); per-host and per-edge tracking; VLAN filter in sidebar; VLAN section in host detail panel; VLANs stat in header; 4 new anomaly rules (hopping, native leak, QinQ, cross-segment OT); dedicated VLAN Graph view (VLANs as super-nodes, hosts clustered inside, cross-VLAN traffic highlighted in red)
 
 ## Navigation & Discoverability
 
@@ -73,6 +74,12 @@
 - [ ] Saved filter presets — name and save a filter combination for one-click recall
 - [ ] Inline anomaly explanation panel — contextual explanation of what each anomaly means and why it's suspicious
 - [ ] Dashboard / summary view (5th view) — card-based overview: top talkers, protocol breakdown donut, anomaly severity bar, busiest connections
+
+## VLAN Follow-ups
+
+- [ ] Per-VLAN bandwidth chart — bar chart of bytes/packets per VLAN in the VLAN view
+- [ ] VLAN timeline — filter the main graph timeline by VLAN segment
+- [ ] VLAN export — add vlans column to connections CSV export
 
 ## Completed (Enrichments)
 

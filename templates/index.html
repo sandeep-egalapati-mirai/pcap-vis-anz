@@ -52,6 +52,7 @@
       <div class="stat">Hosts: <strong id="stat-hosts">—</strong></div>
       <div class="stat">Connections: <strong id="stat-conns">—</strong></div>
       <div class="stat">Packets: <strong id="stat-pkts">—</strong></div>
+      <div class="stat" id="stat-vlans-wrap" style="display:none">VLANs: <strong id="stat-vlans">—</strong></div>
     </div>
 
     <!-- View toggle -->
@@ -61,6 +62,7 @@
       <button class="vt-btn" data-view="dns">DNS Map</button>
       <button class="vt-btn" data-view="ot">OT Map</button>
       <button class="vt-btn" data-view="otlog">OT Log</button>
+      <button class="vt-btn hidden" data-view="vlangraph" id="vlan-tab-btn">VLAN</button>
       <button class="vt-btn hidden" data-view="diff" id="diff-tab-btn">⊕ Diff</button>
     </div>
 
@@ -112,6 +114,13 @@
           <h3>Host Types <span class="filter-badge" id="type-badge"></span></h3>
         </div>
         <div id="type-filters"></div>
+      </div>
+
+      <div class="sidebar-section" id="vlan-filters-section" style="display:none">
+        <div class="filter-section-header">
+          <h3>VLANs <span class="filter-badge" id="vlan-badge"></span></h3>
+        </div>
+        <div id="vlan-filters"></div>
       </div>
 
       <div class="sidebar-section" id="clear-filters-section" style="display:none">
@@ -377,6 +386,24 @@
           <div id="diff-anomalies-list"></div>
         </div>
       </div>
+    </div>
+
+    <!-- VLAN Graph view -->
+    <div id="vlan-view" class="hidden">
+      <svg id="vlan-svg"></svg>
+      <div id="vlan-legend">
+        <div id="vlan-legend-title">VLAN Segments</div>
+        <div id="vlan-legend-items"></div>
+      </div>
+      <div id="vlan-controls">
+        <div class="layout-group">
+          <button class="gc-btn layout-btn active" data-vlan-layout="force" title="Force layout">⊙</button>
+          <button class="gc-btn layout-btn" data-vlan-layout="radial" title="Radial layout">◎</button>
+          <button class="gc-btn layout-btn" data-vlan-layout="cluster" title="Cluster layout">⊞</button>
+        </div>
+        <button class="gc-btn" id="vlan-zoom-fit" title="Fit to screen">⊡</button>
+      </div>
+      <div id="vlan-empty" style="display:none">No VLAN-tagged traffic found in this capture</div>
     </div>
 
     <!-- DNS Map view -->

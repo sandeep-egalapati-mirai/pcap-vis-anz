@@ -19,7 +19,8 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Filtering** — Filter graph by protocol or host type via sidebar checkboxes
 - **Search** — Find nodes by IP address or hostname (300ms debounce)
 - **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, TLS SNI names, anomalies, OT analysis, conversations, and captured credentials)
-- **Six views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout), OT Log (chronological OT command history), and Diff (baseline comparison)
+- **Seven views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout), OT Log (chronological OT command history), VLAN Graph (VLAN segment topology), and Diff (baseline comparison)
+- **VLAN identification** — Full 802.1Q single-tag and 802.1ad QinQ double-tag parsing: extracts VLAN ID, PCP priority bits, DEI bit, and outer/inner VIDs for QinQ; tracked per host, per connection, and aggregated in stats
 - **OT Map** — Full Purdue Model swimlane view (L0 Field → L6 Public Internet) with automatic Public Internet zone for non-RFC1918 IPs (no GeoIP required), D3 zoom/pan (Ctrl+scroll, toolbar buttons), traffic-weighted edges, anomaly callouts (! badge on affected nodes, lane tint for high-severity), cross-zone vs. cross-level edge counting, zone legend, Purdue level tooltips, activeTypes filter integration with sidebar bypass toggle ("Respect filters" button), OT protocol evidence-based Purdue level assignment, and editable mode: drag-to-reclassify, add/remove devices (IP format + Purdue level validation with inline error), risk annotation (Critical → Info, panel positioned near clicked node), and PNG/JSON export
 - **OT Communication Matrix** — Toggle within the OT Map view (⊞ Matrix button) to switch to a device×device adjacency matrix: each cell is coloured by dominant OT protocol, orange for cross-zone traffic, and red-bordered when an anomaly is present; hover for packet count, byte total, OT read/write counts, and cross-zone/anomaly warnings
 - **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap (rAF-throttled for smooth playback); speed selector (0.5×, 1×, 2×, 5×); Space to play/pause, ←/→ arrow keys to step one tick
@@ -30,7 +31,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **PCAP baseline diff** — "Set Baseline" button in header; upload a second PCAP and open the "⊕ Diff" tab to compare: new/disappeared hosts, new connections (with protocols), new anomalies vs baseline; three-column diff view, no server round-trip
 - **Session save / load** — Export full analysis to JSON and reload without re-uploading the capture file
 - **Node annotations** — Right-click any node to attach a persistent note (stored in browser localStorage)
-- **Anomaly detection** — 25 detection rules across general network, OT/ICS, and IoT threat categories
+- **Anomaly detection** — 29 detection rules across general network, OT/ICS, IoT, and VLAN threat categories
 - **Large capture support** — Streams up to 1,000,000 packets without loading into memory (up to 1 GB upload); multi-file uploads processed in parallel
 
 ## Anomaly Detection
@@ -67,6 +68,12 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - Telnet access to an IoT device — classic Mirai botnet vector
 - IP Camera sending data to an external IP — unauthorized stream or C2
 - TR-069 (port 7547) — remote management protocol frequently exploited
+
+**VLAN**
+- Host seen on multiple VLANs — non-routing host tagged with 2+ VLAN IDs; possible VLAN hopping attack
+- Untagged + tagged frame mix — same host sending both untagged and tagged frames; possible native VLAN leakage
+- QinQ (double-tagged) frames — 802.1ad outer tag detected; legitimate in carrier networks but a classic VLAN-hopping vector
+- Cross-VLAN OT traffic — OT/ICS device communicating with a host on a different VLAN; segmentation violation
 
 All anomalies are shown in the sidebar and on the node detail panel; affected nodes pulse with a coloured ring (red = high, yellow = medium).
 

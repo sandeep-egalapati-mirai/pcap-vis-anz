@@ -1664,6 +1664,77 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None):
                 "description": f"{ip} shows DNS tunneling indicators: {reason}",
             })
 
+    # ── VLAN: host seen on multiple VLANs (potential VLAN hopping) ───────────
+    routing_types = {"Router", "Network Device", "VPN Gateway"}
+    for ip, h in hosts.items():
+        vlan_ids = h.get("vlan_ids", set())
+        if len(vlan_ids) > 1 and h.get("host_type") not in routing_types:
+            anomalies.append({
+                "type": "vlan_hopping",
+                "severity": "medium",
+                "src": ip,
+                "dst": None,
+                "description": (
+                    f"{ip} ({h['host_type']}) seen on multiple VLANs {sorted(vlan_ids)} — "
+                    "may indicate VLAN hopping attack or misconfigured trunk port"
+                ),
+            })
+
+    # ── VLAN: host sending both tagged and untagged frames (native VLAN leakage) ──
+    for ip, h in hosts.items():
+        if h.get("vlan_untagged") and h.get("vlan_ids"):
+            anomalies.append({
+                "type": "vlan_native_leak",
+                "severity": "low",
+                "src": ip,
+                "dst": None,
+                "description": (
+                    f"{ip} sending both untagged and VLAN-tagged ({sorted(h['vlan_ids'])}) frames — "
+                    "possible native VLAN leakage or misconfigured access port"
+                ),
+            })
+
+    # ── VLAN: QinQ (double-tagged) frames detected ────────────────────────────
+    for ip, h in hosts.items():
+        if h.get("vlan_qinq"):
+            anomalies.append({
+                "type": "vlan_qinq",
+                "severity": "medium",
+                "src": ip,
+                "dst": None,
+                "description": (
+                    f"{ip} involved in 802.1ad QinQ double-tagged frames "
+                    f"(outer VLANs: {sorted(h.get('vlan_outer_ids', set()))}) — "
+                    "legitimate in carrier networks but a classic VLAN-hopping attack vector"
+                ),
+            })
+
+    # ── VLAN: OT host communicating across VLAN segments ─────────────────────
+    for (a, b), conn in connections.items():
+        ha = hosts.get(a, {})
+        hb = hosts.get(b, {})
+        ot_involved = ha.get("ot_role", "unknown") not in (None, "unknown") or \
+                      hb.get("ot_role", "unknown") not in (None, "unknown")
+        if not ot_involved:
+            continue
+        va = ha.get("vlan_ids", set())
+        vb = hb.get("vlan_ids", set())
+        if va and vb and va.isdisjoint(vb):
+            ot_ip = a if ha.get("ot_role", "unknown") not in (None, "unknown") else b
+            other_ip = b if ot_ip == a else a
+            ot_host = hosts.get(ot_ip, {})
+            anomalies.append({
+                "type": "vlan_cross_segment_ot",
+                "severity": "high",
+                "src": other_ip,
+                "dst": ot_ip,
+                "description": (
+                    f"OT device {ot_ip} (VLAN {sorted(hosts.get(ot_ip, {}).get('vlan_ids', set()))}) "
+                    f"communicating with {other_ip} (VLAN {sorted(hosts.get(other_ip, {}).get('vlan_ids', set()))}) "
+                    "across VLAN boundaries — potential OT network segmentation violation"
+                ),
+            })
+
     # ── Password reuse across protocols or destinations ───────────────────────
     if credentials:
         pw_services = defaultdict(set)
@@ -1836,6 +1907,7 @@ def analyze_pcap(filepath):
         "ot_writes": 0,
         "ot_errors": 0,
         "fc_counts": defaultdict(int),
+        "vlan_ids": set(),
     })
 
     def host(ip, mac=None):
@@ -1865,6 +1937,11 @@ def analyze_pcap(filepath):
                 "has_s7_download": False,
                 "tls_sni": set(),
                 "tls_ja3": set(),
+                "vlan_ids": set(),
+                "vlan_outer_ids": set(),
+                "vlan_pcps": set(),
+                "vlan_untagged": False,
+                "vlan_qinq": False,
             }
         h = hosts[ip]
         if mac and not h["mac"]:
@@ -1931,7 +2008,29 @@ def analyze_pcap(filepath):
                 ethertype = (raw[12] << 8) | raw[13]
                 l2_off = 14
 
-                if ethertype == 0x8100 and len(raw) >= 18:   # 802.1Q VLAN
+                vlan_outer = vlan_inner = pcp = dei = None
+                is_qinq = False
+
+                if ethertype == 0x88A8 and len(raw) >= 18:   # 802.1ad QinQ outer tag
+                    tci_outer = (raw[14] << 8) | raw[15]
+                    vlan_outer = tci_outer & 0x0FFF
+                    inner_ethertype = (raw[16] << 8) | raw[17]
+                    if inner_ethertype == 0x8100 and len(raw) >= 22:
+                        tci_inner = (raw[18] << 8) | raw[19]
+                        vlan_inner = tci_inner & 0x0FFF
+                        pcp = (tci_inner >> 13) & 0x07
+                        dei = (tci_inner >> 12) & 0x01
+                        ethertype = (raw[20] << 8) | raw[21]
+                        l2_off = 22
+                        is_qinq = True
+                    else:
+                        ethertype = inner_ethertype
+                        l2_off = 18
+                elif ethertype == 0x8100 and len(raw) >= 18:   # 802.1Q single tag
+                    tci = (raw[14] << 8) | raw[15]
+                    vlan_outer = tci & 0x0FFF
+                    pcp = (tci >> 13) & 0x07
+                    dei = (tci >> 12) & 0x01
                     ethertype = (raw[16] << 8) | raw[17]
                     l2_off = 18
 
@@ -1946,6 +2045,16 @@ def analyze_pcap(filepath):
                             if spa and spa not in ("0.0.0.0", "255.255.255.255"):
                                 h = host(spa, sha)
                                 h["protocols"].add("ARP")
+                                _vlan_arp = vlan_inner if vlan_inner is not None else vlan_outer
+                                if _vlan_arp is not None:
+                                    h["vlan_ids"].add(_vlan_arp)
+                                    if pcp is not None:
+                                        h["vlan_pcps"].add(pcp)
+                                    if is_qinq:
+                                        h["vlan_outer_ids"].add(vlan_outer)
+                                        h["vlan_qinq"] = True
+                                else:
+                                    h["vlan_untagged"] = True
                         except Exception:
                             pass
                     continue
@@ -2010,6 +2119,24 @@ def analyze_pcap(filepath):
                 if conn["abs_first_seen"] is None:
                     conn["abs_first_seen"] = pkt_time
                 conn["abs_last_seen"] = pkt_time
+
+                # Track VLAN membership on hosts and connection
+                _vlan_id = vlan_inner if vlan_inner is not None else vlan_outer
+                if _vlan_id is not None:
+                    sh["vlan_ids"].add(_vlan_id)
+                    dh["vlan_ids"].add(_vlan_id)
+                    conn["vlan_ids"].add(_vlan_id)
+                    if pcp is not None:
+                        sh["vlan_pcps"].add(pcp)
+                        dh["vlan_pcps"].add(pcp)
+                    if is_qinq:
+                        sh["vlan_outer_ids"].add(vlan_outer)
+                        dh["vlan_outer_ids"].add(vlan_outer)
+                        sh["vlan_qinq"] = True
+                        dh["vlan_qinq"] = True
+                else:
+                    sh["vlan_untagged"] = True
+                    dh["vlan_untagged"] = True
 
                 # Initialize transport-layer fields — always defined for drill-down
                 sport = None
@@ -2703,6 +2830,11 @@ def analyze_pcap(filepath):
             "dnp3_addresses": sorted(h.get("dnp3_addresses", set())),
             "tls_sni": sorted(h.get("tls_sni", set())),
             "tls_ja3": sorted(h.get("tls_ja3", set())),
+            "vlans": sorted(h.get("vlan_ids", set())),
+            "vlan_outer": sorted(h.get("vlan_outer_ids", set())),
+            "vlan_pcps": sorted(h.get("vlan_pcps", set())),
+            "vlan_untagged": bool(h.get("vlan_untagged")),
+            "vlan_qinq": bool(h.get("vlan_qinq")),
             "purdue_level": purdue_level_py(
                 h["host_type"],
                 geo.get("country_code") if geo else None,
@@ -2729,10 +2861,12 @@ def analyze_pcap(filepath):
             "ot_writes": c.get("ot_writes", 0),
             "ot_errors": c.get("ot_errors", 0),
             "fc_counts": dict(c.get("fc_counts", {})),
+            "vlans": sorted(c.get("vlan_ids", set())),
         })
 
     all_protocols = sorted({p for n in nodes for p in n["protocols"]})
     all_host_types = sorted({n["host_type"] for n in nodes})
+    all_vlans = sorted({v for n in nodes for v in n["vlans"]})
 
     # ── Build packets output (top 40 connections) ──────────────────────────
     top_conn_keys = sorted(
@@ -2759,6 +2893,8 @@ def analyze_pcap(filepath):
             "total_connections": len(edges),
             "protocols": all_protocols,
             "host_types": all_host_types,
+            "vlans": all_vlans,
+            "vlans_detected": len(all_vlans),
             "truncated": processed >= MAX_PACKETS,
             "capture_start": first_pkt_time,
             "capture_end": last_pkt_time,
@@ -2809,6 +2945,11 @@ def merge_results(results):
                 merged_nodes[ip]["dnp3_addresses"] = set(n.get("dnp3_addresses", []))
                 merged_nodes[ip]["tls_sni"] = set(n.get("tls_sni", []))
                 merged_nodes[ip]["tls_ja3"] = set(n.get("tls_ja3", []))
+                merged_nodes[ip]["vlans"] = set(n.get("vlans", []))
+                merged_nodes[ip]["vlan_outer"] = set(n.get("vlan_outer", []))
+                merged_nodes[ip]["vlan_pcps"] = set(n.get("vlan_pcps", []))
+                merged_nodes[ip]["vlan_untagged"] = bool(n.get("vlan_untagged"))
+                merged_nodes[ip]["vlan_qinq"] = bool(n.get("vlan_qinq"))
             else:
                 mn = merged_nodes[ip]
                 mn["packet_count"] += n["packet_count"]
@@ -2823,6 +2964,11 @@ def merge_results(results):
                 mn["dnp3_addresses"].update(n.get("dnp3_addresses", []))
                 mn["tls_sni"].update(n.get("tls_sni", []))
                 mn["tls_ja3"].update(n.get("tls_ja3", []))
+                mn["vlans"].update(n.get("vlans", []))
+                mn["vlan_outer"].update(n.get("vlan_outer", []))
+                mn["vlan_pcps"].update(n.get("vlan_pcps", []))
+                mn["vlan_untagged"] = mn["vlan_untagged"] or bool(n.get("vlan_untagged"))
+                mn["vlan_qinq"] = mn["vlan_qinq"] or bool(n.get("vlan_qinq"))
                 if not mn["hostname"] and n["hostname"]:
                     mn["hostname"] = n["hostname"]
                 if not mn["geo"] and n.get("geo"):
@@ -2848,6 +2994,7 @@ def merge_results(results):
                     "ot_writes": e.get("ot_writes", 0),
                     "ot_errors": e.get("ot_errors", 0),
                     "fc_counts": dict(e.get("fc_counts", {})),
+                    "vlans": set(e.get("vlans", [])),
                 }
             else:
                 me = merged_edges[key]
@@ -2860,6 +3007,7 @@ def merge_results(results):
                 me["ot_errors"] += e.get("ot_errors", 0)
                 for k, v in e.get("fc_counts", {}).items():
                     me["fc_counts"][k] = me["fc_counts"].get(k, 0) + v
+                me.setdefault("vlans", set()).update(e.get("vlans", []))
                 if e.get("first_seen") is not None:
                     if me["first_seen"] is None or e["first_seen"] < me["first_seen"]:
                         me["first_seen"] = e["first_seen"]
@@ -2929,6 +3077,11 @@ def merge_results(results):
             "dnp3_addresses": sorted(mn.get("dnp3_addresses", set())),
             "tls_sni": sorted(mn.get("tls_sni", set())),
             "tls_ja3": sorted(mn.get("tls_ja3", set())),
+            "vlans": sorted(mn.get("vlans", set())),
+            "vlan_outer": sorted(mn.get("vlan_outer", set())),
+            "vlan_pcps": sorted(mn.get("vlan_pcps", set())),
+            "vlan_untagged": bool(mn.get("vlan_untagged")),
+            "vlan_qinq": bool(mn.get("vlan_qinq")),
             "purdue_level": purdue_level_py(
                 mn["host_type"],
                 mn.get("geo", {}).get("country_code") if mn.get("geo") else None,
@@ -2955,10 +3108,12 @@ def merge_results(results):
             "ot_writes": me.get("ot_writes", 0),
             "ot_errors": me.get("ot_errors", 0),
             "fc_counts": me.get("fc_counts", {}),
+            "vlans": sorted(me.get("vlans", set())),
         })
 
     all_protocols = sorted({p for n in nodes_out for p in n["protocols"]})
     all_host_types = sorted({n["host_type"] for n in nodes_out})
+    all_vlans = sorted({v for n in nodes_out for v in n["vlans"]})
 
     return {
         "nodes": nodes_out,
@@ -2974,6 +3129,8 @@ def merge_results(results):
             "total_connections": len(edges_out),
             "protocols": all_protocols,
             "host_types": all_host_types,
+            "vlans": all_vlans,
+            "vlans_detected": len(all_vlans),
             "truncated": truncated,
             "gpu": GPU_AVAILABLE,
             "capture_start": capture_start,
