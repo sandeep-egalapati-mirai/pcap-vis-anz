@@ -685,6 +685,17 @@ function updateFilterUI() {
 
   const clearSection = document.getElementById("clear-filters-section");
   if (clearSection) clearSection.style.display = isFiltered ? "" : "none";
+
+  // Header chip — always visible on every tab when any filter is active
+  const totalHidden = hiddenProtos + hiddenTypes + hiddenVlans + hiddenIpVers + (hasSearch ? 1 : 0);
+  const headerChip  = document.getElementById("header-clear-filters-btn");
+  const chipCount   = document.getElementById("header-filter-count");
+  if (headerChip) {
+    headerChip.style.display = isFiltered ? "" : "none";
+    if (chipCount) chipCount.textContent = totalHidden > 0
+      ? `${totalHidden} filter${totalHidden !== 1 ? "s" : ""} active`
+      : "search active";
+  }
 }
 
 document.getElementById("proto-clear-btn").addEventListener("click", () => {
@@ -717,25 +728,25 @@ document.getElementById("ipver-clear-btn").addEventListener("click", () => {
   if (currentView === "table") renderConnTable();
 });
 
-document.getElementById("clear-filters-btn").addEventListener("click", () => {
+function clearAllFilters() {
+  if (!graphData) return;
   searchBox.value = "";
   searchTerm = "";
-  // Re-check all checkboxes and restore full sets
-  if (graphData) {
-    activeProtos     = new Set(graphData.stats.protocols);
-    activeTypes      = new Set(graphData.stats.host_types);
-    activeVlans      = new Set((graphData.stats.vlans || []).map(String));
-    if ((graphData.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
-    activeIpVersions = new Set((graphData.stats.ip_versions || []).map(String));
-    document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
-    document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
-    document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
-    document.querySelectorAll("#ipver-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
-  }
+  activeProtos     = new Set(graphData.stats.protocols);
+  activeTypes      = new Set(graphData.stats.host_types);
+  activeVlans      = new Set((graphData.stats.vlans || []).map(String));
+  if ((graphData.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
+  activeIpVersions = new Set((graphData.stats.ip_versions || []).map(String));
+  document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
+  document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb   => { cb.checked = true; });
+  document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb   => { cb.checked = true; });
+  document.querySelectorAll("#ipver-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
   updateFilterUI();
   applyFilters();
   if (currentView === "table") renderConnTable();
-});
+}
+document.getElementById("clear-filters-btn").addEventListener("click", clearAllFilters);
+document.getElementById("header-clear-filters-btn").addEventListener("click", clearAllFilters);
 
 document.getElementById("no-results-clear").addEventListener("click", () => {
   document.getElementById("clear-filters-btn").click();
