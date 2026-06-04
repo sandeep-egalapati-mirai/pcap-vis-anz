@@ -4910,6 +4910,14 @@ document.getElementById("exp-report").addEventListener("click", () => {
   generateAuditReport();
   document.getElementById("export-menu").classList.add("hidden");
 });
+document.getElementById("exp-vlan-inventory").addEventListener("click", () => {
+  exportVlanInventoryCsv();
+  document.getElementById("export-menu").classList.add("hidden");
+});
+document.getElementById("exp-vlan-traffic").addEventListener("click", () => {
+  exportVlanTrafficCsv();
+  document.getElementById("export-menu").classList.add("hidden");
+});
 
 function exportPng() {
   const svgEl = document.getElementById("graph-svg");
@@ -4993,6 +5001,76 @@ function exportCredentialsCsv() {
   downloadCsv(rows, "credentials.csv");
 }
 
+function exportVlanInventoryCsv() {
+  if (!graphData || !((graphData.stats?.vlans?.length) || (graphData.nodes || []).some(n => n.vlan_untagged))) {
+    showToast("No VLAN data to export.", "info"); return;
+  }
+  const rows = [["VLAN ID", "IP Address", "Hostname", "Host Type", "IP Version",
+                  "Protocols", "Packet Count", "Bytes Sent", "Bytes Recv",
+                  "PCP Values", "QinQ", "Untagged Frames", "Outer VLAN IDs", "Risk Score"]];
+  const allVlans   = (graphData.stats.vlans || []).map(String);
+  const hasUntagged = (graphData.nodes || []).some(n => n.vlan_untagged);
+
+  // One row per (VLAN, host) pair — multi-VLAN hosts appear on multiple rows for easy pivot/filter
+  [...allVlans, ...(hasUntagged ? ["untagged"] : [])].forEach(vid => {
+    const members = vid === "untagged"
+      ? (graphData.nodes || []).filter(n => n.vlan_untagged && !(n.vlans || []).length)
+      : (graphData.nodes || []).filter(n => (n.vlans || []).map(String).includes(vid));
+    members.forEach(n => rows.push([
+      vid,
+      n.ip,
+      n.hostname || "",
+      n.host_type || "",
+      n.ip_version || 4,
+      (n.protocols || []).join(";"),
+      n.packet_count || 0,
+      n.bytes_sent || 0,
+      n.bytes_recv || 0,
+      (n.vlan_pcps || []).join(";"),
+      n.vlan_qinq    ? "Yes" : "No",
+      n.vlan_untagged ? "Yes" : "No",
+      (n.vlan_outer || []).join(";"),
+      n.risk_score || 0,
+    ]));
+  });
+  downloadCsv(rows, "vlan-inventory.csv");
+}
+
+function exportVlanTrafficCsv() {
+  if (!graphData || !((graphData.stats?.vlans?.length) || (graphData.nodes || []).some(n => n.vlan_untagged))) {
+    showToast("No VLAN data to export.", "info"); return;
+  }
+  const nodeMap = {};
+  (graphData.nodes || []).forEach(n => { nodeMap[n.ip] = n; });
+
+  const rows = [["VLAN(s)", "Source IP", "Source VLAN", "Destination IP", "Dest VLAN",
+                  "Cross-VLAN", "Protocols", "Packet Count", "Bytes", "Ports", "Duration (s)"]];
+
+  (graphData.edges || []).forEach(e => {
+    const src = nodeMap[e.source], dst = nodeMap[e.target];
+    // Use primary VLAN of each endpoint (first tagged VID, or "untagged", or empty)
+    const srcVlan = src && (src.vlans || []).length ? String(src.vlans[0])
+                  : (src?.vlan_untagged ? "untagged" : "");
+    const dstVlan = dst && (dst.vlans || []).length ? String(dst.vlans[0])
+                  : (dst?.vlan_untagged ? "untagged" : "");
+    const crossVlan = srcVlan && dstVlan && srcVlan !== dstVlan ? "Yes" : "No";
+    const duration  = (e.first_seen != null && e.last_seen != null)
+      ? (e.last_seen - e.first_seen).toFixed(3) : "";
+    rows.push([
+      (e.vlans || []).join(";"),
+      e.source, srcVlan,
+      e.target, dstVlan,
+      crossVlan,
+      (e.protocols || []).join(";"),
+      e.packet_count || 0,
+      e.bytes || 0,
+      (e.ports || []).join(";"),
+      duration,
+    ]);
+  });
+  downloadCsv(rows, "vlan-traffic.csv");
+}
+
 function generateAuditReport() {
   if (!graphData) { showToast("No data loaded.", "error"); return; }
   const now = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
@@ -5025,6 +5103,9 @@ function generateAuditReport() {
   p(`| Credentials captured | ${creds.length} |`);
   p(`| File transfers detected | ${xfiles.length} |`);
   p(`| OT commands | ${otCmds.length} |`);
+  if ((s.vlans_detected || 0) > 0) {
+    p(`| VLANs detected | ${s.vlans_detected} |`);
+  }
   br();
 
   // Risk Overview — top 10 hosts by risk score
@@ -5172,6 +5253,66 @@ function generateAuditReport() {
       if (writes.length > 50) p(`_…and ${writes.length - 50} more_`);
       br();
     }
+  }
+
+  // VLAN Device Inventory
+  const vlanIds        = (graphData.stats?.vlans || []);
+  const hasUntaggedNodes = nodes.some(n => n.vlan_untagged);
+  if (vlanIds.length || hasUntaggedNodes) {
+    h(2, "VLAN Device Inventory");
+    const allVids = [...vlanIds.map(String), ...(hasUntaggedNodes ? ["untagged"] : [])];
+    allVids.forEach(vid => {
+      const members = vid === "untagged"
+        ? nodes.filter(n => n.vlan_untagged && !(n.vlans || []).length)
+        : nodes.filter(n => (n.vlans || []).map(String).includes(vid));
+      if (!members.length) return;
+      h(3, vid === "untagged" ? "Untagged / Native VLAN" : `VLAN ${vid}`);
+      p(`| IP Address | Hostname | Host Type | IP Ver | Protocols | Risk Score |`);
+      p(`|------------|----------|-----------|--------|-----------|------------|`);
+      members.forEach(n => {
+        const host = n.hostname || (n.dns_names && n.dns_names[0]) || "—";
+        const protos = (n.protocols || []).slice(0, 5).join(", ") + ((n.protocols||[]).length > 5 ? "…" : "");
+        p(`| ${n.ip} | ${host} | ${n.host_type || "—"} | IPv${n.ip_version || 4} | ${protos} | ${n.risk_score || 0} |`);
+      });
+      br();
+    });
+  }
+
+  // IP-to-IP Traffic by VLAN
+  if (vlanIds.length) {
+    h(2, "IP-to-IP Traffic by VLAN");
+    const nodeMap2 = {};
+    nodes.forEach(n => { nodeMap2[n.ip] = n; });
+
+    // Group edges by VLAN — edges involving both src and dst VLANs are listed in each group
+    const edgesByVlan = {};
+    const allVidsForTraffic = [...vlanIds.map(String), ...(hasUntaggedNodes ? ["untagged"] : [])];
+    allVidsForTraffic.forEach(vid => { edgesByVlan[vid] = []; });
+
+    edges.forEach(e => {
+      const srcVids = (nodeMap2[e.source]?.vlans || []).map(String);
+      const dstVids = (nodeMap2[e.target]?.vlans || []).map(String);
+      const allEdgeVlans = [...new Set([...srcVids, ...dstVids, ...(e.vlans || []).map(String)])];
+      if (!allEdgeVlans.length && hasUntaggedNodes) allEdgeVlans.push("untagged");
+      allEdgeVlans.forEach(vid => { if (edgesByVlan[vid]) edgesByVlan[vid].push(e); });
+    });
+
+    allVidsForTraffic.forEach(vid => {
+      const group = edgesByVlan[vid];
+      if (!group.length) return;
+      h(3, vid === "untagged" ? "Untagged / Native VLAN" : `VLAN ${vid}`);
+      p(`| Source IP | Destination IP | Cross-VLAN | Protocols | Packets | Bytes |`);
+      p(`|-----------|----------------|------------|-----------|---------|-------|`);
+      group.slice(0, 100).forEach(e => {
+        const src = nodeMap2[e.source], dst = nodeMap2[e.target];
+        const srcV = src && (src.vlans || []).length ? String(src.vlans[0]) : (src?.vlan_untagged ? "untagged" : "");
+        const dstV = dst && (dst.vlans || []).length ? String(dst.vlans[0]) : (dst?.vlan_untagged ? "untagged" : "");
+        const cross = srcV && dstV && srcV !== dstV ? `✓ (${srcV}→${dstV})` : "—";
+        p(`| ${e.source} | ${e.target} | ${cross} | ${(e.protocols || []).join(", ")} | ${fmtNum(e.packet_count)} | ${fmtBytes(e.bytes)} |`);
+      });
+      if (group.length > 100) p(`_…and ${group.length - 100} more connections_`);
+      br();
+    });
   }
 
   p("---");
