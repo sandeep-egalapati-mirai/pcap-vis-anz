@@ -678,10 +678,22 @@ function updateFilterUI() {
   const typeClearBtn  = document.getElementById("type-clear-btn");
   const vlanClearBtn  = document.getElementById("vlan-clear-btn");
   const ipVerClearBtn = document.getElementById("ipver-clear-btn");
-  if (protoClearBtn) protoClearBtn.style.display = activeProtos.size     > 0 ? "" : "none";
-  if (typeClearBtn)  typeClearBtn.style.display  = activeTypes.size      > 0 ? "" : "none";
-  if (vlanClearBtn)  vlanClearBtn.style.display  = activeVlans.size      > 0 ? "" : "none";
-  if (ipVerClearBtn) ipVerClearBtn.style.display = activeIpVersions.size > 0 ? "" : "none";
+  if (protoClearBtn) {
+    protoClearBtn.style.display = totalProtos > 0 ? "" : "none";
+    protoClearBtn.textContent   = activeProtos.size === totalProtos ? "Unselect All" : "Select All";
+  }
+  if (typeClearBtn) {
+    typeClearBtn.style.display = totalTypes > 0 ? "" : "none";
+    typeClearBtn.textContent   = activeTypes.size === totalTypes ? "Unselect All" : "Select All";
+  }
+  if (vlanClearBtn) {
+    vlanClearBtn.style.display = totalVlans > 0 ? "" : "none";
+    vlanClearBtn.textContent   = activeVlans.size === totalVlans ? "Unselect All" : "Select All";
+  }
+  if (ipVerClearBtn) {
+    ipVerClearBtn.style.display = totalIpVers > 0 ? "" : "none";
+    ipVerClearBtn.textContent   = activeIpVersions.size === totalIpVers ? "Unselect All" : "Select All";
+  }
 
   const clearSection = document.getElementById("clear-filters-section");
   if (clearSection) clearSection.style.display = isFiltered ? "" : "none";
@@ -700,29 +712,38 @@ function updateFilterUI() {
 
 document.getElementById("proto-clear-btn").addEventListener("click", () => {
   if (!graphData) return;
-  activeProtos = new Set();
-  document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = false; });
+  const all = graphData.stats.protocols;
+  const selectAll = activeProtos.size < all.length;
+  activeProtos = selectAll ? new Set(all) : new Set();
+  document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
   updateFilterUI(); applyFilters();
   if (currentView === "table") renderConnTable();
 });
 document.getElementById("type-clear-btn").addEventListener("click", () => {
   if (!graphData) return;
-  activeTypes = new Set();
-  document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb => { cb.checked = false; });
+  const all = graphData.stats.host_types;
+  const selectAll = activeTypes.size < all.length;
+  activeTypes = selectAll ? new Set(all) : new Set();
+  document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
   updateFilterUI(); applyFilters();
   if (currentView === "table") renderConnTable();
 });
 document.getElementById("vlan-clear-btn").addEventListener("click", () => {
   if (!graphData) return;
-  activeVlans = new Set();
-  document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb => { cb.checked = false; });
+  const allVlans = (graphData.stats.vlans || []).map(String);
+  if ((graphData.nodes || []).some(n => n.vlan_untagged)) allVlans.push("untagged");
+  const selectAll = activeVlans.size < allVlans.length;
+  activeVlans = selectAll ? new Set(allVlans) : new Set();
+  document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
   updateFilterUI(); applyFilters();
   if (currentView === "table") renderConnTable();
 });
 document.getElementById("ipver-clear-btn").addEventListener("click", () => {
   if (!graphData) return;
-  activeIpVersions = new Set();
-  document.querySelectorAll("#ipver-filters input[type=checkbox]").forEach(cb => { cb.checked = false; });
+  const all = (graphData.stats.ip_versions || []).map(String);
+  const selectAll = activeIpVersions.size < all.length;
+  activeIpVersions = selectAll ? new Set(all) : new Set();
+  document.querySelectorAll("#ipver-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
   updateFilterUI(); applyFilters();
   if (currentView === "table") renderConnTable();
 });
