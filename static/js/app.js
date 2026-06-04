@@ -430,6 +430,7 @@ function loadGraph(data) {
   activeProtos = new Set(stats.protocols || []);
   activeTypes  = new Set(stats.host_types || []);
   activeVlans  = new Set((stats.vlans || []).map(String));
+  if ((data.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
 
   buildFilters(data);
   buildLegend(data);
@@ -553,6 +554,7 @@ function buildFilters(data) {
   buildFilterList("proto-filters", stats.protocols || [], activeProtos, PROTO_COLORS, "proto");
   buildFilterList("type-filters",  stats.host_types || [], activeTypes,  HOST_COLORS,  "type");
   const vlans = (stats.vlans || []).map(String);
+  if ((data.nodes || []).some(n => n.vlan_untagged)) vlans.push("untagged");
   buildFilterList("vlan-filters",  vlans, activeVlans, {}, "vlan");
   updateFilterUI();
 }
@@ -585,7 +587,7 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
     const div = document.createElement("div");
     div.className = "filter-item";
     const iconSpan = kind === "type" ? `<span class="fi-icon">${hostIcon(item)}</span>` : "";
-    const label = kind === "vlan" ? `VLAN ${item}` : item;
+    const label = kind === "vlan" ? (item === "untagged" ? "Untagged" : `VLAN ${item}`) : item;
     div.innerHTML = `
       <input type="checkbox" id="f-${kind}-${CSS.escape(item)}" checked>
       <div class="dot" style="background:${color}"></div>
@@ -643,6 +645,7 @@ document.getElementById("clear-filters-btn").addEventListener("click", () => {
     activeProtos = new Set(graphData.stats.protocols);
     activeTypes  = new Set(graphData.stats.host_types);
     activeVlans  = new Set((graphData.stats.vlans || []).map(String));
+    if ((graphData.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
     document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
     document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
     document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
@@ -661,6 +664,7 @@ function applyFilters(skipFit) {
 
   const visibleNodeIds = new Set();
   const allVlans = (graphData.stats.vlans || []).map(String);
+  if ((graphData.nodes || []).some(n => n.vlan_untagged)) allVlans.push("untagged");
   const vlanFilterActive = allVlans.length > 0 && activeVlans.size < allVlans.length;
   nodesGroup.selectAll(".node").each(function(d) {
     const vlanOk = !vlanFilterActive ||
@@ -674,7 +678,7 @@ function applyFilters(skipFit) {
   });
 
   linksGroup.selectAll(".link").each(function(d) {
-    const protoOk = d.protocols.some(p => activeProtos.has(p));
+    const protoOk = (d.protocols || []).some(p => activeProtos.has(p));
     const sid = d.source.id || d.source;
     const tid = d.target.id || d.target;
     const visible = protoOk && visibleNodeIds.has(sid) && visibleNodeIds.has(tid);
@@ -979,7 +983,7 @@ function drawCanvasEdges() {
   ctx.globalAlpha = 0.7;
 
   for (const d of _canvasLinks) {
-    const protoOk = d.protocols.some(p => activeProtos.has(p));
+    const protoOk = (d.protocols || []).some(p => activeProtos.has(p));
     const sid = typeof d.source === "object" ? d.source.id : d.source;
     const tid = typeof d.target === "object" ? d.target.id : d.target;
     if (!protoOk || !visibleNodeIds.has(sid) || !visibleNodeIds.has(tid)) continue;
@@ -4141,8 +4145,6 @@ function renderVlanGraph(data) {
   // Build cross-VLAN traffic links (VLAN → VLAN, aggregated)
   const crossVlanMap = {};
   data.edges.forEach(e => {
-    const srcNode = data.nodes.find(n => n.ip === e.source || n.ip === e.target);
-    const dstNode = data.nodes.find(n => n.ip === (srcNode && srcNode.ip === e.source ? e.target : e.source));
     const src = data.nodes.find(n => n.ip === e.source);
     const dst = data.nodes.find(n => n.ip === e.target);
     if (!src || !dst) return;
@@ -4154,14 +4156,14 @@ function renderVlanGraph(data) {
     crossVlanMap[key].packets += e.packet_count || 0;
     crossVlanMap[key].bytes   += e.bytes || 0;
   });
-  const crossLinks = Object.values(crossVlanMap);
+  const crossLinks = Object.values(crossVlanMap).map(l => Object.assign(l, { kind: "cross" }));
   const maxPkts = crossLinks.reduce((m, l) => Math.max(m, l.packets), 1);
 
   // Membership links (host → parent VLAN) for clustering force
   const memberLinks = hostNodes.filter(n => n.parentVlan).map(n => ({ source: n.id, target: n.parentVlan, kind: "member" }));
 
   const allNodes = [...vlanNodes, ...hostNodes];
-  const allLinks = [...crossLinks.map(l => ({ ...l, kind: "cross" })), ...memberLinks];
+  const allLinks = [...crossLinks, ...memberLinks];
 
   // Position VLAN super-nodes deterministically on first render
   const W = svgEl.clientWidth  || 900;
