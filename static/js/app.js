@@ -5103,11 +5103,15 @@ document.getElementById("vlan-matrix-btn").addEventListener("click", () => {
 
 function renderVlanMatrix(data) {
   const ns = "http://www.w3.org/2000/svg";
-  const CELL = 26, LABEL = 72;
 
   const allVids = [...(data.stats?.vlans || []).map(String)];
   if ((data.nodes || []).some(n => n.vlan_untagged)) allVids.push("untagged");
   if (!allVids.length) return;
+
+  // Adaptive cell size: larger for small VLAN counts, smaller for large ones
+  const N    = allVids.length;
+  const CELL = Math.max(44, Math.min(60, Math.floor(240 / Math.max(N, 1))));
+  const LABEL = 90;  // must match #vlan-matrix-layout grid-template-columns in CSS
 
   // Build node→primaryVlan lookup
   const nodeByIp = Object.fromEntries((data.nodes || []).map(n => [n.ip, n]));
@@ -5147,7 +5151,6 @@ function renderVlanMatrix(data) {
     }
   });
 
-  const N = allVids.length;
   const colsSvg  = document.getElementById("vlan-matrix-cols");
   const rowsSvg  = document.getElementById("vlan-matrix-rows");
   const cellsSvg = document.getElementById("vlan-matrix-cells");
@@ -5155,9 +5158,10 @@ function renderVlanMatrix(data) {
 
   const truncLabel = v => v === "untagged" ? "Untagged" : `VLAN ${v}`;
 
-  // Column headers (rotated)
+  // Column headers (rotated) — overflow:visible lets rotated text extend outside SVG viewport
   colsSvg.setAttribute("width",  N * CELL);
   colsSvg.setAttribute("height", LABEL);
+  colsSvg.setAttribute("overflow", "visible");
   allVids.forEach((vid, j) => {
     const t = document.createElementNS(ns, "text");
     t.setAttribute("transform", `translate(${j * CELL + CELL / 2 + 2},${LABEL - 4}) rotate(-60)`);
