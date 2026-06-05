@@ -12,7 +12,7 @@ from collections import defaultdict, Counter
 from urllib.parse import parse_qs
 from concurrent.futures import ThreadPoolExecutor, Future
 from functools import lru_cache
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, make_response
 from flask_compress import Compress
 from werkzeug.utils import secure_filename
 
@@ -46,6 +46,10 @@ def _get_executor() -> ThreadPoolExecutor:
         if _executor is None or _executor._shutdown:
             _executor = ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS)
         return _executor
+
+# Captured file bodies keyed by SHA-256; populated during analyze_pcap,
+# cleared at the start of each /upload request.
+_file_body_cache: dict = {}
 
 # ── MAC OUI vendor table (common prefixes) ────────────────────────────────────
 MAC_VENDORS = {
@@ -2238,6 +2242,11 @@ def analyze_pcap(filepath):
                                             "filename": _filename, "mime_type": _mime,
                                             "size": _size, "sha256": _sha,
                                         })
+                                        _file_body_cache[_sha] = {
+                                            "body": bytes(_body),
+                                            "filename": _filename,
+                                            "mime": _mime or "application/octet-stream",
+                                        }
                             except Exception:
                                 pass
 
@@ -3194,6 +3203,7 @@ def index():
 
 @app.route("/upload", methods=["POST"])
 def upload():
+    _file_body_cache.clear()
     files = request.files.getlist("file")
     if not files:
         single = request.files.get("file")
@@ -3245,6 +3255,23 @@ def upload():
                 os.unlink(path)
             except OSError:
                 pass
+
+
+@app.route("/download/<sha256>")
+def download_file(sha256):
+    """Serve a captured file body from the in-memory cache by its SHA-256 hash."""
+    if not re.match(r'^[0-9a-f]{64}$', sha256):
+        return jsonify({"error": "Invalid hash"}), 400
+    entry = _file_body_cache.get(sha256)
+    if entry is None:
+        return jsonify({"error": "File not in cache. Re-upload the PCAP to download."}), 404
+    resp = make_response(entry["body"])
+    resp.headers["Content-Type"] = entry["mime"]
+    resp.headers["Content-Disposition"] = (
+        f'attachment; filename="{entry["filename"]}"'
+    )
+    resp.headers["Content-Length"] = len(entry["body"])
+    return resp
 
 
 @app.route("/gpu-status")

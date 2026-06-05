@@ -1032,6 +1032,8 @@ function buildFilesSidebar(files) {
         <span class="file-mime">${escHtml(mime)}</span>
         <span class="file-size">${size}</span>
         <span style="margin-left:auto;color:var(--text2);font-size:10px">${ts}</span>
+        <a class="file-dl-btn" href="/download/${encodeURIComponent(f.sha256)}"
+           download="${escHtml(f.filename)}" title="Download captured file">⬇</a>
       </div>
       <div class="file-route">${escHtml(f.src)} → ${escHtml(f.dst)}</div>
       <div class="file-hash" title="SHA-256">${escHtml(f.sha256)}</div>`;
