@@ -837,6 +837,14 @@ header h1 span { color: var(--accent); }
   transition: background 0.1s;
 }
 .gc-btn:hover { background: var(--bg3); border-color: var(--accent); }
+/* Text-label gc-btn overrides — these buttons carry words, not just icons */
+#btn-color-vlan,
+#vlan-matrix-btn {
+  width: auto;
+  padding: 0 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
 
 .gc-select {
   height: 30px;
