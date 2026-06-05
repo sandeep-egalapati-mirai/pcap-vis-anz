@@ -187,6 +187,48 @@ function inferSubnets(ips) {
   return [...prefixes].sort();
 }
 
+// Canonical anomaly type → family mapping (used by buildAnomalySidebar)
+const ANOMALY_FAMILIES = [
+  {
+    id: "network",
+    label: "Network",
+    icon: "🌐",
+    types: new Set(["port_scan","suspicious_port","beaconing","exfiltration","dns_tunneling"]),
+  },
+  {
+    id: "credentials",
+    label: "Credentials & TLS",
+    icon: "🔑",
+    types: new Set(["cleartext_credentials","password_reuse","unusual_ja3"]),
+  },
+  {
+    id: "ot",
+    label: "OT / ICS",
+    icon: "⚙",
+    types: new Set([
+      "ot_modbus_write","ot_modbus_bulk_read","ot_modbus_broadcast","ot_modbus_exception",
+      "ot_multiunit_poll","ot_dnp3_control","ot_dnp3_unusual_fc","ot_s7_critical",
+      "ot_s7_write","ot_s7_code_download","ot_enip_write","ot_iec104_command",
+      "ot_bacnet_write","ot_internet_exposure","ot_cleartext",
+    ]),
+  },
+  {
+    id: "iot",
+    label: "IoT",
+    icon: "📡",
+    types: new Set(["iot_mqtt_cleartext","iot_telnet","iot_camera_exfil","iot_tr069"]),
+  },
+  {
+    id: "vlan",
+    label: "VLAN",
+    icon: "🔒",
+    types: new Set([
+      "vlan_hopping","vlan_native_leak","vlan_qinq","vlan_cross_segment_ot",
+      "arp_spoofing","broadcast_storm","pcp_abuse",
+    ]),
+  },
+];
+
 function fmtBytes(b) {
   if (b < 1024) return b + " B";
   if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
@@ -927,7 +969,7 @@ function buildAnomalySidebar(anomalies) {
   }
   section.style.display = "";
 
-  // Build lookup: ip → highest severity
+  // Stage 1: build ip → worst-severity lookup (drives graph node rings)
   anomalyNodeIps = {};
   const sevOrder = { high: 3, medium: 2, low: 1 };
   anomalies.forEach(a => {
@@ -937,7 +979,7 @@ function buildAnomalySidebar(anomalies) {
     });
   });
 
-  // Group anomalies by type + src so repeated alerts collapse into one entry
+  // Stage 2: group by type+src (collapse repeated instances of the same rule from same host)
   const groups = new Map();
   anomalies.forEach(a => {
     const key = `${a.type}|${a.src || ""}`;
@@ -945,49 +987,122 @@ function buildAnomalySidebar(anomalies) {
     groups.get(key).items.push(a);
   });
 
+  // Stage 3: organise groups into semantic families then render
+  const typeToFamily = {};
+  ANOMALY_FAMILIES.forEach(f => f.types.forEach(t => { typeToFamily[t] = f; }));
+
+  const familyBuckets = new Map();  // family.id → { family, groups[] }
+  const otherGroups   = [];
+
   groups.forEach(({ rep, items }) => {
-    const count   = items.length;
-    const summary = count > 1
-      ? _anomalySummary(rep.type, rep.src, count, items)
-      : rep.description;
-
-    const div = document.createElement("div");
-    div.className = `anomaly-badge ${rep.severity}`;
-
-    if (count > 1) {
-      div.innerHTML = `
-        <span class="ab-sev ${rep.severity}">${rep.severity}</span>
-        <span class="ab-desc">${escHtml(summary)}</span>
-        <button class="ab-expand" aria-label="Expand">▾ ${count}</button>
-      `;
-      const expandBtn = div.querySelector(".ab-expand");
-      let expanded = false;
-      const childList = document.createElement("div");
-      childList.className = "ab-children hidden";
-      items.forEach(a => {
-        const child = document.createElement("div");
-        child.className = "ab-child";
-        child.textContent = a.description;
-        child.addEventListener("click", (e) => { e.stopPropagation(); _jumpToAnomaly(a); });
-        childList.appendChild(child);
-      });
-      div.appendChild(childList);
-      expandBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        expanded = !expanded;
-        childList.classList.toggle("hidden", !expanded);
-        expandBtn.textContent = (expanded ? "▴" : "▾") + " " + count;
-      });
+    const fam = typeToFamily[rep.type];
+    if (fam) {
+      if (!familyBuckets.has(fam.id)) familyBuckets.set(fam.id, { family: fam, groups: [] });
+      familyBuckets.get(fam.id).groups.push({ rep, items });
     } else {
-      div.innerHTML = `
-        <span class="ab-sev ${rep.severity}">${rep.severity}</span>
-        <span class="ab-desc">${escHtml(summary)}</span>
-      `;
+      otherGroups.push({ rep, items });
     }
-
-    div.addEventListener("click", () => _jumpToAnomaly(rep));
-    list.appendChild(div);
   });
+
+  // Update count badge
+  const countBadge = document.getElementById("anomaly-count-badge");
+  if (countBadge) countBadge.textContent = anomalies.length;
+
+  // Render in ANOMALY_FAMILIES declaration order (preserves logical sequence)
+  ANOMALY_FAMILIES.forEach(fam => {
+    const bucket = familyBuckets.get(fam.id);
+    if (bucket) list.appendChild(_renderFamilyGroup(bucket.family, bucket.groups));
+  });
+
+  if (otherGroups.length) {
+    list.appendChild(_renderFamilyGroup({ id: "other", label: "Other", icon: "…" }, otherGroups));
+  }
+}
+
+// Renders a collapsible family header wrapping its per-type sub-groups
+function _renderFamilyGroup(family, groups) {
+  const sevOrder = { high: 3, medium: 2, low: 1 };
+  let worstSev = "low", totalCount = 0;
+  groups.forEach(({ items }) => {
+    totalCount += items.length;
+    items.forEach(a => {
+      if ((sevOrder[a.severity] || 0) > (sevOrder[worstSev] || 0)) worstSev = a.severity;
+    });
+  });
+
+  const famDiv = document.createElement("div");
+  famDiv.className = "ab-family";
+
+  const header = document.createElement("div");
+  header.className = "ab-family-header";
+  header.innerHTML = `
+    <span class="ab-family-icon">${family.icon || ""}</span>
+    <span class="ab-family-title">${escHtml(family.label)}</span>
+    <span class="ab-sev ${worstSev}">${worstSev}</span>
+    <span class="ab-family-count">×${totalCount}</span>
+    <span class="ab-family-toggle">▾</span>
+  `;
+
+  const body = document.createElement("div");
+  body.className = "ab-family-body";
+  groups.forEach(({ rep, items }) => body.appendChild(_renderTypeGroup(rep, items)));
+
+  famDiv.appendChild(header);
+  famDiv.appendChild(body);
+
+  let open = true;
+  header.addEventListener("click", () => {
+    open = !open;
+    body.classList.toggle("hidden", !open);
+    header.querySelector(".ab-family-toggle").textContent = open ? "▾" : "▸";
+  });
+
+  return famDiv;
+}
+
+// Renders a single type+src group badge with optional expand button for multiple instances
+function _renderTypeGroup(rep, items) {
+  const count   = items.length;
+  const summary = count > 1
+    ? _anomalySummary(rep.type, rep.src, count, items)
+    : rep.description;
+
+  const div = document.createElement("div");
+  div.className = `anomaly-badge ${rep.severity}`;
+
+  if (count > 1) {
+    div.innerHTML = `
+      <span class="ab-sev ${rep.severity}">${rep.severity}</span>
+      <span class="ab-desc">${escHtml(summary)}</span>
+      <button class="ab-expand" aria-label="Expand">▾ ${count}</button>
+    `;
+    const expandBtn = div.querySelector(".ab-expand");
+    let expanded = false;
+    const childList = document.createElement("div");
+    childList.className = "ab-children hidden";
+    items.forEach(a => {
+      const child = document.createElement("div");
+      child.className = "ab-child";
+      child.textContent = a.description;
+      child.addEventListener("click", e => { e.stopPropagation(); _jumpToAnomaly(a); });
+      childList.appendChild(child);
+    });
+    div.appendChild(childList);
+    expandBtn.addEventListener("click", e => {
+      e.stopPropagation();
+      expanded = !expanded;
+      childList.classList.toggle("hidden", !expanded);
+      expandBtn.textContent = (expanded ? "▴" : "▾") + " " + count;
+    });
+  } else {
+    div.innerHTML = `
+      <span class="ab-sev ${rep.severity}">${rep.severity}</span>
+      <span class="ab-desc">${escHtml(summary)}</span>
+    `;
+  }
+
+  div.addEventListener("click", () => _jumpToAnomaly(rep));
+  return div;
 }
 
 /* ── Credentials sidebar ─────────────────────────────────────────────────── */
@@ -1121,18 +1236,45 @@ function _fmtBytes(n) {
 function _anomalySummary(type, src, count, items) {
   const s = src || "?";
   switch (type) {
-    case "port_scan":
-      return `Port scan from ${s} → ${count} target${count > 1 ? "s" : ""}`;
-    case "beaconing":
-      return `Beaconing from ${s} to ${count} destination${count > 1 ? "s" : ""}`;
-    case "exfiltration":
-      return `Data exfiltration from ${s} (${count} connections)`;
-    case "suspicious_port":
-      return `Suspicious ports on ${s} (${count} instances)`;
-    case "cleartext_credentials":
-      return `Cleartext credentials on ${count} connection${count > 1 ? "s" : ""}`;
-    case "password_reuse":
-      return `Password reused across ${count} service${count > 1 ? "s" : ""}`;
+    // Network
+    case "port_scan":            return `Port scan from ${s} → ${count} target${count > 1 ? "s" : ""}`;
+    case "beaconing":            return `Beaconing from ${s} to ${count} destination${count > 1 ? "s" : ""}`;
+    case "exfiltration":         return `Data exfiltration from ${s} (${count} connection${count > 1 ? "s" : ""})`;
+    case "suspicious_port":      return `Suspicious ports on ${s} (${count})`;
+    case "dns_tunneling":        return `DNS tunneling suspected from ${s} (${count} query${count > 1 ? " sets" : ""})`;
+    // Credentials & TLS
+    case "cleartext_credentials": return `Cleartext credentials on ${count} connection${count > 1 ? "s" : ""}`;
+    case "password_reuse":       return `Password reused across ${count} service${count > 1 ? "s" : ""}`;
+    case "unusual_ja3":          return `Suspicious TLS fingerprint from ${s} (${count})`;
+    // OT / ICS
+    case "ot_modbus_write":      return `Modbus writes from ${s} (${count} command${count > 1 ? "s" : ""})`;
+    case "ot_modbus_bulk_read":  return `Modbus bulk reads from ${s} (${count})`;
+    case "ot_modbus_broadcast":  return `Modbus broadcast from ${s} (${count})`;
+    case "ot_modbus_exception":  return `Modbus exceptions from ${s} (${count})`;
+    case "ot_multiunit_poll":    return `Multi-unit Modbus polling from ${s} (${count} units)`;
+    case "ot_dnp3_control":      return `DNP3 control commands from ${s} (${count})`;
+    case "ot_dnp3_unusual_fc":   return `DNP3 unusual function codes from ${s} (${count})`;
+    case "ot_s7_critical":       return `S7 critical commands from ${s} (${count})`;
+    case "ot_s7_write":          return `S7 write operations from ${s} (${count})`;
+    case "ot_s7_code_download":  return `S7 code download from ${s} (${count} block${count > 1 ? "s" : ""})`;
+    case "ot_enip_write":        return `EtherNet/IP writes from ${s} (${count})`;
+    case "ot_iec104_command":    return `IEC-104 commands from ${s} (${count})`;
+    case "ot_bacnet_write":      return `BACnet writes from ${s} (${count})`;
+    case "ot_internet_exposure": return `OT device exposed to internet (${count} connection${count > 1 ? "s" : ""})`;
+    case "ot_cleartext":         return `Cleartext OT protocol from ${s} (${count})`;
+    // IoT
+    case "iot_mqtt_cleartext":   return `Cleartext MQTT from ${s} (${count} connection${count > 1 ? "s" : ""})`;
+    case "iot_telnet":           return `Telnet to IoT device ${s} (${count})`;
+    case "iot_camera_exfil":     return `IP camera ${s} sending to external (${count})`;
+    case "iot_tr069":            return `TR-069 remote management on ${s} (${count})`;
+    // VLAN
+    case "vlan_hopping":         return `VLAN hopping: ${count} host${count > 1 ? "s" : ""} on multiple VLANs`;
+    case "vlan_native_leak":     return `Native VLAN leakage from ${s} (${count})`;
+    case "vlan_qinq":            return `QinQ double-tagging from ${s} (${count})`;
+    case "vlan_cross_segment_ot": return `Cross-VLAN OT traffic (${count} violation${count > 1 ? "s" : ""})`;
+    case "arp_spoofing":         return `ARP spoofing: ${count} IP conflict${count > 1 ? "s" : ""} detected`;
+    case "broadcast_storm":      return `Broadcast storm: ${count} VLAN${count > 1 ? "s" : ""} affected`;
+    case "pcp_abuse":            return `PCP priority abuse from ${s} (${count})`;
     default:
       return `${type.replace(/_/g, " ")} — ${count} instance${count > 1 ? "s" : ""}`;
   }
