@@ -1223,8 +1223,7 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None):
         src_dst_ips[a].add(b)
         src_dst_ips[b].add(a)
         for p in conn["dst_ports"]:
-            src_dst_ports[a].add(p)
-            src_dst_ports[b].add(p)
+            src_dst_ports[a].add(p)  # only attribute dst_ports to the initiating side
 
     for ip, dst_ips in src_dst_ips.items():
         if len(dst_ips) > 5 and len(src_dst_ports.get(ip, set())) > 15:
@@ -1246,7 +1245,7 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None):
                     port = dport if dport in (21, 23) else sport
                     proto_name = "FTP" if port == 21 else "Telnet"
                     anomalies.append({
-                        "type": "cleartext_creds",
+                        "type": "cleartext_credentials",
                         "severity": "medium",
                         "src": pkt.get("src", a),
                         "dst": pkt.get("dst", b),
@@ -2100,6 +2099,7 @@ def analyze_pcap(filepath):
                 sh["ttl_values"].append(ttl)
                 sh["packet_count"] += 1
                 sh["bytes_sent"] += plen
+                dh["packet_count"] += 1
                 dh["bytes_recv"] += plen
 
                 # broadcast / multicast flags
@@ -2721,15 +2721,14 @@ def analyze_pcap(filepath):
             h["host_type"] = "Multicast"
             continue
 
-        # Pick best host type from accumulated hints
+        # Pick best host type: first entry in HOST_TYPE_PRIORITY that was observed
         if h["host_type_hints"]:
-            best_hint = h["host_type_hints"].most_common(1)[0][0]
             for prio in HOST_TYPE_PRIORITY:
-                if prio == best_hint:
+                if prio in h["host_type_hints"]:
                     h["host_type"] = prio
                     break
             else:
-                h["host_type"] = best_hint
+                h["host_type"] = h["host_type_hints"].most_common(1)[0][0]
         elif h["os_hint"] == "Windows":
             h["host_type"] = "Windows Host"
         elif h["os_hint"] == "Linux/Unix/macOS":
@@ -2845,6 +2844,8 @@ def analyze_pcap(filepath):
             ),
             "risk_score": host_risk.get(ip, 0),
             "ip_version": 6 if ":" in ip else 4,
+            "host_type_hints": dict(h["host_type_hints"]),
+            "has_s7_download": bool(h.get("has_s7_download", False)),
         })
 
     edges = []
@@ -2955,6 +2956,8 @@ def merge_results(results):
                 merged_nodes[ip]["vlan_pcps"] = set(n.get("vlan_pcps", []))
                 merged_nodes[ip]["vlan_untagged"] = bool(n.get("vlan_untagged"))
                 merged_nodes[ip]["vlan_qinq"] = bool(n.get("vlan_qinq"))
+                merged_nodes[ip]["host_type_hints"] = Counter(n.get("host_type_hints", {}))
+                merged_nodes[ip]["has_s7_download"] = bool(n.get("has_s7_download", False))
             else:
                 mn = merged_nodes[ip]
                 mn["packet_count"] += n["packet_count"]
@@ -2974,6 +2977,8 @@ def merge_results(results):
                 mn["vlan_pcps"].update(n.get("vlan_pcps", []))
                 mn["vlan_untagged"] = mn["vlan_untagged"] or bool(n.get("vlan_untagged"))
                 mn["vlan_qinq"] = mn["vlan_qinq"] or bool(n.get("vlan_qinq"))
+                mn["host_type_hints"].update(n.get("host_type_hints", {}))
+                mn["has_s7_download"] = mn["has_s7_download"] or bool(n.get("has_s7_download", False))
                 if not mn["hostname"] and n["hostname"]:
                     mn["hostname"] = n["hostname"]
                 if not mn["geo"] and n.get("geo"):
@@ -3057,6 +3062,19 @@ def merge_results(results):
 
     # Serialize merged nodes
     nodes_out = []
+    # Re-classify host types using merged hints (priority list wins over frequency)
+    for ip, mn in merged_nodes.items():
+        hints = mn.get("host_type_hints")
+        if hints:
+            for prio in HOST_TYPE_PRIORITY:
+                if prio in hints:
+                    mn["host_type"] = prio
+                    break
+            else:
+                mn["host_type"] = hints.most_common(1)[0][0]
+        if mn.get("has_s7_download") and mn["host_type"] not in ("PLC", "Engineering Workstation"):
+            mn["host_type"] = "Engineering Workstation"
+
     for ip, mn in merged_nodes.items():
         nodes_out.append({
             "id": ip,

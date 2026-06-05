@@ -227,6 +227,7 @@ let _vlanLayout      = "force";
 let vlanSelectedNode = null;  // separate from main selectedNode — no cross-view leakage
 let baselineData = null;
 let currentLayout = "force"; // "force" | "radial" | "cluster"
+let _currentPktList = [];    // packets for the currently-open inspector panel
 let anomalyNodeIps = {};     // ip → highest severity
 let credIpSet = new Set();   // IPs with captured credentials
 let tableSort = { col: "packet_count", dir: "desc" };
@@ -2017,9 +2018,7 @@ const pktTreeEmpty  = document.getElementById("pkt-tree-empty");
 const pktHexEmpty   = document.getElementById("pkt-hex-empty");
 
 function _pktsForCurrentConn() {
-  const m = pktConnLabel.textContent.match(/^(.+?)  ↔  (.+?)  ·/);
-  if (!m) return [];
-  return packetData[[m[1].trim(), m[2].trim()].sort().join("|")] || [];
+  return _currentPktList;
 }
 
 document.getElementById("pkt-close").addEventListener("click", closePktInspector);
@@ -2188,6 +2187,7 @@ function renderStream(pkts) {
 function openPktInspector(sid, tid) {
   const key = [sid, tid].sort().join("|");
   const pkts = packetData[key] || [];
+  _currentPktList = pkts;
   pktConnLabel.textContent = `${sid}  ↔  ${tid}  ·  ${pkts.length} packet${pkts.length !== 1 ? "s" : ""} captured`;
   _switchPktTab("pkts", pkts);
   renderPktTable(pkts);
@@ -2206,6 +2206,7 @@ function openPktInspectorForHost(ip) {
     if (a === ip || b === ip) allPkts.push(...pkts);
   }
   allPkts.sort((a, b) => a.time - b.time);
+  _currentPktList = allPkts;
   pktConnLabel.textContent = `Host ${ip}  ·  ${allPkts.length} packet${allPkts.length !== 1 ? "s" : ""} captured`;
   _switchPktTab("pkts", allPkts);
   renderPktTable(allPkts);

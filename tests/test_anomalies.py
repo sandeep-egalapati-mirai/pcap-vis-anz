@@ -88,8 +88,8 @@ def test_cleartext_ftp_detected():
     }
     anomalies = analyze_anomalies(hosts, connections, packet_store)
     types = _anomaly_types(anomalies)
-    assert "cleartext_creds" in types
-    a = next(x for x in anomalies if x["type"] == "cleartext_creds")
+    assert "cleartext_credentials" in types
+    a = next(x for x in anomalies if x["type"] == "cleartext_credentials")
     assert "FTP" in a["description"]
 
 
@@ -103,8 +103,8 @@ def test_cleartext_telnet_detected():
     }
     anomalies = analyze_anomalies(hosts, connections, packet_store)
     types = _anomaly_types(anomalies)
-    assert "cleartext_creds" in types
-    a = next(x for x in anomalies if x["type"] == "cleartext_creds")
+    assert "cleartext_credentials" in types
+    a = next(x for x in anomalies if x["type"] == "cleartext_credentials")
     assert "Telnet" in a["description"]
 
 
@@ -117,7 +117,7 @@ def test_cleartext_not_detected_without_payload():
         ]
     }
     anomalies = analyze_anomalies(hosts, connections, packet_store)
-    assert "cleartext_creds" not in _anomaly_types(anomalies)
+    assert "cleartext_credentials" not in _anomaly_types(anomalies)
 
 
 # ── Beaconing ─────────────────────────────────────────────────────────────────
