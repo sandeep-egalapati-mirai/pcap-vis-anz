@@ -1973,6 +1973,7 @@ def analyze_pcap(filepath):
     hosts = {}
     vlan_pkt_total: defaultdict = defaultdict(int)   # vlan_id → total packets on that VLAN
     vlan_pkt_bcast: defaultdict = defaultdict(int)   # vlan_id → broadcast packets on that VLAN
+    cdp_lldp: dict = {}   # smac → {"hostname": str, "native_vlan": int|None, "protocol": "CDP"|"LLDP"}
     connections = defaultdict(lambda: {
         "protocols": set(),
         "packet_count": 0,
@@ -2114,6 +2115,71 @@ def analyze_pcap(filepath):
                     l2_off = 18
 
                 eth_type = ethertype
+
+                # ── CDP (Cisco Discovery Protocol) ────────────────────────────
+                # CDP uses 802.3/LLC/SNAP: length field < 0x0600, DSAP/SSAP=0xAA,
+                # Cisco OUI=00:00:0c, PID=0x2000
+                if (dmac == "01:00:0c:cc:cc:cc" and ethertype < 0x0600
+                        and len(raw) >= l2_off + 8
+                        and raw[l2_off] == 0xAA and raw[l2_off + 1] == 0xAA
+                        and raw[l2_off + 3:l2_off + 6] == b'\x00\x00\x0c'
+                        and raw[l2_off + 6:l2_off + 8] == b'\x20\x00'):
+                    try:
+                        _cdp_off = l2_off + 8 + 4   # skip LLC(3) + SNAP(5) + version(1) + ttl(1) + checksum(2)
+                        _cdp_hostname = None
+                        _cdp_vlan = None
+                        while _cdp_off + 4 <= len(raw):
+                            _t = (raw[_cdp_off] << 8) | raw[_cdp_off + 1]
+                            _l = (raw[_cdp_off + 2] << 8) | raw[_cdp_off + 3]
+                            if _l < 4: break
+                            _v = raw[_cdp_off + 4:_cdp_off + _l]
+                            if _t == 0x0001 and _v:   # Device ID
+                                _cdp_hostname = _v.decode("utf-8", errors="replace").strip()
+                            elif _t == 0x000A and len(_v) >= 2:   # Native VLAN
+                                _cdp_vlan = (_v[0] << 8) | _v[1]
+                            _cdp_off += _l
+                        if smac not in cdp_lldp:
+                            cdp_lldp[smac] = {"hostname": _cdp_hostname, "native_vlan": _cdp_vlan, "protocol": "CDP"}
+                        elif _cdp_hostname:
+                            cdp_lldp[smac]["hostname"] = cdp_lldp[smac]["hostname"] or _cdp_hostname
+                            if _cdp_vlan is not None:
+                                cdp_lldp[smac]["native_vlan"] = _cdp_vlan
+                    except Exception:
+                        pass
+                    continue
+
+                # ── LLDP (IEEE 802.1AB) ───────────────────────────────────────
+                if ethertype == 0x88CC:
+                    try:
+                        _lldp_off = l2_off
+                        _lldp_hostname = None
+                        _lldp_pvid = None
+                        while _lldp_off + 2 <= len(raw):
+                            _th = (raw[_lldp_off] << 8) | raw[_lldp_off + 1]
+                            _tt = (_th >> 9) & 0x7F   # TLV type
+                            _tl = _th & 0x01FF         # TLV length
+                            _lldp_off += 2
+                            if _lldp_off + _tl > len(raw): break
+                            _tv = raw[_lldp_off:_lldp_off + _tl]
+                            if _tt == 0:               # End TLV
+                                break
+                            elif _tt == 5 and _tv:     # System Name
+                                _lldp_hostname = _tv.decode("utf-8", errors="replace").strip()
+                            elif _tt == 127 and len(_tv) >= 4:   # Org-specific TLV
+                                _oui = bytes(_tv[:3])
+                                _sub = _tv[3]
+                                if _oui == b'\x00\x80\xc2' and _sub == 1 and len(_tv) >= 6:
+                                    _lldp_pvid = (_tv[4] << 8) | _tv[5]   # IEEE 802.1 PVID
+                            _lldp_off += _tl
+                        if smac not in cdp_lldp:
+                            cdp_lldp[smac] = {"hostname": _lldp_hostname, "native_vlan": _lldp_pvid, "protocol": "LLDP"}
+                        elif _lldp_hostname:
+                            cdp_lldp[smac]["hostname"] = cdp_lldp[smac]["hostname"] or _lldp_hostname
+                            if _lldp_pvid is not None:
+                                cdp_lldp[smac]["native_vlan"] = _lldp_pvid
+                    except Exception:
+                        pass
+                    continue
 
                 # ── ARP ──────────────────────────────────────────────────────
                 if ethertype == 0x0806:
@@ -2794,6 +2860,24 @@ def analyze_pcap(filepath):
         logger.warning("analyze_pcap failed", exc_info=True)
         return {"error": "Failed to parse PCAP file"}
 
+    # ── CDP/LLDP host enrichment ──────────────────────────────────────────────
+    # Correlate CDP/LLDP discoveries (keyed by MAC) with hosts (keyed by IP)
+    mac_to_ip = {h["mac"]: ip for ip, h in hosts.items() if h.get("mac")}
+    for mac, info in cdp_lldp.items():
+        ip = mac_to_ip.get(mac)
+        if not ip:
+            continue
+        h = hosts[ip]
+        # Set hostname from CDP/LLDP if not already discovered via DNS/ARP
+        if not h.get("hostname") and info.get("hostname"):
+            h["hostname"] = info["hostname"]
+        # Register native VLAN
+        if info.get("native_vlan") is not None:
+            h["vlan_ids"].add(info["native_vlan"])
+        # Boost "Network Device" hint so this host is classified as a switch/AP
+        h["host_type_hints"]["Network Device"] += 5
+        h["protocols"].add(info["protocol"])
+
     # ── Host type classification ──────────────────────────────────────────────
     for ip, h in hosts.items():
         # OS from TTL
@@ -2991,6 +3075,7 @@ def analyze_pcap(filepath):
             "has_untagged": any(n["vlan_untagged"] for n in nodes),
             "ipv4_count": sum(1 for n in nodes if n["ip_version"] == 4),
             "ipv6_count": sum(1 for n in nodes if n["ip_version"] == 6),
+            "cdp_lldp_discovered": len(cdp_lldp),
             "truncated": processed >= MAX_PACKETS,
             "capture_start": first_pkt_time,
             "capture_end": last_pkt_time,

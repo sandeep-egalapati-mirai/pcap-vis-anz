@@ -4605,6 +4605,28 @@ function renderVlanGraph(data) {
     .attr("fill", "#8b949e")
     .text(d => d.hostname || d.ip);
 
+  // B5: Gateway overlay — inter-VLAN routers get a larger ring + "GW" badge
+  const _gwTypes = new Set(["Router", "Network Device", "VPN Gateway"]);
+  hostCircles.filter(d => _gwTypes.has(d.host_type) && d.parentVlans.length > 1)
+    .each(function(d) {
+      const g = d3.select(this);
+      // Outer accent ring
+      g.insert("circle", "circle")
+        .attr("r", 10)
+        .attr("fill", "none")
+        .attr("stroke", "#e3b341")
+        .attr("stroke-width", 1.5)
+        .attr("stroke-dasharray", "3,2");
+      // "GW" label above the dot
+      g.append("text")
+        .attr("dy", -12)
+        .attr("font-size", "7px")
+        .attr("font-weight", "bold")
+        .attr("fill", "#e3b341")
+        .attr("text-anchor", "middle")
+        .text("GW");
+    });
+
   // Force simulation
   vlanSimulation = d3.forceSimulation(allNodes)
     .alphaDecay(0.05)       // converges ~2× faster than default 0.0228 (~130 ticks vs ~300)
@@ -4799,6 +4821,16 @@ function renderVlanGraph(data) {
 
     // Members of this VLAN
     const members = hostNodes.filter(n => n.parentVlans.includes(v.id));
+
+    // Per-VLAN aggregate risk score
+    if (members.length) {
+      const maxRisk = Math.max(...members.map(n => n.risk_score || 0));
+      const avgRisk = Math.round(members.reduce((s, n) => s + (n.risk_score || 0), 0) / members.length);
+      if (maxRisk > 0) {
+        const rc = maxRisk >= 70 ? "var(--red)" : maxRisk >= 40 ? "var(--yellow)" : "#6e7681";
+        rows.push(row("Risk (VLAN)", `<span style="color:${rc}">Avg ${avgRisk} · Max ${maxRisk}/100</span>`));
+      }
+    }
 
     // C1: VLAN-to-subnet mapping
     const subnets = inferSubnets(members.map(m => m.ip));
@@ -5425,6 +5457,37 @@ document.getElementById("exp-vlan-traffic").addEventListener("click", () => {
 document.getElementById("exp-vlan-svg").addEventListener("click", () => {
   exportVlanSvg();
   document.getElementById("export-menu").classList.add("hidden");
+});
+document.getElementById("imp-vlan-names").addEventListener("click", () => {
+  document.getElementById("export-menu").classList.add("hidden");
+  document.getElementById("vlan-names-file-input").click();
+});
+document.getElementById("vlan-names-file-input").addEventListener("change", function() {
+  const file = this.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    let imported = 0;
+    (e.target.result || "").split(/\r?\n/).forEach(line => {
+      const comma = line.indexOf(",");
+      if (comma === -1) return;
+      const vid  = line.slice(0, comma).trim();
+      const name = line.slice(comma + 1).trim();
+      if (!vid) return;
+      saveVlanLabel(vid, name);
+      imported++;
+    });
+    this.value = "";   // reset so same file can be re-imported
+    if (imported > 0) {
+      showToast(`Imported ${imported} VLAN name${imported !== 1 ? "s" : ""}. Switch to VLAN tab to see labels.`, "info");
+      // Force re-render if VLAN view is active
+      _vlanRendered = false;
+      if (currentView === "vlangraph" && graphData) renderVlanGraph(graphData);
+    } else {
+      showToast("No valid VLAN names found. Format: vid,name (one per line).", "error");
+    }
+  };
+  reader.readAsText(file);
 });
 
 function exportVlanSvg() {
