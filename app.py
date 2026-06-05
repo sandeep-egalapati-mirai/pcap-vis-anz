@@ -1747,6 +1747,27 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
                 ),
             })
 
+    # ── PCP priority abuse: end-hosts sending high-priority QoS frames ───────────
+    _HIGH_PCP_HOSTS = {
+        "Windows Host", "Linux Host", "Unknown Host",
+        "IP Camera", "IoT Sensor", "Smart Meter", "Smart Home Hub",
+        "Smart Speaker", "CPE Device", "Field Device",
+    }
+    for ip, h in hosts.items():
+        pcps = h.get("vlan_pcps", set())
+        high_pcps = sorted(p for p in pcps if p >= 6)
+        if high_pcps and h.get("host_type") in _HIGH_PCP_HOSTS:
+            anomalies.append({
+                "type": "pcp_abuse",
+                "severity": "low",
+                "src": ip,
+                "dst": None,
+                "description": (
+                    f"{ip} ({h['host_type']}) sending frames with high QoS priority "
+                    f"PCP {high_pcps} — unexpected for this device type"
+                ),
+            })
+
     # ── ARP spoofing: multiple MACs claiming the same IP within a VLAN ──────────
     # Build (vlan_id, ip) → set of MACs; flag any IP with 2+ distinct MACs on same VLAN
     vlan_ip_macs: dict = defaultdict(set)
