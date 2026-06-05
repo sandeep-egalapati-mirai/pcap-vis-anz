@@ -1746,6 +1746,32 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None):
                 ),
             })
 
+    # ── ARP spoofing: multiple MACs claiming the same IP within a VLAN ──────────
+    # Build (vlan_id, ip) → set of MACs; flag any IP with 2+ distinct MACs on same VLAN
+    vlan_ip_macs: dict = defaultdict(set)
+    for ip, h in hosts.items():
+        mac = h.get("mac", "")
+        if not mac or mac == "00:00:00:00:00:00":
+            continue
+        for vlan_id in h.get("vlan_ids", set()):
+            vlan_ip_macs[(vlan_id, ip)].add(mac)
+        if h.get("vlan_untagged") and not h.get("vlan_ids"):
+            vlan_ip_macs[("untagged", ip)].add(mac)
+
+    for (vlan_id, ip), macs in vlan_ip_macs.items():
+        if len(macs) > 1:
+            vlan_label = f"VLAN {vlan_id}" if vlan_id != "untagged" else "untagged VLAN"
+            anomalies.append({
+                "type": "arp_spoofing",
+                "severity": "high",
+                "src": ip,
+                "dst": None,
+                "description": (
+                    f"{ip} seen with {len(macs)} different MAC addresses on {vlan_label} "
+                    f"({', '.join(sorted(macs))}) — possible ARP spoofing or MAC flapping"
+                ),
+            })
+
     # ── Password reuse across protocols or destinations ───────────────────────
     if credentials:
         pw_services = defaultdict(set)
