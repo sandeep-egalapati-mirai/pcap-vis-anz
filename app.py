@@ -1217,7 +1217,8 @@ def parse_tls_client_hello(payload):
         return None
 
 
-def analyze_anomalies(hosts, connections, packet_store, credentials=None):
+def analyze_anomalies(hosts, connections, packet_store, credentials=None,
+                      vlan_pkt_total=None, vlan_pkt_bcast=None):
     """Detect network anomalies and return a list of anomaly dicts."""
     anomalies = []
 
@@ -1772,6 +1773,24 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None):
                 ),
             })
 
+    # ── Broadcast storm: VLAN with >10% broadcast traffic ────────────────────
+    BCAST_THRESHOLD = 0.10
+    BCAST_MIN_PKTS  = 50          # avoid false positives on tiny captures
+    if vlan_pkt_total and vlan_pkt_bcast:
+        for vlan_id, total in vlan_pkt_total.items():
+            bcast = vlan_pkt_bcast.get(vlan_id, 0)
+            if total >= BCAST_MIN_PKTS and bcast / total > BCAST_THRESHOLD:
+                anomalies.append({
+                    "type": "broadcast_storm",
+                    "severity": "medium",
+                    "src": None,
+                    "dst": None,
+                    "description": (
+                        f"VLAN {vlan_id}: {bcast} broadcast packets out of {total} total "
+                        f"({bcast * 100 // total}%) — possible broadcast storm or misconfiguration"
+                    ),
+                })
+
     # ── Password reuse across protocols or destinations ───────────────────────
     if credentials:
         pw_services = defaultdict(set)
@@ -1931,6 +1950,8 @@ def analyze_pcap(filepath):
         return {"error": f"scapy not available: {e}"}
 
     hosts = {}
+    vlan_pkt_total: defaultdict = defaultdict(int)   # vlan_id → total packets on that VLAN
+    vlan_pkt_bcast: defaultdict = defaultdict(int)   # vlan_id → broadcast packets on that VLAN
     connections = defaultdict(lambda: {
         "protocols": set(),
         "packet_count": 0,
@@ -2158,12 +2179,15 @@ def analyze_pcap(filepath):
                     conn["abs_first_seen"] = pkt_time
                 conn["abs_last_seen"] = pkt_time
 
-                # Track VLAN membership on hosts and connection
+                # Track VLAN membership on hosts and connection; tally per-VLAN broadcast stats
                 _vlan_id = vlan_inner if vlan_inner is not None else vlan_outer
                 if _vlan_id is not None:
                     sh["vlan_ids"].add(_vlan_id)
                     dh["vlan_ids"].add(_vlan_id)
                     conn["vlan_ids"].add(_vlan_id)
+                    vlan_pkt_total[_vlan_id] += 1
+                    if dip.endswith(".255") or dip == "255.255.255.255":
+                        vlan_pkt_bcast[_vlan_id] += 1
                     if pcp is not None:
                         sh["vlan_pcps"].add(pcp)
                         dh["vlan_pcps"].add(pcp)
@@ -2789,7 +2813,9 @@ def analyze_pcap(filepath):
             h["host_type"] = "Engineering Workstation"
 
     # ── Anomaly detection ─────────────────────────────────────────────────────
-    anomalies = analyze_anomalies(hosts, connections, packet_store, credentials)
+    anomalies = analyze_anomalies(hosts, connections, packet_store, credentials,
+                                   vlan_pkt_total=vlan_pkt_total,
+                                   vlan_pkt_bcast=vlan_pkt_bcast)
 
     # ── Per-host risk score (0–100) ───────────────────────────────────────────
     _SEV_WEIGHT = {"high": 30, "medium": 15, "low": 5}

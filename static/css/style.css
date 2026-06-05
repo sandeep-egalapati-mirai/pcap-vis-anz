@@ -2059,6 +2059,17 @@ header h1 span { color: var(--accent); }
   gap: 6px;
   z-index: 4;
 }
+#vlan-search {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 11px;
+  padding: 3px 8px;
+  width: 130px;
+  outline: none;
+}
+#vlan-search:focus { border-color: var(--accent); }
 #vlan-empty {
   position: absolute;
   top: 50%;

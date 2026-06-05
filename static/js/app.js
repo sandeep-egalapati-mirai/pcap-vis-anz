@@ -175,6 +175,18 @@ function vlanColor(vid) {
   return `hsl(${(h * 47) % 360}, 62%, 62%)`;
 }
 
+// Infer /24 subnets from a list of IPv4 addresses (IPv6 skipped)
+function inferSubnets(ips) {
+  const prefixes = new Set();
+  ips.forEach(ip => {
+    if (!ip.includes(":")) {
+      const p = ip.split(".");
+      if (p.length === 4) prefixes.add(`${p[0]}.${p[1]}.${p[2]}.0/24`);
+    }
+  });
+  return [...prefixes].sort();
+}
+
 function fmtBytes(b) {
   if (b < 1024) return b + " B";
   if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
@@ -399,6 +411,8 @@ function loadGraph(data) {
   colorByVlan = false;
   const colorVlanBtn = document.getElementById("btn-color-vlan");
   if (colorVlanBtn) { colorVlanBtn.style.display = "none"; colorVlanBtn.classList.remove("active"); }
+  const vlanSearchReset = document.getElementById("vlan-search");
+  if (vlanSearchReset) { vlanSearchReset.value = ""; vlanSearchReset.style.display = "none"; }
   if (vlanSimulation) { vlanSimulation.stop(); vlanSimulation = null; }
   vlanSelectedNode = null;
   closePktInspector();
@@ -433,6 +447,8 @@ function loadGraph(data) {
     document.getElementById("vlan-tab-btn").classList.remove("hidden");
     document.getElementById("vlan-filters-section").style.display = "";
     document.getElementById("btn-color-vlan").style.display = "";   // show VLAN color toggle
+    const vlanSearchShow = document.getElementById("vlan-search");
+    if (vlanSearchShow) vlanSearchShow.style.display = "";
   }
 
   // IPv6 adoption stat
@@ -4395,6 +4411,9 @@ function renderVlanGraph(data) {
   svgSel.call(vlanZoom);
   const gRoot = svgSel.append("g");
 
+  // Convex hull layer (bottom-most — drawn before edges and nodes)
+  const hullG = gRoot.append("g").attr("class", "vlan-hulls");
+
   // Cross-VLAN edge layer
   const crossEdgeG = gRoot.append("g").attr("class", "vlan-cross-edges");
   const crossEdgeSel = crossEdgeG.selectAll(".vcross")
@@ -4559,6 +4578,23 @@ function renderVlanGraph(data) {
         .attr("y2", d => (typeof d.target === "object" ? d.target.y : 0));
       vlanCircles.attr("transform", d => `translate(${d.x},${d.y})`);
       hostCircles.attr("transform", d => `translate(${d.x},${d.y})`);
+      // B1: Redraw convex hull polygons around each VLAN's member hosts
+      hullG.selectAll(".vlan-hull").data(vlanNodes, d => d.id).join("path")
+        .attr("class", "vlan-hull")
+        .attr("fill", d => d.color)
+        .attr("fill-opacity", 0.06)
+        .attr("stroke", d => d.color)
+        .attr("stroke-opacity", 0.35)
+        .attr("stroke-width", 1.5)
+        .attr("stroke-dasharray", "4,3")
+        .attr("d", d => {
+          const pts = hostNodes
+            .filter(n => n.parentVlans.includes(d.id) && n.x != null && n.y != null)
+            .map(n => [n.x, n.y]);
+          if (pts.length < 3) return null;
+          const hull = d3.polygonHull(pts);
+          return hull ? `M${hull.map(p => p.join(",")).join("L")}Z` : null;
+        });
     });
 
   // Fit button
@@ -4705,6 +4741,10 @@ function renderVlanGraph(data) {
     const body = document.getElementById("detail-body");
     const rows = [];
 
+    rows.push(`<div style="margin-bottom:8px">
+      <button class="header-btn" id="vlan-spotlight-btn" data-vid="${escHtml(v.vid)}"
+        style="width:100%;font-size:11px">🔍 Spotlight in Graph view</button>
+    </div>`);
     rows.push(row("VLAN ID", v.vid === "untagged"
       ? `<span style="color:#8b949e">Untagged / native VLAN</span>`
       : `<code style="font-family:var(--font-mono)">${escHtml(String(v.vid))}</code>`));
@@ -4712,6 +4752,14 @@ function renderVlanGraph(data) {
 
     // Members of this VLAN
     const members = hostNodes.filter(n => n.parentVlans.includes(v.id));
+
+    // C1: VLAN-to-subnet mapping
+    const subnets = inferSubnets(members.map(m => m.ip));
+    if (subnets.length) {
+      rows.push(row("IP subnet(s)", subnets.map(s =>
+        `<code style="font-family:var(--font-mono)">${escHtml(s)}</code>`
+      ).join(", ")));
+    }
 
     // PCP distribution across members
     const pcpCounts = {};
@@ -4761,6 +4809,25 @@ function renderVlanGraph(data) {
     }
 
     body.innerHTML = rows.join("");
+
+    // B4: Spotlight button — show only this VLAN in the main graph
+    const spotBtn = body.querySelector("#vlan-spotlight-btn");
+    if (spotBtn) {
+      spotBtn.addEventListener("click", () => {
+        const vid = spotBtn.dataset.vid;
+        setView("graph");
+        activeVlans.clear();
+        activeVlans.add(vid);
+        // Sync sidebar checkboxes
+        document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb => {
+          cb.checked = cb.id === `f-vlan-${CSS.escape(vid)}`;
+        });
+        updateFilterUI();
+        applyFilters();
+        showToast(`Spotlighting VLAN ${vid === "untagged" ? "Untagged" : vid} in graph view`, "info");
+      });
+    }
+
     // Bind member-host click handlers after innerHTML assignment (avoids inline onclick XSS)
     body.querySelectorAll(".vlan-member-host").forEach(el => {
       el.addEventListener("click", () => {
@@ -4768,6 +4835,26 @@ function renderVlanGraph(data) {
         if (f) showDetailPanel(f);
       });
     });
+  }
+
+  // D1: VLAN search — wire up after selections are in scope
+  const vlanSearchEl = document.getElementById("vlan-search");
+  if (vlanSearchEl) {
+    vlanSearchEl.value = "";
+    vlanSearchEl.oninput = () => {
+      const q = vlanSearchEl.value.trim().toLowerCase();
+      if (!q) { unhighlightVlan(); return; }
+      const matchedVlans = new Set();
+      hostCircles.classed("faded", n => {
+        const hit = n.ip.includes(q)
+          || (n.hostname && n.hostname.toLowerCase().includes(q))
+          || (n.label   && n.label.toLowerCase().includes(q));
+        if (hit) n.parentVlans.forEach(p => matchedVlans.add(p));
+        return !hit;
+      });
+      vlanCircles.classed("faded", v => !matchedVlans.has(v.id));
+      crossEdgeSel.classed("faded", true);
+    };
   }
 }
 
