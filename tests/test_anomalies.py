@@ -88,8 +88,8 @@ def test_cleartext_ftp_detected():
     }
     anomalies = analyze_anomalies(hosts, connections, packet_store)
     types = _anomaly_types(anomalies)
-    assert "cleartext_creds" in types
-    a = next(x for x in anomalies if x["type"] == "cleartext_creds")
+    assert "cleartext_credentials" in types
+    a = next(x for x in anomalies if x["type"] == "cleartext_credentials")
     assert "FTP" in a["description"]
 
 
@@ -103,8 +103,8 @@ def test_cleartext_telnet_detected():
     }
     anomalies = analyze_anomalies(hosts, connections, packet_store)
     types = _anomaly_types(anomalies)
-    assert "cleartext_creds" in types
-    a = next(x for x in anomalies if x["type"] == "cleartext_creds")
+    assert "cleartext_credentials" in types
+    a = next(x for x in anomalies if x["type"] == "cleartext_credentials")
     assert "Telnet" in a["description"]
 
 
@@ -117,7 +117,7 @@ def test_cleartext_not_detected_without_payload():
         ]
     }
     anomalies = analyze_anomalies(hosts, connections, packet_store)
-    assert "cleartext_creds" not in _anomaly_types(anomalies)
+    assert "cleartext_credentials" not in _anomaly_types(anomalies)
 
 
 # ── Beaconing ─────────────────────────────────────────────────────────────────
@@ -163,12 +163,13 @@ def test_beaconing_requires_10_packets():
 # ── Data exfiltration ─────────────────────────────────────────────────────────
 
 def test_exfiltration_detected():
+    # New logic: fires when conn["bytes"] > 10MB on a private↔public connection
     TEN_MB = 10 * 1024 * 1024 + 1
     hosts = {
-        "10.0.0.1": _host(bytes_sent=TEN_MB),
+        "10.0.0.1": _host(),
         "8.8.8.8": _host(is_private=False),
     }
-    connections = {("10.0.0.1", "8.8.8.8"): _conn()}
+    connections = {("10.0.0.1", "8.8.8.8"): _conn(bytes_total=TEN_MB)}
     anomalies = analyze_anomalies(hosts, connections, {})
     assert "exfiltration" in _anomaly_types(anomalies)
     a = next(x for x in anomalies if x["type"] == "exfiltration")
@@ -179,22 +180,40 @@ def test_exfiltration_detected():
 def test_exfiltration_not_detected_internal():
     TEN_MB = 10 * 1024 * 1024 + 1
     hosts = {
-        "10.0.0.1": _host(bytes_sent=TEN_MB),
+        "10.0.0.1": _host(),
         "10.0.0.2": _host(),
     }
-    connections = {("10.0.0.1", "10.0.0.2"): _conn()}
+    connections = {("10.0.0.1", "10.0.0.2"): _conn(bytes_total=TEN_MB)}
     anomalies = analyze_anomalies(hosts, connections, {})
     assert "exfiltration" not in _anomaly_types(anomalies)
 
 
 def test_exfiltration_not_detected_below_threshold():
     hosts = {
-        "10.0.0.1": _host(bytes_sent=1024),
+        "10.0.0.1": _host(),
         "8.8.8.8": _host(is_private=False),
     }
-    connections = {("10.0.0.1", "8.8.8.8"): _conn()}
+    connections = {("10.0.0.1", "8.8.8.8"): _conn(bytes_total=1024)}
     anomalies = analyze_anomalies(hosts, connections, {})
     assert "exfiltration" not in _anomaly_types(anomalies)
+
+
+def test_exfiltration_not_false_positive_on_large_internal_traffic():
+    """Regression: large internal traffic must not trigger exfiltration on a small external conn."""
+    TEN_MB = 10 * 1024 * 1024 + 1
+    hosts = {
+        "10.0.0.1": _host(bytes_sent=TEN_MB),  # lots of internal traffic
+        "10.0.0.2": _host(),
+        "8.8.8.8": _host(is_private=False),
+    }
+    connections = {
+        ("10.0.0.1", "10.0.0.2"): _conn(bytes_total=TEN_MB),  # large internal conn
+        ("10.0.0.1", "8.8.8.8"):  _conn(bytes_total=100),      # tiny external conn
+    }
+    anomalies = analyze_anomalies(hosts, connections, {})
+    assert "exfiltration" not in _anomaly_types(anomalies), (
+        "Large internal traffic + tiny external conn must not trigger exfiltration"
+    )
 
 
 # ── Suspicious ports ──────────────────────────────────────────────────────────

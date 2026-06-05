@@ -52,6 +52,8 @@
       <div class="stat">Hosts: <strong id="stat-hosts">—</strong></div>
       <div class="stat">Connections: <strong id="stat-conns">—</strong></div>
       <div class="stat">Packets: <strong id="stat-pkts">—</strong></div>
+      <div class="stat" id="stat-vlans-wrap" style="display:none">VLANs: <strong id="stat-vlans">—</strong></div>
+      <div class="stat" id="stat-ipver-wrap" style="display:none">IPv6: <strong id="stat-ipver">—</strong></div>
     </div>
 
     <!-- View toggle -->
@@ -61,8 +63,13 @@
       <button class="vt-btn" data-view="dns">DNS Map</button>
       <button class="vt-btn" data-view="ot">OT Map</button>
       <button class="vt-btn" data-view="otlog">OT Log</button>
+      <button class="vt-btn hidden" data-view="vlangraph" id="vlan-tab-btn">VLAN</button>
       <button class="vt-btn hidden" data-view="diff" id="diff-tab-btn">⊕ Diff</button>
     </div>
+
+    <!-- Active-filters chip — visible on all tabs when any filter is narrowed -->
+    <button id="header-clear-filters-btn" class="header-btn" style="display:none"
+            title="Clear all filters">&#10005; <span id="header-filter-count"></span></button>
 
     <!-- Export dropdown -->
     <div class="dropdown" id="export-dropdown">
@@ -72,6 +79,10 @@
         <div class="dropdown-item" id="exp-csv">Export CSV</div>
         <div class="dropdown-item" id="exp-anomalies">Export Anomalies</div>
         <div class="dropdown-item" id="exp-report">Export Audit Report</div>
+        <div class="dropdown-item" id="exp-vlan-inventory">Export VLAN Inventory CSV</div>
+        <div class="dropdown-item" id="exp-vlan-traffic">Export VLAN Traffic CSV</div>
+        <div class="dropdown-item" id="exp-vlan-svg">Export VLAN Diagram SVG</div>
+        <div class="dropdown-item" id="imp-vlan-names">Import VLAN Names CSV…</div>
       </div>
     </div>
 
@@ -82,6 +93,7 @@
     <button class="header-btn icon-btn" id="save-session-btn" title="Save Session">💾</button>
     <button class="header-btn icon-btn" id="load-session-btn" title="Load Session">📂</button>
     <input type="file" id="session-file-input" accept=".json" style="display:none">
+    <input type="file" id="vlan-names-file-input" accept=".csv,.txt" style="display:none">
 
     <button id="upload-btn">Upload File</button>
   </header>
@@ -100,9 +112,15 @@
         <input id="search-box" type="text" placeholder="IP address or hostname…">
       </div>
 
+      <div class="sidebar-section" id="vlan-summary-section" style="display:none">
+        <h3>VLAN Health</h3>
+        <div id="vlan-summary-body"></div>
+      </div>
+
       <div class="sidebar-section">
         <div class="filter-section-header">
           <h3>Protocols <span class="filter-badge" id="proto-badge"></span></h3>
+          <button class="filter-clear-btn" id="proto-clear-btn" style="display:none" title="Select or deselect all protocols">Unselect All</button>
         </div>
         <div id="proto-filters"></div>
       </div>
@@ -110,8 +128,25 @@
       <div class="sidebar-section">
         <div class="filter-section-header">
           <h3>Host Types <span class="filter-badge" id="type-badge"></span></h3>
+          <button class="filter-clear-btn" id="type-clear-btn" style="display:none" title="Select or deselect all host types">Unselect All</button>
         </div>
         <div id="type-filters"></div>
+      </div>
+
+      <div class="sidebar-section" id="vlan-filters-section" style="display:none">
+        <div class="filter-section-header">
+          <h3>VLANs <span class="filter-badge" id="vlan-badge"></span></h3>
+          <button class="filter-clear-btn" id="vlan-clear-btn" style="display:none" title="Select or deselect all VLANs">Unselect All</button>
+        </div>
+        <div id="vlan-filters"></div>
+      </div>
+
+      <div class="sidebar-section" id="ipver-filters-section" style="display:none">
+        <div class="filter-section-header">
+          <h3>IP Version <span class="filter-badge" id="ipver-badge"></span></h3>
+          <button class="filter-clear-btn" id="ipver-clear-btn" style="display:none" title="Select or deselect all IP versions">Unselect All</button>
+        </div>
+        <div id="ipver-filters"></div>
       </div>
 
       <div class="sidebar-section" id="clear-filters-section" style="display:none">
@@ -166,6 +201,7 @@
         <button class="gc-btn" id="btn-zoom-in"  title="Zoom in">+</button>
         <button class="gc-btn" id="btn-zoom-out" title="Zoom out">−</button>
         <button class="gc-btn" id="btn-zoom-fit" title="Fit to screen">⊡</button>
+        <button class="gc-btn" id="btn-color-vlan" title="Color nodes by VLAN" style="display:none">⬡ VLAN</button>
       </div>
 
       <!-- Legend -->
@@ -375,6 +411,53 @@
         <div class="diff-col" id="diff-anomalies-col">
           <div class="diff-col-title">Anomalies</div>
           <div id="diff-anomalies-list"></div>
+        </div>
+        <div class="diff-col" id="diff-vlans-col">
+          <div class="diff-col-title">VLANs</div>
+          <div id="diff-vlans-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VLAN Graph view -->
+    <div id="vlan-view" class="hidden">
+      <div id="vlan-stats-bar"></div>
+
+      <!-- Toolbar row — always visible, never overlaps the canvas -->
+      <div id="vlan-toolbar">
+        <div id="vlan-graph-controls">
+          <div class="layout-group">
+            <button class="gc-btn layout-btn active" data-vlan-layout="force" title="Force layout">⊙</button>
+            <button class="gc-btn layout-btn" data-vlan-layout="radial" title="Radial layout">◎</button>
+            <button class="gc-btn layout-btn" data-vlan-layout="cluster" title="Cluster layout">⊞</button>
+          </div>
+          <button class="gc-btn" id="vlan-zoom-fit" title="Fit to screen">⊡</button>
+        </div>
+        <button class="gc-btn" id="vlan-matrix-btn" title="Toggle flow matrix view">⊞ Matrix</button>
+        <input id="vlan-search" type="text" placeholder="Search VLANs / IPs…"
+               style="display:none" autocomplete="off">
+      </div>
+
+      <!-- Canvas area — positioning context for legend overlay only -->
+      <div id="vlan-canvas-wrap">
+        <svg id="vlan-svg"></svg>
+        <div id="vlan-legend">
+          <div id="vlan-legend-title">VLAN Segments</div>
+          <div id="vlan-legend-items"></div>
+        </div>
+        <div id="vlan-empty" style="display:none">No VLAN-tagged traffic found in this capture</div>
+      </div>
+
+      <!-- Cross-VLAN flow matrix (toggled by ⊞ Matrix button) -->
+      <div id="vlan-matrix-container" class="hidden">
+        <div id="vlan-matrix-layout">
+          <div id="vlan-matrix-corner"></div>
+          <svg id="vlan-matrix-cols"></svg>
+          <svg id="vlan-matrix-rows"></svg>
+          <svg id="vlan-matrix-cells"></svg>
+        </div>
+        <div id="vlan-matrix-legend">
+          Cell color = dominant protocol · Orange = cross-VLAN OT anomaly · Red border = VLAN anomaly
         </div>
       </div>
     </div>

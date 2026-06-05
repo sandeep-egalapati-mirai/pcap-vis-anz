@@ -30,6 +30,10 @@
 - [x] Performance: Virtual scrolling in connection table and packet inspector (windowed rendering)
 - [x] Performance: Anomaly deduplication summary — collapses repeated same-source anomalies into one entry
 - [x] Performance: Replace `PcapReader` with `RawPcapReader` + manual byte parsing in `analyze_pcap()` hot loop (~30× speedup; 150K-packet capture: ~44s → ~1.5s)
+- [x] VLAN: Full 802.1Q + 802.1ad QinQ parsing (VID, PCP, DEI); per-host and per-edge tracking; VLAN filter in sidebar; VLAN section in host detail panel; VLANs stat in header; 4 new anomaly rules (hopping, native leak, QinQ, cross-segment OT); dedicated VLAN Graph view (VLANs as super-nodes, hosts clustered inside, cross-VLAN traffic highlighted in red)
+- [x] VLAN graph overhaul: multi-VLAN host membership (hopping hosts sit between segments); generalized cross-VLAN edge builder (all src×dst VLAN pairs); rich node decorations via shared `appendNodeDecorations` helper (anomaly rings, risk/cred glyphs, host icons, risk badges); shared tooltip helpers; neighbor highlighting + selection state; super-node click → VLAN detail panel (PCP dist, QinQ, cross-VLAN partners, member host list); stats bar (cross-VLAN flows/bytes, untagged/hopping counts); legend entries for cross-VLAN edge and untagged; hash-based `vlanColor` (no palette collisions)
+- [x] IPv4/IPv6 filtering: `ip_version` per node + `ip_versions`/`has_untagged`/`ipv4_count`/`ipv6_count` in stats (both `analyze_pcap` and `merge_results`); IP Version sidebar filter (shown only when both present); `applyFilters` and table filter honour it; IPv6 dashed-stroke node distinction; header IPv6 adoption stat
+- [x] VLAN exports: two new Export dropdown items (Export VLAN Inventory CSV, Export VLAN Traffic CSV); `exportVlanInventoryCsv()` emits one row per (VLAN, host) pair with 14 columns; `exportVlanTrafficCsv()` emits flat table with Source/Dest VLAN columns and Cross-VLAN flag; audit report gains "VLAN Device Inventory" section (per-VLAN host tables) and "IP-to-IP Traffic by VLAN" section (grouped by VLAN, capped at 100/group), plus VLANs-detected row in Capture Summary
 
 ## Navigation & Discoverability
 
@@ -73,6 +77,11 @@
 - [ ] Saved filter presets — name and save a filter combination for one-click recall
 - [ ] Inline anomaly explanation panel — contextual explanation of what each anomaly means and why it's suspicious
 - [ ] Dashboard / summary view (5th view) — card-based overview: top talkers, protocol breakdown donut, anomaly severity bar, busiest connections
+
+## VLAN Follow-ups
+
+- [x] Per-VLAN bandwidth chart / VLAN timeline — timeline minimap now shows stacked per-VLAN byte bars when VLAN data is present; bars are colored by VLAN using the same vlanColor() palette; falls back to plain density bars for non-VLAN captures
+- [x] VLAN export — covered by Export VLAN Traffic CSV (includes Source/Dest VLAN columns and Cross-VLAN flag)
 
 ## Completed (Enrichments)
 

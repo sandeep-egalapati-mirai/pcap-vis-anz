@@ -166,6 +166,27 @@ function hostColor(type) {
   return HOST_COLORS[type] || "#546E7A";
 }
 
+// Hash-based HSL color for VLAN IDs — no palette collision (VLANs 1, 21, 41 no longer clash)
+function vlanColor(vid) {
+  if (vid === "untagged" || vid == null) return "#546E7A";
+  const s = String(vid);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return `hsl(${(h * 47) % 360}, 62%, 62%)`;
+}
+
+// Infer /24 subnets from a list of IPv4 addresses (IPv6 skipped)
+function inferSubnets(ips) {
+  const prefixes = new Set();
+  ips.forEach(ip => {
+    if (!ip.includes(":")) {
+      const p = ip.split(".");
+      if (p.length === 4) prefixes.add(`${p[0]}.${p[1]}.${p[2]}.0/24`);
+    }
+  });
+  return [...prefixes].sort();
+}
+
 function fmtBytes(b) {
   if (b < 1024) return b + " B";
   if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
@@ -204,14 +225,22 @@ function countryFlag(code) {
 /* ── State ───────────────────────────────────────────────────────────────── */
 let graphData    = null;
 let simulation   = null;
-let selectedNode = null;
-let activeProtos = new Set();
-let activeTypes  = new Set();
-let searchTerm   = "";
+let selectedNode     = null;
+let activeProtos     = new Set();
+let activeTypes      = new Set();
+let activeVlans      = new Set();
+let activeIpVersions = new Set();
+let searchTerm       = "";
 let packetData   = {};
-let currentView  = "graph";  // "graph" | "table" | "dns" | "ot" | "otlog" | "diff"
+let currentView  = "graph";  // "graph" | "table" | "dns" | "ot" | "otlog" | "vlangraph" | "diff"
+let vlanSimulation   = null;
+let _vlanRendered    = false;
+let _vlanLayout      = "force";
+let vlanSelectedNode = null;  // separate from main selectedNode — no cross-view leakage
 let baselineData = null;
-let currentLayout = "force"; // "force" | "radial" | "cluster"
+let currentLayout  = "force"; // "force" | "radial" | "cluster"
+let colorByVlan    = false;   // when true, main graph nodes are colored by VLAN not host type
+let _currentPktList = [];    // packets for the currently-open inspector panel
 let anomalyNodeIps = {};     // ip → highest severity
 let credIpSet = new Set();   // IPs with captured credentials
 let tableSort = { col: "packet_count", dir: "desc" };
@@ -247,6 +276,7 @@ const dnsView        = document.getElementById("dns-view");
 const otMapView      = document.getElementById("ot-map-view");
 const otLogView      = document.getElementById("otlog-view");
 const diffView       = document.getElementById("diff-view");
+const vlanView       = document.getElementById("vlan-view");
 const ctxMenu        = document.getElementById("ctx-menu");
 
 /* ── SVG setup ───────────────────────────────────────────────────────────── */
@@ -372,6 +402,30 @@ function loadGraph(data) {
   graphData = data;
   packetData = data.packets || {};
   _otLogRendered = false;
+  _vlanRendered  = false;
+  document.getElementById("vlan-tab-btn").classList.add("hidden");
+  document.getElementById("vlan-filters-section").style.display = "none";
+  document.getElementById("stat-vlans-wrap").style.display = "none";
+  document.getElementById("stat-ipver-wrap").style.display = "none";
+  document.getElementById("ipver-filters-section").style.display = "none";
+  colorByVlan = false;
+  const colorVlanBtn = document.getElementById("btn-color-vlan");
+  if (colorVlanBtn) { colorVlanBtn.style.display = "none"; colorVlanBtn.classList.remove("active"); }
+  const vlanSearchReset = document.getElementById("vlan-search");
+  if (vlanSearchReset) { vlanSearchReset.value = ""; vlanSearchReset.style.display = "none"; }
+  const vlanSummarySec = document.getElementById("vlan-summary-section");
+  if (vlanSummarySec) vlanSummarySec.style.display = "none";
+  _vlanMatrixMode = false;
+  const matrixBtn = document.getElementById("vlan-matrix-btn");
+  if (matrixBtn) { matrixBtn.classList.remove("active"); matrixBtn.textContent = "⊞ Matrix"; }
+  const matrixCont = document.getElementById("vlan-matrix-container");
+  if (matrixCont) matrixCont.classList.add("hidden");
+  const canvasWrap = document.getElementById("vlan-canvas-wrap");
+  if (canvasWrap) canvasWrap.classList.remove("hidden");
+  const graphCtrl = document.getElementById("vlan-graph-controls");
+  if (graphCtrl) graphCtrl.style.display = "";
+  if (vlanSimulation) { vlanSimulation.stop(); vlanSimulation = null; }
+  vlanSelectedNode = null;
   closePktInspector();
   selectedNode = null;
   searchTerm = "";
@@ -397,17 +451,49 @@ function loadGraph(data) {
   document.getElementById("stat-hosts").textContent = fmtNum(stats.total_hosts   || 0);
   document.getElementById("stat-conns").textContent = fmtNum(stats.total_connections || 0);
   document.getElementById("stat-pkts").textContent  = fmtNum(stats.total_packets  || 0);
+  const vlanCount = (stats.vlans || []).length;
+  document.getElementById("stat-vlans").textContent = fmtNum(vlanCount);
+  document.getElementById("stat-vlans-wrap").style.display = vlanCount > 0 ? "" : "none";
+  if (vlanCount > 0) {
+    document.getElementById("vlan-tab-btn").classList.remove("hidden");
+    document.getElementById("vlan-filters-section").style.display = "";
+    document.getElementById("btn-color-vlan").style.display = "";   // show VLAN color toggle
+    const vlanSearchShow = document.getElementById("vlan-search");
+    if (vlanSearchShow) vlanSearchShow.style.display = "";
+  }
+
+  // IPv6 adoption stat
+  const v6Count = stats.ipv6_count || 0;
+  const v4Count = stats.ipv4_count || 0;
+  const totalIpHosts = v4Count + v6Count;
+  if (v6Count > 0) {
+    const pct = totalIpHosts ? Math.round(v6Count * 100 / totalIpHosts) : 0;
+    document.getElementById("stat-ipver").textContent = `${pct}% (${fmtNum(v6Count)}/${fmtNum(totalIpHosts)})`;
+    document.getElementById("stat-ipver-wrap").style.display = "";
+  }
+  // IP version filter section (only shown when both IPv4 and IPv6 are present)
+  const ipVerSection = document.getElementById("ipver-filters-section");
+  if (ipVerSection) {
+    ipVerSection.style.display = (stats.ip_versions || []).length > 1 ? "" : "none";
+  }
 
   // Build filter sets
-  activeProtos = new Set(stats.protocols || []);
-  activeTypes  = new Set(stats.host_types || []);
+  activeProtos     = new Set(stats.protocols || []);
+  activeTypes      = new Set(stats.host_types || []);
+  activeVlans      = new Set((stats.vlans || []).map(String));
+  if ((data.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
+  activeIpVersions = new Set((stats.ip_versions || []).map(String));
 
   buildFilters(data);
+  buildVlanSummary(data);
   buildLegend(data);
   buildAnomalySidebar(data.anomalies || []);
   buildCredentialsSidebar(data.credentials || []);
   buildFilesSidebar(data.files || []);
   buildTimeline(data);
+  // setView("graph") before renderGraph so graphWrap is visible when renderGraph
+  // reads svg.clientWidth/Height (needed for correct cx/cy and canvas sizing)
+  setView("graph");
   renderGraph(data);
 
   // Show baseline button now that data is loaded
@@ -416,8 +502,6 @@ function loadGraph(data) {
   if (baselineData) {
     document.getElementById("diff-tab-btn").classList.remove("hidden");
   }
-
-  setView("graph");
 
   // Load annotations from localStorage
   applyAnnotations();
@@ -446,6 +530,7 @@ function setView(view) {
     otMapView.classList.add("hidden");
     otLogView.classList.add("hidden");
     diffView.classList.add("hidden");
+    vlanView.classList.add("hidden");
     document.getElementById("graph-controls").style.display = "";
     document.getElementById("legend").style.display = "";
   } else if (view === "table") {
@@ -490,6 +575,17 @@ function setView(view) {
     otLogView.classList.remove("hidden");
     diffView.classList.add("hidden");
     renderOtLog(graphData.ot_commands || []);
+  } else if (view === "vlangraph") {
+    graphWrap.style.display = "none";
+    tlBar.classList.add("hidden");
+    pktIns.classList.add("hidden");
+    tableView.classList.add("hidden");
+    dnsView.classList.add("hidden");
+    otMapView.classList.add("hidden");
+    otLogView.classList.add("hidden");
+    diffView.classList.add("hidden");
+    vlanView.classList.remove("hidden");
+    if (!_vlanRendered) renderVlanGraph(graphData);
   } else if (view === "diff") {
     graphWrap.style.display = "none";
     tlBar.classList.add("hidden");
@@ -499,8 +595,48 @@ function setView(view) {
     otMapView.classList.add("hidden");
     otLogView.classList.add("hidden");
     diffView.classList.remove("hidden");
+    vlanView.classList.add("hidden");
     renderDiff();
   }
+
+  if (view !== "vlangraph") vlanView.classList.add("hidden");
+}
+
+/* ── VLAN health summary card ────────────────────────────────────────────── */
+function buildVlanSummary(data) {
+  const section = document.getElementById("vlan-summary-section");
+  const body    = document.getElementById("vlan-summary-body");
+  if (!section || !body) return;
+  const vlans = data.stats?.vlans || [];
+  if (!vlans.length) { section.style.display = "none"; return; }
+
+  // Count edges that cross VLAN boundaries
+  const nodeByIp = Object.fromEntries((data.nodes || []).map(n => [n.ip, n]));
+  const crossFlows = (data.edges || []).filter(e => {
+    const s = nodeByIp[e.source], d = nodeByIp[e.target];
+    if (!s || !d) return false;
+    const sv = s.vlans?.[0], dv = d.vlans?.[0];
+    return sv !== undefined && dv !== undefined && sv !== dv;
+  }).length;
+
+  const vlanAnomTypes = new Set(["vlan_hopping","vlan_native_leak","vlan_qinq",
+    "vlan_cross_segment_ot","arp_spoofing","broadcast_storm","pcp_abuse"]);
+  const vlanAnomCount = (data.anomalies || []).filter(a => vlanAnomTypes.has(a.type)).length;
+
+  const seg = computeVlanSegmentationScore();
+  const scoreHtml = seg
+    ? `<div style="margin-top:2px"><span style="color:${seg.color};font-weight:600">${seg.score}/100</span> <span style="font-size:10px;color:var(--text2)">${seg.label}</span></div>`
+    : "—";
+
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;font-size:11px">
+      <div><div style="color:var(--text2)">VLANs</div><strong>${vlans.length}</strong></div>
+      <div><div style="color:var(--text2)">Cross-VLAN flows</div><strong>${crossFlows}</strong></div>
+      <div><div style="color:var(--text2)">VLAN anomalies</div>
+           <strong style="color:${vlanAnomCount > 0 ? "var(--red)" : "var(--text)"}">${vlanAnomCount}</strong></div>
+      <div><div style="color:var(--text2)">Segmentation</div>${scoreHtml}</div>
+    </div>`;
+  section.style.display = "";
 }
 
 /* ── Filters ─────────────────────────────────────────────────────────────── */
@@ -508,6 +644,10 @@ function buildFilters(data) {
   const stats = data.stats || {};
   buildFilterList("proto-filters", stats.protocols || [], activeProtos, PROTO_COLORS, "proto");
   buildFilterList("type-filters",  stats.host_types || [], activeTypes,  HOST_COLORS,  "type");
+  const vlans = (stats.vlans || []).map(String);
+  if ((data.nodes || []).some(n => n.vlan_untagged)) vlans.push("untagged");
+  buildFilterList("vlan-filters",  vlans, activeVlans, {}, "vlan");
+  buildFilterList("ipver-filters", (stats.ip_versions || []).map(String), activeIpVersions, {}, "ipver");
   updateFilterUI();
 }
 
@@ -521,6 +661,18 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
       graphData.edges.forEach(e => (e.protocols || []).forEach(p => {
         counts[p] = (counts[p] || 0) + 1;
       }));
+    } else if (kind === "vlan") {
+      graphData.nodes.forEach(n => {
+        (n.vlans || []).forEach(v => {
+          counts[String(v)] = (counts[String(v)] || 0) + 1;
+        });
+        if (n.vlan_untagged) counts["untagged"] = (counts["untagged"] || 0) + 1;
+      });
+    } else if (kind === "ipver") {
+      graphData.nodes.forEach(n => {
+        const v = String(n.ip_version || 4);
+        counts[v] = (counts[v] || 0) + 1;
+      });
     } else {
       graphData.nodes.forEach(n => {
         counts[n.host_type || "Unknown Host"] = (counts[n.host_type || "Unknown Host"] || 0) + 1;
@@ -528,15 +680,21 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
     }
   }
 
+  const IPVER_COLORS = { "4": "#42A5F5", "6": "#AB47BC" };
   items.forEach(item => {
-    const color = colorMap[item] || "#546E7A";
+    const color = kind === "vlan"  ? vlanColor(item)
+                : kind === "ipver" ? (IPVER_COLORS[item] || "#546E7A")
+                : (colorMap[item] || "#546E7A");
     const div = document.createElement("div");
     div.className = "filter-item";
     const iconSpan = kind === "type" ? `<span class="fi-icon">${hostIcon(item)}</span>` : "";
+    const label = kind === "vlan"  ? (item === "untagged" ? "Untagged" : `VLAN ${item}`)
+                : kind === "ipver" ? (item === "4" ? "IPv4" : "IPv6")
+                : item;
     div.innerHTML = `
       <input type="checkbox" id="f-${kind}-${CSS.escape(item)}" checked>
       <div class="dot" style="background:${color}"></div>
-      ${iconSpan}<label for="f-${kind}-${CSS.escape(item)}">${item}</label>
+      ${iconSpan}<label for="f-${kind}-${CSS.escape(item)}">${label}</label>
       <span class="count">${counts[item] || 0}</span>
     `;
     const cb = div.querySelector("input");
@@ -553,15 +711,23 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
 
 function updateFilterUI() {
   if (!graphData) return;
-  const totalProtos = graphData.stats.protocols.length;
-  const totalTypes  = graphData.stats.host_types.length;
+  const totalProtos  = graphData.stats.protocols.length;
+  const totalTypes   = graphData.stats.host_types.length;
+  const totalVlans   = (graphData.stats.vlans || []).length +
+                       ((graphData.nodes || []).some(n => n.vlan_untagged) ? 1 : 0);
+  const totalIpVers  = (graphData.stats.ip_versions || []).length;
   const hiddenProtos = totalProtos - activeProtos.size;
   const hiddenTypes  = totalTypes  - activeTypes.size;
+  const hiddenVlans  = totalVlans  - activeVlans.size;
+  const hiddenIpVers = totalIpVers - activeIpVersions.size;
   const hasSearch    = searchTerm.length > 0;
-  const isFiltered   = hiddenProtos > 0 || hiddenTypes > 0 || hasSearch;
+  const isFiltered   = hiddenProtos > 0 || hiddenTypes > 0 || hiddenVlans > 0 ||
+                       hiddenIpVers > 0 || hasSearch;
 
-  const protoBadge = document.getElementById("proto-badge");
-  const typeBadge  = document.getElementById("type-badge");
+  const protoBadge  = document.getElementById("proto-badge");
+  const typeBadge   = document.getElementById("type-badge");
+  const vlanBadge   = document.getElementById("vlan-badge");
+  const ipVerBadge  = document.getElementById("ipver-badge");
   if (protoBadge) {
     protoBadge.textContent = hiddenProtos > 0 ? hiddenProtos + " hidden" : "";
     protoBadge.classList.toggle("visible", hiddenProtos > 0);
@@ -570,25 +736,116 @@ function updateFilterUI() {
     typeBadge.textContent = hiddenTypes > 0 ? hiddenTypes + " hidden" : "";
     typeBadge.classList.toggle("visible", hiddenTypes > 0);
   }
+  if (vlanBadge) {
+    vlanBadge.textContent = hiddenVlans > 0 ? hiddenVlans + " hidden" : "";
+    vlanBadge.classList.toggle("visible", hiddenVlans > 0);
+  }
+  if (ipVerBadge) {
+    ipVerBadge.textContent = hiddenIpVers > 0 ? hiddenIpVers + " hidden" : "";
+    ipVerBadge.classList.toggle("visible", hiddenIpVers > 0);
+  }
+
+  const protoClearBtn = document.getElementById("proto-clear-btn");
+  const typeClearBtn  = document.getElementById("type-clear-btn");
+  const vlanClearBtn  = document.getElementById("vlan-clear-btn");
+  const ipVerClearBtn = document.getElementById("ipver-clear-btn");
+  if (protoClearBtn) {
+    protoClearBtn.style.display = totalProtos > 0 ? "" : "none";
+    protoClearBtn.textContent   = activeProtos.size === totalProtos ? "Unselect All" : "Select All";
+  }
+  if (typeClearBtn) {
+    typeClearBtn.style.display = totalTypes > 0 ? "" : "none";
+    typeClearBtn.textContent   = activeTypes.size === totalTypes ? "Unselect All" : "Select All";
+  }
+  if (vlanClearBtn) {
+    vlanClearBtn.style.display = totalVlans > 0 ? "" : "none";
+    vlanClearBtn.textContent   = activeVlans.size === totalVlans ? "Unselect All" : "Select All";
+  }
+  if (ipVerClearBtn) {
+    ipVerClearBtn.style.display = totalIpVers > 0 ? "" : "none";
+    ipVerClearBtn.textContent   = activeIpVersions.size === totalIpVers ? "Unselect All" : "Select All";
+  }
 
   const clearSection = document.getElementById("clear-filters-section");
   if (clearSection) clearSection.style.display = isFiltered ? "" : "none";
+
+  // Header chip — always visible on every tab when any filter is active
+  const totalHidden = hiddenProtos + hiddenTypes + hiddenVlans + hiddenIpVers + (hasSearch ? 1 : 0);
+  const headerChip  = document.getElementById("header-clear-filters-btn");
+  const chipCount   = document.getElementById("header-filter-count");
+  if (headerChip) {
+    headerChip.style.display = isFiltered ? "" : "none";
+    if (chipCount) chipCount.textContent = totalHidden > 0
+      ? `${totalHidden} filter${totalHidden !== 1 ? "s" : ""} active`
+      : "search active";
+  }
 }
 
-document.getElementById("clear-filters-btn").addEventListener("click", () => {
+document.getElementById("proto-clear-btn").addEventListener("click", () => {
+  if (!graphData) return;
+  const all = graphData.stats.protocols;
+  const selectAll = activeProtos.size < all.length;
+  activeProtos.clear();
+  if (selectAll) all.forEach(p => activeProtos.add(p));
+  document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
+  updateFilterUI(); applyFilters();
+  if (currentView === "table") renderConnTable();
+});
+document.getElementById("type-clear-btn").addEventListener("click", () => {
+  if (!graphData) return;
+  const all = graphData.stats.host_types;
+  const selectAll = activeTypes.size < all.length;
+  activeTypes.clear();
+  if (selectAll) all.forEach(t => activeTypes.add(t));
+  document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
+  updateFilterUI(); applyFilters();
+  if (currentView === "table") renderConnTable();
+});
+document.getElementById("vlan-clear-btn").addEventListener("click", () => {
+  if (!graphData) return;
+  const allVlans = (graphData.stats.vlans || []).map(String);
+  if ((graphData.nodes || []).some(n => n.vlan_untagged)) allVlans.push("untagged");
+  const selectAll = activeVlans.size < allVlans.length;
+  activeVlans.clear();
+  if (selectAll) allVlans.forEach(v => activeVlans.add(v));
+  document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
+  updateFilterUI(); applyFilters();
+  if (currentView === "table") renderConnTable();
+});
+document.getElementById("ipver-clear-btn").addEventListener("click", () => {
+  if (!graphData) return;
+  const all = (graphData.stats.ip_versions || []).map(String);
+  const selectAll = activeIpVersions.size < all.length;
+  activeIpVersions.clear();
+  if (selectAll) all.forEach(v => activeIpVersions.add(v));
+  document.querySelectorAll("#ipver-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
+  updateFilterUI(); applyFilters();
+  if (currentView === "table") renderConnTable();
+});
+
+function clearAllFilters() {
+  if (!graphData) return;
   searchBox.value = "";
   searchTerm = "";
-  // Re-check all checkboxes and restore full sets
-  if (graphData) {
-    activeProtos = new Set(graphData.stats.protocols);
-    activeTypes  = new Set(graphData.stats.host_types);
-    document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = true; });
-    document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
-  }
+  activeProtos.clear();
+  graphData.stats.protocols.forEach(p => activeProtos.add(p));
+  activeTypes.clear();
+  graphData.stats.host_types.forEach(t => activeTypes.add(t));
+  activeVlans.clear();
+  (graphData.stats.vlans || []).map(String).forEach(v => activeVlans.add(v));
+  if ((graphData.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
+  activeIpVersions.clear();
+  (graphData.stats.ip_versions || []).map(String).forEach(v => activeIpVersions.add(v));
+  document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
+  document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb   => { cb.checked = true; });
+  document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb   => { cb.checked = true; });
+  document.querySelectorAll("#ipver-filters input[type=checkbox]").forEach(cb  => { cb.checked = true; });
   updateFilterUI();
   applyFilters();
   if (currentView === "table") renderConnTable();
-});
+}
+document.getElementById("clear-filters-btn").addEventListener("click", clearAllFilters);
+document.getElementById("header-clear-filters-btn").addEventListener("click", clearAllFilters);
 
 document.getElementById("no-results-clear").addEventListener("click", () => {
   document.getElementById("clear-filters-btn").click();
@@ -598,8 +855,17 @@ function applyFilters(skipFit) {
   if (!graphData) return;
 
   const visibleNodeIds = new Set();
+  const allVlans = (graphData.stats.vlans || []).map(String);
+  if ((graphData.nodes || []).some(n => n.vlan_untagged)) allVlans.push("untagged");
+  const vlanFilterActive  = allVlans.length > 0 && activeVlans.size < allVlans.length;
+  const allIpVers = (graphData.stats.ip_versions || []).map(String);
+  const ipVerFilterActive = allIpVers.length > 1 && activeIpVersions.size < allIpVers.length;
   nodesGroup.selectAll(".node").each(function(d) {
-    const visible = activeTypes.has(d.host_type) &&
+    const vlanOk = !vlanFilterActive ||
+      (d.vlans || []).some(v => activeVlans.has(String(v))) ||
+      (d.vlan_untagged && activeVlans.has("untagged"));
+    const ipVerOk = !ipVerFilterActive || activeIpVersions.has(String(d.ip_version || 4));
+    const visible = activeTypes.has(d.host_type) && vlanOk && ipVerOk &&
       (!searchTerm || d.ip.includes(searchTerm) ||
        (d.hostname && d.hostname.toLowerCase().includes(searchTerm)));
     d3.select(this).classed("faded", !visible);
@@ -607,7 +873,7 @@ function applyFilters(skipFit) {
   });
 
   linksGroup.selectAll(".link").each(function(d) {
-    const protoOk = d.protocols.some(p => activeProtos.has(p));
+    const protoOk = (d.protocols || []).some(p => activeProtos.has(p));
     const sid = d.source.id || d.source;
     const tid = d.target.id || d.target;
     const visible = protoOk && visibleNodeIds.has(sid) && visibleNodeIds.has(tid);
@@ -836,6 +1102,8 @@ function buildFilesSidebar(files) {
         <span class="file-mime">${escHtml(mime)}</span>
         <span class="file-size">${size}</span>
         <span style="margin-left:auto;color:var(--text2);font-size:10px">${ts}</span>
+        <a class="file-dl-btn" href="/download/${encodeURIComponent(f.sha256)}"
+           download="${escHtml(f.filename)}" title="Download captured file">⬇</a>
       </div>
       <div class="file-route">${escHtml(f.src)} → ${escHtml(f.dst)}</div>
       <div class="file-hash" title="SHA-256">${escHtml(f.sha256)}</div>`;
@@ -912,7 +1180,7 @@ function drawCanvasEdges() {
   ctx.globalAlpha = 0.7;
 
   for (const d of _canvasLinks) {
-    const protoOk = d.protocols.some(p => activeProtos.has(p));
+    const protoOk = (d.protocols || []).some(p => activeProtos.has(p));
     const sid = typeof d.source === "object" ? d.source.id : d.source;
     const tid = typeof d.target === "object" ? d.target.id : d.target;
     if (!protoOk || !visibleNodeIds.has(sid) || !visibleNodeIds.has(tid)) continue;
@@ -1068,92 +1336,9 @@ function renderGraph(data) {
       showCtxMenu(event, d);
     });
 
-  // Anomaly pulse rings
-  nodeSel.each(function(d) {
-    const sev = anomalyNodeIps[d.ip];
-    if (sev) {
-      d3.select(this).append("circle")
-        .attr("class", `anomaly-ring-${sev}`)
-        .attr("r", nodeRadius(d) + 4);
-    }
-  });
-
-  // Credential key icon
-  nodeSel.filter(d => credIpSet.has(d.ip)).append("text")
-    .attr("class", "node-cred-icon")
-    .attr("dy", d => -(nodeRadius(d) + 4))
-    .attr("dx", d => nodeRadius(d) - 2)
-    .attr("font-size", "10px")
-    .attr("text-anchor", "middle")
-    .text("🔑");
-
-  // Circle
-  nodeSel.append("circle")
-    .attr("r", d => nodeRadius(d))
-    .attr("fill", d => hostColor(d.host_type))
-    .attr("fill-opacity", 0.85)
-    .attr("stroke", d => d3.color(hostColor(d.host_type)).brighter(0.5));
-
-  // Icon character
-  nodeSel.append("text")
-    .attr("class", "node-icon")
-    .attr("dy", "0.38em")
-    .attr("font-size", d => Math.min(nodeRadius(d) * 1.1, 16) + "px")
-    .text(d => hostIcon(d.host_type));
-
-  // IP label below node
-  nodeSel.append("text")
-    .attr("class", "ip-label")
-    .attr("dy", d => nodeRadius(d) + 11)
-    .attr("font-size", "9px")
-    .attr("fill", "#8b949e")
-    .text(d => d.hostname || d.ip);
-
-  // Country code label
-  nodeSel.each(function(d) {
-    if (d.geo && d.geo.country_code) {
-      d3.select(this).append("text")
-        .attr("class", "node-geo-label")
-        .attr("dy", d => nodeRadius(d) + 21)
-        .attr("font-size", "8px")
-        .text(d.geo.country_code);
-    }
-  });
-
-  // Note icon
-  nodeSel.each(function(d) {
-    const note = getAnnotation(d.ip);
-    if (note) {
-      d3.select(this).append("text")
-        .attr("class", "node-note-icon")
-        .attr("dy", d => -(nodeRadius(d) + 4))
-        .attr("font-size", "10px")
-        .text("✎");
-    }
-  });
-
-  // Risk score badge (top-right corner of node)
-  nodeSel.each(function(d) {
-    const risk = d.risk_score || 0;
-    if (risk <= 0) return;
-    const r = nodeRadius(d);
-    const badgeClr = risk >= 70 ? "var(--red)" : risk >= 40 ? "var(--yellow)" : "#6e7681";
-    const g = d3.select(this);
-    g.append("circle")
-      .attr("cx", r - 1).attr("cy", -(r - 1))
-      .attr("r", 8)
-      .attr("fill", "#0d1117")
-      .attr("stroke", badgeClr)
-      .attr("stroke-width", 1.5);
-    g.append("text")
-      .attr("x", r - 1).attr("y", -(r - 5))
-      .attr("font-size", "7px")
-      .attr("fill", badgeClr)
-      .attr("text-anchor", "middle")
-      .attr("font-family", "var(--font-mono)")
-      .attr("font-weight", "bold")
-      .text(risk);
-  });
+  // Node decorations: anomaly ring, cred icon, circle, host glyph, labels, risk badge
+  // IPv6 nodes get a dashed stroke for visual distinction
+  appendNodeDecorations(nodeSel, nodeRadius, { ipVersionStroke: true });
 
   // Click on background → deselect
   svg.on("click", () => {
@@ -1232,6 +1417,7 @@ function buildSimulation(nodes, links, cx, cy, layout) {
 document.querySelectorAll(".layout-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     if (!graphData) return;
+    if (!btn.dataset.layout) return;   // skip VLAN layout buttons (they use data-vlan-layout)
     currentLayout = btn.dataset.layout;
     document.querySelectorAll(".layout-btn").forEach(b => b.classList.toggle("active", b.dataset.layout === currentLayout));
     // Reheat with new forces
@@ -1287,6 +1473,114 @@ function unhighlightAll(linkSel, nodeSel) {
   linkSel.classed("highlighted", false).classed("faded", false);
   nodeSel.classed("faded", false);
   applyFilters(true);
+}
+
+/* ── Shared node decoration helper ──────────────────────────────────────── */
+// Appends anomaly ring, cred icon, circle (with IPv6 dash), host glyph, IP label,
+// country code, note icon, and risk badge to a D3 node selection.
+// nodeRadius: function(d) → radius in px
+// opts: { ipVersionStroke: bool, showGeo: bool (default true) }
+function appendNodeDecorations(nodeSel, nodeRadius, opts = {}) {
+  const ipVersionStroke = opts.ipVersionStroke || false;
+  const showGeo = opts.showGeo !== false;
+
+  // Anomaly ring
+  nodeSel.each(function(d) {
+    const sev = anomalyNodeIps[d.ip];
+    if (sev) {
+      d3.select(this).append("circle")
+        .attr("class", `anomaly-ring-${sev}`)
+        .attr("r", nodeRadius(d) + 4);
+    }
+  });
+
+  // Credential key icon
+  nodeSel.filter(d => credIpSet.has(d.ip)).append("text")
+    .attr("class", "node-cred-icon")
+    .attr("dy", d => -(nodeRadius(d) + 4))
+    .attr("dx", d => nodeRadius(d) - 2)
+    .attr("font-size", "10px")
+    .attr("text-anchor", "middle")
+    .text("🔑");
+
+  // Circle (IPv6 nodes get a dashed stroke when ipVersionStroke is true)
+  // When colorByVlan is true the fill is driven by the node's primary VLAN color.
+  const _nodeFillColor = d => colorByVlan
+    ? vlanColor((d.vlans && d.vlans.length) ? String(d.vlans[0]) : (d.vlan_untagged ? "untagged" : null))
+    : hostColor(d.host_type);
+  const circles = nodeSel.append("circle")
+    .attr("r", d => nodeRadius(d))
+    .attr("fill", _nodeFillColor)
+    .attr("fill-opacity", 0.85)
+    .attr("stroke", d => { const c = d3.color(_nodeFillColor(d)); return c ? c.brighter(0.5) : "#fff"; });
+  if (ipVersionStroke) {
+    circles
+      .attr("stroke-dasharray", d => d.ip_version === 6 ? "3,2" : null)
+      .attr("stroke-width", d => d.ip_version === 6 ? 1.6 : null);
+  }
+
+  // Host-type icon glyph
+  nodeSel.append("text")
+    .attr("class", "node-icon")
+    .attr("dy", "0.38em")
+    .attr("font-size", d => Math.min(nodeRadius(d) * 1.1, 16) + "px")
+    .text(d => hostIcon(d.host_type));
+
+  // IP/hostname label below node
+  nodeSel.append("text")
+    .attr("class", "ip-label")
+    .attr("dy", d => nodeRadius(d) + 11)
+    .attr("font-size", "9px")
+    .attr("fill", "#8b949e")
+    .text(d => d.hostname || d.ip);
+
+  // Country code label
+  if (showGeo) {
+    nodeSel.each(function(d) {
+      if (d.geo && d.geo.country_code) {
+        d3.select(this).append("text")
+          .attr("class", "node-geo-label")
+          .attr("dy", d => nodeRadius(d) + 21)
+          .attr("font-size", "8px")
+          .text(d.geo.country_code);
+      }
+    });
+  }
+
+  // Note icon (user annotation)
+  nodeSel.each(function(d) {
+    const note = getAnnotation(d.ip);
+    if (note) {
+      d3.select(this).append("text")
+        .attr("class", "node-note-icon")
+        .attr("dy", d => -(nodeRadius(d) + 4))
+        .attr("font-size", "10px")
+        .text("✎");
+    }
+  });
+
+  // Risk score badge (top-right corner of node)
+  nodeSel.each(function(d) {
+    const risk = d.risk_score || 0;
+    if (risk <= 0) return;
+    const r = nodeRadius(d);
+    const badgeClr = risk >= 70 ? "var(--red)" : risk >= 40 ? "var(--yellow)" : "#6e7681";
+    const g = d3.select(this);
+    g.append("circle")
+      .attr("cx", r - 1).attr("cy", -(r - 1))
+      .attr("r", 8)
+      .attr("fill", "#0d1117")
+      .attr("stroke", badgeClr)
+      .attr("stroke-width", 1.5);
+    g.append("text")
+      .attr("x", r - 1).attr("y", -(r - 5))
+      .attr("font-size", "7px")
+      .attr("fill", badgeClr)
+      .attr("text-anchor", "middle")
+      .attr("font-family", "var(--font-mono)")
+      .attr("font-weight", "bold")
+      .text(risk);
+  });
 }
 
 /* ── Tooltip helpers ─────────────────────────────────────────────────────── */
@@ -1440,6 +1734,23 @@ function showDetailPanel(d) {
         ${threat ? `<span style="color:var(--red);margin-left:6px">⚠ ${escHtml(threat)}</span>` : ""}
       </div>`);
     });
+  }
+
+  // VLAN membership
+  if ((d.vlans || []).length || d.vlan_untagged || d.vlan_qinq) {
+    rows.push(sectionTitle("VLAN Tags"));
+    if ((d.vlans || []).length) {
+      const tags = d.vlans.map(v => `<span style="background:${vlanColor(v)};color:#000;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;display:inline-block;margin:1px 2px">VLAN ${v}</span>`).join("");
+      rows.push(`<div style="margin-bottom:4px">${tags}</div>`);
+    }
+    if ((d.vlan_outer || []).length) {
+      rows.push(row("QinQ outer VLANs", d.vlan_outer.join(", ")));
+    }
+    if ((d.vlan_pcps || []).length) {
+      rows.push(row("PCP values", d.vlan_pcps.join(", ")));
+    }
+    if (d.vlan_untagged) rows.push(row("Untagged frames", "Yes"));
+    if (d.vlan_qinq)     rows.push(row("QinQ (double-tagged)", "Yes"));
   }
 
   // Anomalies for this node
@@ -1683,6 +1994,26 @@ document.getElementById("btn-zoom-out").addEventListener("click", () =>
 );
 document.getElementById("btn-zoom-fit").addEventListener("click", zoomFit);
 
+// Color-by-VLAN toggle — re-renders node fills without rebuilding the simulation
+document.getElementById("btn-color-vlan").addEventListener("click", () => {
+  colorByVlan = !colorByVlan;
+  const btn = document.getElementById("btn-color-vlan");
+  btn.classList.toggle("active", colorByVlan);
+  // Re-apply fill colors to all nodes in the current graph
+  nodesGroup.selectAll(".node circle").filter(function() {
+    // Only the first circle child (the main circle, not anomaly ring or risk badge)
+    return this.parentNode.querySelector("circle") === this;
+  }).attr("fill", d => colorByVlan
+    ? vlanColor((d.vlans && d.vlans.length) ? String(d.vlans[0]) : (d.vlan_untagged ? "untagged" : null))
+    : hostColor(d.host_type)
+  ).attr("stroke", d => {
+    const col = colorByVlan
+      ? vlanColor((d.vlans && d.vlans.length) ? String(d.vlans[0]) : (d.vlan_untagged ? "untagged" : null))
+      : hostColor(d.host_type);
+    const c = d3.color(col); return c ? c.brighter(0.5) : "#fff";
+  });
+});
+
 function zoomFit() {
   const bounds = zoomGroup.node().getBBox();
   if (!bounds.width || !bounds.height) return;
@@ -1783,9 +2114,7 @@ const pktTreeEmpty  = document.getElementById("pkt-tree-empty");
 const pktHexEmpty   = document.getElementById("pkt-hex-empty");
 
 function _pktsForCurrentConn() {
-  const m = pktConnLabel.textContent.match(/^(.+?)  ↔  (.+?)  ·/);
-  if (!m) return [];
-  return packetData[[m[1].trim(), m[2].trim()].sort().join("|")] || [];
+  return _currentPktList;
 }
 
 document.getElementById("pkt-close").addEventListener("click", closePktInspector);
@@ -1954,6 +2283,7 @@ function renderStream(pkts) {
 function openPktInspector(sid, tid) {
   const key = [sid, tid].sort().join("|");
   const pkts = packetData[key] || [];
+  _currentPktList = pkts;
   pktConnLabel.textContent = `${sid}  ↔  ${tid}  ·  ${pkts.length} packet${pkts.length !== 1 ? "s" : ""} captured`;
   _switchPktTab("pkts", pkts);
   renderPktTable(pkts);
@@ -1972,6 +2302,7 @@ function openPktInspectorForHost(ip) {
     if (a === ip || b === ip) allPkts.push(...pkts);
   }
   allPkts.sort((a, b) => a.time - b.time);
+  _currentPktList = allPkts;
   pktConnLabel.textContent = `Host ${ip}  ·  ${allPkts.length} packet${allPkts.length !== 1 ? "s" : ""} captured`;
   _switchPktTab("pkts", allPkts);
   renderPktTable(allPkts);
@@ -1982,6 +2313,7 @@ function openPktInspectorForHost(ip) {
 }
 
 function closePktInspector() {
+  _currentPktList = [];    // clear stale packets so tabs show nothing after close
   pktInspector.classList.add("hidden");
   graphWrap.classList.remove("pkt-open");
   document.getElementById("legend").style.bottom = "";
@@ -2447,9 +2779,14 @@ function _buildConnRows() {
       const protoOk  = e.protocols.some(p => activeProtos.has(p));
       const typeOk   = (!srcNode || activeTypes.has(srcNode.host_type)) &&
                        (!dstNode || activeTypes.has(dstNode.host_type));
+      const ipVerFilterActive = (graphData.stats.ip_versions || []).length > 1 &&
+                                activeIpVersions.size < (graphData.stats.ip_versions || []).length;
+      const ipVerOk  = !ipVerFilterActive ||
+                       (!srcNode || activeIpVersions.has(String(srcNode.ip_version || 4))) &&
+                       (!dstNode || activeIpVersions.has(String(dstNode.ip_version || 4)));
       const searchOk = !searchTerm ||
         e.source.includes(searchTerm) || e.target.includes(searchTerm);
-      const faded    = !protoOk || !typeOk || !searchOk;
+      const faded    = !protoOk || !typeOk || !ipVerOk || !searchOk;
       const duration = (e.first_seen != null && e.last_seen != null)
         ? (e.last_seen - e.first_seen).toFixed(3) + "s" : "—";
       return { e, faded, duration };
@@ -4001,6 +4338,745 @@ document.getElementById("diff-clear-btn").addEventListener("click", () => {
   setView("graph");
 });
 
+/* ── VLAN Graph ──────────────────────────────────────────────────────────── */
+function renderVlanGraph(data) {
+  _vlanRendered = true;
+  vlanSelectedNode = null;   // clear any stale selection from a previous render
+  const svgEl = document.getElementById("vlan-svg");
+  const emptyEl = document.getElementById("vlan-empty");
+
+  const allVlans = data.stats.vlans || [];
+  const hasUntagged = data.nodes.some(n => n.vlan_untagged);
+  const totalVlans = allVlans.length + (hasUntagged ? 1 : 0);
+
+  if (totalVlans === 0) {
+    emptyEl.style.display = "";
+    svgEl.style.display = "none";
+    return;
+  }
+  emptyEl.style.display = "none";
+  svgEl.style.display = "";
+
+  // Build VLAN super-nodes (label includes user-assigned name if set)
+  const vlanNodes = allVlans.map(vid => {
+    const defaultLabel = `VLAN ${vid}`;
+    return {
+      id: `vlan-${vid}`,
+      kind: "vlan",
+      label: vlanDisplayName(String(vid), defaultLabel),
+      defaultLabel,
+      vid: String(vid),
+      color: vlanColor(vid),
+      hostCount: 0,
+    };
+  });
+  if (hasUntagged) {
+    vlanNodes.push({ id: "vlan-untagged", kind: "vlan", label: vlanDisplayName("untagged", "Untagged"), defaultLabel: "Untagged", vid: "untagged", color: "#546E7A", hostCount: 0 });
+  }
+  const vlanById = Object.fromEntries(vlanNodes.map(v => [v.id, v]));
+
+  // Build host nodes + membership (one node per host, member-links to ALL its VLANs)
+  const hostNodes = data.nodes.map(n => {
+    const vids = (n.vlans || []).map(String);
+    const parents = vids.length
+      ? vids.map(v => `vlan-${v}`)
+      : (n.vlan_untagged ? ["vlan-untagged"] : []);
+    parents.forEach(pid => { if (vlanById[pid]) vlanById[pid].hostCount++; });
+    // Spread full source node so node decorations (risk, geo, anomaly, cred) have all fields
+    return {
+      ...n,
+      id: n.ip,
+      kind: "host",
+      label: n.hostname || n.ip,
+      parentVlans: parents,
+      color: hostColor(n.host_type),
+      multiVlan: vids.length > 1,
+    };
+  });
+
+  // Cap host count to keep the simulation responsive for large captures
+  const MAX_VLAN_HOSTS = 300;
+  if (hostNodes.length > MAX_VLAN_HOSTS) {
+    showToast(`VLAN graph: showing top ${MAX_VLAN_HOSTS} hosts by traffic (${hostNodes.length} total — see VLAN inventory CSV for full list).`, "info");
+    hostNodes.sort((a, b) => (b.packet_count || 0) - (a.packet_count || 0));
+    hostNodes.splice(MAX_VLAN_HOSTS);
+    // hostCount on super-nodes reflects the full capture (tallied before truncation) — intentional
+  }
+
+  // Scale VLAN super-node radius by host count (min 30, max 80)
+  vlanNodes.forEach(v => { v.r = Math.min(80, Math.max(30, 20 + v.hostCount * 4)); });
+
+  // Pre-built lookup: eliminates O(hosts) linear search per edge in the loop below
+  const nodeByIp = Object.fromEntries(data.nodes.map(n => [n.ip, n]));
+
+  // Build cross-VLAN traffic links (VLAN → VLAN, aggregated across all VLAN pairs)
+  const crossVlanMap = {};
+  data.edges.forEach(e => {
+    const src = nodeByIp[e.source];
+    const dst = nodeByIp[e.target];
+    if (!src || !dst) return;
+    const sv = (src.vlans || []).map(v => `vlan-${v}`).concat(src.vlan_untagged ? ["vlan-untagged"] : []);
+    const dv = (dst.vlans || []).map(v => `vlan-${v}`).concat(dst.vlan_untagged ? ["vlan-untagged"] : []);
+    sv.forEach(a => dv.forEach(b => {
+      if (a === b) return;
+      const key = [a, b].sort().join("|");
+      if (!crossVlanMap[key]) crossVlanMap[key] = { source: a, target: b, packets: 0, bytes: 0 };
+      crossVlanMap[key].packets += e.packet_count || 0;
+      crossVlanMap[key].bytes   += e.bytes || 0;
+    }));
+  });
+  const crossLinks = Object.values(crossVlanMap).map(l => Object.assign(l, { kind: "cross" }));
+  const maxPkts = crossLinks.reduce((m, l) => Math.max(m, l.packets), 1);
+
+  // Membership links (host → each parent VLAN) for clustering force; multi-VLAN hosts link to all
+  const memberLinks = hostNodes.flatMap(n => n.parentVlans.map(pid => ({ source: n.id, target: pid, kind: "member" })));
+
+  const allNodes = [...vlanNodes, ...hostNodes];
+  const allLinks = [...crossLinks, ...memberLinks];
+
+  // Position VLAN super-nodes deterministically on first render
+  const W = svgEl.clientWidth  || 900;
+  const H = svgEl.clientHeight || 650;
+  vlanNodes.forEach((v, i) => {
+    const angle = (2 * Math.PI * i) / vlanNodes.length;
+    v.x = W / 2 + (Math.min(W, H) * 0.32) * Math.cos(angle);
+    v.y = H / 2 + (Math.min(W, H) * 0.32) * Math.sin(angle);
+  });
+  // Scatter host nodes near their first parent VLAN (multi-VLAN hosts start between segments)
+  hostNodes.forEach(n => {
+    const parent = n.parentVlans.length ? vlanById[n.parentVlans[0]] : null;
+    n.x = parent ? parent.x + (Math.random() - 0.5) * 80 : W / 2 + (Math.random() - 0.5) * 200;
+    n.y = parent ? parent.y + (Math.random() - 0.5) * 80 : H / 2 + (Math.random() - 0.5) * 200;
+  });
+
+  // D3 setup
+  d3.select(svgEl).selectAll("*").remove();
+  if (vlanSimulation) vlanSimulation.stop();
+
+  const svgSel = d3.select(svgEl).attr("width", W).attr("height", H);
+  const vlanZoom = d3.zoom().scaleExtent([0.1, 8]).on("zoom", e => {
+    gRoot.attr("transform", e.transform);
+  });
+  svgSel.call(vlanZoom);
+  const gRoot = svgSel.append("g");
+
+  // Convex hull layer (bottom-most — drawn before edges and nodes)
+  const hullG = gRoot.append("g").attr("class", "vlan-hulls");
+
+  // Cross-VLAN edge layer
+  const crossEdgeG = gRoot.append("g").attr("class", "vlan-cross-edges");
+  const crossEdgeSel = crossEdgeG.selectAll(".vcross")
+    .data(crossLinks)
+    .join("line")
+      .attr("class", "vcross")
+      .attr("stroke", "#ef5350")
+      .attr("stroke-opacity", 0.8)
+      .attr("stroke-width", d => 2 + 5 * (d.packets / maxPkts));
+
+  // Cross-edge tooltip — uses shared positionTooltip/hideTooltip for consistency
+  crossEdgeSel
+    .style("cursor", "default")
+    .on("mouseenter", (event, d) => {
+      const src = (typeof d.source === "object" ? d.source.id : d.source).replace("vlan-", "VLAN ");
+      const dst = (typeof d.target === "object" ? d.target.id : d.target).replace("vlan-", "VLAN ");
+      tooltip.innerHTML = `<strong>Cross-VLAN traffic</strong><br>${escHtml(src)} ↔ ${escHtml(dst)}<br>Packets: ${fmtNum(d.packets)}<br>Bytes: ${fmtBytes(d.bytes)}`;
+      tooltip.classList.add("visible");
+      positionTooltip(event);
+    })
+    .on("mousemove", (event) => positionTooltip(event))
+    .on("mouseleave", () => hideTooltip());
+
+  // VLAN super-node layer
+  const vlanG = gRoot.append("g").attr("class", "vlan-supernodes");
+  const vlanCircles = vlanG.selectAll(".vsuper")
+    .data(vlanNodes)
+    .join("g").attr("class", "vsuper")
+      .style("cursor", "pointer")
+      .call(d3.drag()
+        .on("start", (e, d) => { if (!e.active) vlanSimulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on("drag",  (e, d) => { d.fx = e.x; d.fy = e.y; })
+        .on("end",   (e, d) => { if (!e.active) vlanSimulation.alphaTarget(0); d.fx = null; d.fy = null; }))
+      .on("click", (event, d) => {
+        event.stopPropagation();
+        showVlanDetailPanel(d);
+      })
+      .on("dblclick", (event, d) => {
+        event.stopPropagation();
+        hideTooltip();
+        const current = getVlanLabel(d.vid);
+        const name = prompt(`Label for ${escHtml(d.defaultLabel)} (leave blank to clear):`, current);
+        if (name === null) return;  // cancelled
+        saveVlanLabel(d.vid, name.trim());
+        // Update the label in data and redraw the text element
+        d.label = vlanDisplayName(d.vid, d.defaultLabel);
+        d3.select(event.currentTarget).select("text").text(d.label);
+        // Refresh legend
+        const li = document.getElementById("vlan-legend-items");
+        if (li) li.querySelector(`[data-vid="${CSS.escape(d.vid)}"]`)
+          && (li.querySelector(`[data-vid="${CSS.escape(d.vid)}"]`).textContent = d.label);
+      })
+      .on("mouseenter", (event, d) => {
+        tooltip.innerHTML = `<strong>${escHtml(d.label)}</strong><br>${d.hostCount} host${d.hostCount !== 1 ? "s" : ""}<br><span style="font-size:10px;color:#8b949e">Double-click to rename</span>`;
+        tooltip.classList.add("visible");
+        positionTooltip(event);
+      })
+      .on("mousemove", (event) => positionTooltip(event))
+      .on("mouseleave", () => hideTooltip());
+
+  vlanCircles.append("circle")
+    .attr("r", d => d.r)
+    .attr("fill", d => d.color)
+    .attr("fill-opacity", 0.13)
+    .attr("stroke", d => d.color)
+    .attr("stroke-width", 2);
+
+  vlanCircles.append("text")
+    .attr("text-anchor", "middle")
+    .attr("dominant-baseline", "central")
+    .attr("font-size", 13)
+    .attr("font-weight", "bold")
+    .attr("fill", d => d.color)
+    .text(d => d.label);
+
+  vlanCircles.append("text")
+    .attr("text-anchor", "middle")
+    .attr("y", 18)
+    .attr("dominant-baseline", "central")
+    .attr("font-size", 10)
+    .attr("fill", "#8b949e")
+    .text(d => `${d.hostCount} host${d.hostCount !== 1 ? "s" : ""}`);
+
+  // Host node layer
+  const hostG = gRoot.append("g").attr("class", "vlan-hosts");
+  const hostCircles = hostG.selectAll(".vhost")
+    .data(hostNodes)
+    .join("g").attr("class", "vhost")
+      .style("cursor", "pointer")
+      .call(d3.drag()
+        .on("start", (e, d) => { if (!e.active) vlanSimulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on("drag",  (e, d) => { d.fx = e.x; d.fy = e.y; })
+        .on("end",   (e, d) => { if (!e.active) vlanSimulation.alphaTarget(0); d.fx = null; d.fy = null; }))
+      .on("mouseenter", (event, d) => {
+        showTooltipNode(event, d);
+        highlightVlanNode(d);
+      })
+      .on("mousemove", (event) => positionTooltip(event))
+      .on("mouseleave", (event, d) => {
+        hideTooltip();
+        if (!vlanSelectedNode || vlanSelectedNode.id !== d.id) {
+          unhighlightVlan();
+          if (vlanSelectedNode) highlightVlanNode(vlanSelectedNode);
+        }
+      })
+      .on("click", (event, d) => {
+        event.stopPropagation();
+        if (vlanSelectedNode && vlanSelectedNode.id === d.id) {
+          vlanSelectedNode = null;
+          unhighlightVlan();
+          detailPanel.classList.remove("open");
+        } else {
+          vlanSelectedNode = d;
+          highlightVlanNode(d);
+          showDetailPanel(d);
+        }
+      });
+
+  // Lightweight host decorations — 2-3 elements per node (main graph helper is 4-8, too heavy here)
+  // Anomaly ring: single colored circle, visible even at 7px
+  hostCircles.each(function(d) {
+    const sev = anomalyNodeIps[d.ip];
+    if (sev) {
+      d3.select(this).append("circle")
+        .attr("class", `anomaly-ring-${sev}`)
+        .attr("r", 11);
+    }
+  });
+  // Circle — host-type color; IPv6 gets a dashed stroke
+  hostCircles.append("circle")
+    .attr("r", 6)
+    .attr("fill", d => hostColor(d.host_type))
+    .attr("fill-opacity", 0.9)
+    .attr("stroke", d => d3.color(hostColor(d.host_type)).brighter(0.4))
+    .attr("stroke-width", d => d.ip_version === 6 ? 1.5 : 0.8)
+    .attr("stroke-dasharray", d => d.ip_version === 6 ? "2,1.5" : null);
+  // IP / hostname label below the dot
+  hostCircles.append("text")
+    .attr("class", "ip-label")
+    .attr("dy", 16)
+    .attr("font-size", "8px")
+    .attr("fill", "#8b949e")
+    .text(d => d.hostname || d.ip);
+
+  // B5: Gateway overlay — inter-VLAN routers get a larger ring + "GW" badge
+  const _gwTypes = new Set(["Router", "Network Device", "VPN Gateway"]);
+  hostCircles.filter(d => _gwTypes.has(d.host_type) && d.parentVlans.length > 1)
+    .each(function(d) {
+      const g = d3.select(this);
+      // Outer accent ring
+      g.insert("circle", "circle")
+        .attr("r", 10)
+        .attr("fill", "none")
+        .attr("stroke", "#e3b341")
+        .attr("stroke-width", 1.5)
+        .attr("stroke-dasharray", "3,2");
+      // "GW" label above the dot
+      g.append("text")
+        .attr("dy", -12)
+        .attr("font-size", "7px")
+        .attr("font-weight", "bold")
+        .attr("fill", "#e3b341")
+        .attr("text-anchor", "middle")
+        .text("GW");
+    });
+
+  // Force simulation
+  vlanSimulation = d3.forceSimulation(allNodes)
+    .alphaDecay(0.05)       // converges ~2× faster than default 0.0228 (~130 ticks vs ~300)
+    .velocityDecay(0.5)     // slightly more damping for a smoother stop
+    .force("link", d3.forceLink(allLinks).id(d => d.id)
+      .distance(d => d.kind === "member" ? 60 : 200)
+      .strength(d => d.kind === "member" ? 0.6 : 0.2))
+    .force("charge", d3.forceManyBody()
+      .strength(d => d.kind === "vlan" ? -300 : -30)
+      .distanceMax(250))    // cap pairwise repulsion range — removes O(n²) long-range work
+    .force("collide", d3.forceCollide(d => d.kind === "vlan" ? (d.r + 20) : 14))
+    .force("center", d3.forceCenter(W / 2, H / 2).strength(0.05))
+    .on("tick", () => {
+      crossEdgeSel
+        .attr("x1", d => (typeof d.source === "object" ? d.source.x : 0))
+        .attr("y1", d => (typeof d.source === "object" ? d.source.y : 0))
+        .attr("x2", d => (typeof d.target === "object" ? d.target.x : 0))
+        .attr("y2", d => (typeof d.target === "object" ? d.target.y : 0));
+      vlanCircles.attr("transform", d => `translate(${d.x},${d.y})`);
+      hostCircles.attr("transform", d => `translate(${d.x},${d.y})`);
+      // B1: Redraw convex hull polygons around each VLAN's member hosts
+      hullG.selectAll(".vlan-hull").data(vlanNodes, d => d.id).join("path")
+        .attr("class", "vlan-hull")
+        .attr("fill", d => d.color)
+        .attr("fill-opacity", 0.06)
+        .attr("stroke", d => d.color)
+        .attr("stroke-opacity", 0.35)
+        .attr("stroke-width", 1.5)
+        .attr("stroke-dasharray", "4,3")
+        .attr("d", d => {
+          const pts = hostNodes
+            .filter(n => n.parentVlans.includes(d.id) && n.x != null && n.y != null)
+            .map(n => [n.x, n.y]);
+          if (pts.length < 3) return null;
+          const hull = d3.polygonHull(pts);
+          return hull ? `M${hull.map(p => p.join(",")).join("L")}Z` : null;
+        });
+    });
+
+  // Fit button
+  document.getElementById("vlan-zoom-fit").onclick = () => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    allNodes.forEach(n => {
+      if (n.x == null) return;
+      minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x); maxY = Math.max(maxY, n.y);
+    });
+    if (!isFinite(minX)) return;
+    const pad = 60;
+    const bw = maxX - minX || 1, bh = maxY - minY || 1;
+    const scale = Math.min((W - pad * 2) / bw, (H - pad * 2) / bh, 3);
+    const tx = W / 2 - scale * (minX + bw / 2);
+    const ty = H / 2 - scale * (minY + bh / 2);
+    svgSel.transition().duration(500).call(vlanZoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+  };
+
+  // Background click → deselect host node and close panel
+  svgSel.on("click", () => {
+    vlanSelectedNode = null;
+    unhighlightVlan();
+    detailPanel.classList.remove("open");
+  });
+
+  // Layout switcher
+  document.querySelectorAll("[data-vlan-layout]").forEach(btn => {
+    btn.addEventListener("click", function() {
+      document.querySelectorAll("[data-vlan-layout]").forEach(b => b.classList.remove("active"));
+      this.classList.add("active");
+      _vlanLayout = this.dataset.vlanLayout;
+      applyVlanLayout();
+    });
+  });
+
+  function applyVlanLayout() {
+    if (!vlanSimulation) return;
+    vlanSimulation.stop();
+    if (_vlanLayout === "radial") {
+      // VLAN super-nodes equally spaced on outer ring
+      vlanNodes.forEach((v, i) => {
+        const angle = (2 * Math.PI * i) / vlanNodes.length;
+        const r = Math.min(W, H) * 0.35;
+        v.fx = W / 2 + r * Math.cos(angle);
+        v.fy = H / 2 + r * Math.sin(angle);
+      });
+    } else if (_vlanLayout === "cluster") {
+      // Grid layout for VLAN super-nodes
+      const cols = Math.ceil(Math.sqrt(vlanNodes.length));
+      vlanNodes.forEach((v, i) => {
+        const col = i % cols, row = Math.floor(i / cols);
+        const spacing = Math.min(W, H) / (cols + 1);
+        v.fx = spacing + col * spacing;
+        v.fy = 80 + row * spacing;
+      });
+    } else {
+      // Force: release fixed positions
+      vlanNodes.forEach(v => { v.fx = null; v.fy = null; });
+    }
+    vlanSimulation.alpha(0.5).restart();
+  }
+
+  // Stats bar — traffic metrics, sprawl metrics, segmentation score
+  const totalCrossBytes = crossLinks.reduce((s, l) => s + (l.bytes || 0), 0);
+  const untaggedHosts   = hostNodes.filter(n => n.vlan_untagged).length;
+  const multiVlanHosts  = hostNodes.filter(n => n.multiVlan).length;
+
+  // C3: Sprawl metrics
+  const crossLinkedVlanIds = new Set();
+  crossLinks.forEach(l => {
+    const s = typeof l.source === "object" ? l.source.id : l.source;
+    const t = typeof l.target === "object" ? l.target.id : l.target;
+    crossLinkedVlanIds.add(s); crossLinkedVlanIds.add(t);
+  });
+  const singletonVlans = vlanNodes.filter(v => v.hostCount === 1).length;
+  const isolatedVlans  = vlanNodes.filter(v => !crossLinkedVlanIds.has(v.id)).length;
+
+  // A1: Segmentation score
+  const segScore = computeVlanSegmentationScore();
+
+  const statsBar = document.getElementById("vlan-stats-bar");
+  if (statsBar) {
+    const scorePill = segScore
+      ? `<span style="margin-left:auto">Segmentation: <strong style="color:${segScore.color}">${segScore.score}/100</strong> <span style="color:${segScore.color};font-size:10px">(${segScore.label})</span></span>`
+      : "";
+    statsBar.innerHTML = [
+      `<span>Cross-VLAN flows: <strong>${crossLinks.length}</strong></span>`,
+      `<span>Cross-VLAN bytes: <strong>${fmtBytes(totalCrossBytes)}</strong></span>`,
+      `<span>Untagged hosts: <strong>${untaggedHosts}</strong></span>`,
+      `<span>Multi-VLAN / hopping: <strong>${multiVlanHosts}</strong></span>`,
+      `<span>Singleton VLANs: <strong>${singletonVlans}</strong></span>`,
+      `<span>Isolated VLANs: <strong>${isolatedVlans}</strong></span>`,
+      scorePill,
+    ].filter(Boolean).join("");
+  }
+
+  // Legend (F): VLAN swatches + cross-VLAN indicator + untagged key
+  const legendItems = document.getElementById("vlan-legend-items");
+  legendItems.innerHTML = "";
+  vlanNodes.forEach(v => {
+    const el = document.createElement("div");
+    el.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:12px";
+    el.innerHTML = `<div style="width:14px;height:14px;border-radius:50%;background:${v.color};border:2px solid ${v.color};flex-shrink:0"></div><span data-vid="${escHtml(v.vid)}">${escHtml(v.label)}</span> <span style="color:#8b949e">(${v.hostCount})</span>`;
+    legendItems.appendChild(el);
+  });
+  if (crossLinks.length) {
+    const el = document.createElement("div");
+    el.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:12px";
+    el.innerHTML = `<div style="width:14px;height:3px;background:#ef5350;flex-shrink:0;border-radius:2px"></div>Cross-VLAN traffic`;
+    legendItems.appendChild(el);
+  }
+  if (untaggedHosts) {
+    const el = document.createElement("div");
+    el.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:12px";
+    el.innerHTML = `<div style="width:14px;height:14px;border-radius:50%;background:#546E7A;flex-shrink:0"></div>Untagged / native`;
+    legendItems.appendChild(el);
+  }
+
+  // ── Inner helper functions (closures over the VLAN graph selections) ────────
+
+  // Neighbor highlighting for host nodes.
+  // Cross edges connect VLAN↔VLAN IDs (e.g. "vlan-10"↔"vlan-20"), never host IPs,
+  // so there's no point searching crossEdgeSel for host d.id — they never match.
+  function highlightVlanNode(d) {
+    const conn = new Set([d.id, ...(d.parentVlans || [])]);
+    hostCircles.classed("faded", n => !conn.has(n.id));
+    vlanCircles.classed("faded", v => !conn.has(v.id));
+    crossEdgeSel.classed("faded", true);   // all cross-VLAN edges fade on host hover
+  }
+
+  function unhighlightVlan() {
+    hostCircles.classed("faded", false);
+    vlanCircles.classed("faded", false);
+    crossEdgeSel.classed("faded", false);
+  }
+
+  // VLAN super-node detail panel (reuses #detail-panel DOM and row/badge/sectionTitle helpers)
+  function showVlanDetailPanel(v) {
+    detailPanel.classList.add("open");
+    document.getElementById("dh-ip").textContent = v.label;
+    document.getElementById("dh-hostname").textContent = `${v.hostCount} host${v.hostCount !== 1 ? "s" : ""}`;
+
+    const body = document.getElementById("detail-body");
+    const rows = [];
+
+    rows.push(`<div style="margin-bottom:8px">
+      <button class="header-btn" id="vlan-spotlight-btn" data-vid="${escHtml(v.vid)}"
+        style="width:100%;font-size:11px">🔍 Spotlight in Graph view</button>
+    </div>`);
+    rows.push(row("VLAN ID", v.vid === "untagged"
+      ? `<span style="color:#8b949e">Untagged / native VLAN</span>`
+      : `<code style="font-family:var(--font-mono)">${escHtml(String(v.vid))}</code>`));
+    rows.push(row("Host count", String(v.hostCount)));
+
+    // Members of this VLAN
+    const members = hostNodes.filter(n => n.parentVlans.includes(v.id));
+
+    // Per-VLAN aggregate risk score
+    if (members.length) {
+      const maxRisk = Math.max(...members.map(n => n.risk_score || 0));
+      const avgRisk = Math.round(members.reduce((s, n) => s + (n.risk_score || 0), 0) / members.length);
+      if (maxRisk > 0) {
+        const rc = maxRisk >= 70 ? "var(--red)" : maxRisk >= 40 ? "var(--yellow)" : "#6e7681";
+        rows.push(row("Risk (VLAN)", `<span style="color:${rc}">Avg ${avgRisk} · Max ${maxRisk}/100</span>`));
+      }
+    }
+
+    // C1: VLAN-to-subnet mapping
+    const subnets = inferSubnets(members.map(m => m.ip));
+    if (subnets.length) {
+      rows.push(row("IP subnet(s)", subnets.map(s =>
+        `<code style="font-family:var(--font-mono)">${escHtml(s)}</code>`
+      ).join(", ")));
+    }
+
+    // PCP distribution across members
+    const pcpCounts = {};
+    members.forEach(n => (n.vlan_pcps || []).forEach(p => { pcpCounts[p] = (pcpCounts[p] || 0) + 1; }));
+    if (Object.keys(pcpCounts).length) {
+      const pcpStr = Object.entries(pcpCounts).sort((a, b) => a[0] - b[0])
+        .map(([p, c]) => `PCP ${p} (${c}×)`).join(", ");
+      rows.push(row("PCP values", pcpStr));
+    }
+
+    // QinQ double-tagged members
+    const qinqMembers = members.filter(n => n.vlan_qinq);
+    if (qinqMembers.length) {
+      rows.push(row("QinQ (double-tagged)", `${qinqMembers.length} host${qinqMembers.length !== 1 ? "s" : ""}`));
+      const outerSet = new Set(qinqMembers.flatMap(n => n.vlan_outer || []));
+      if (outerSet.size) rows.push(row("Outer VLAN IDs", [...outerSet].join(", ")));
+    }
+
+    // Untagged/native traffic in this segment
+    const nativeMembers = members.filter(n => n.vlan_untagged).length;
+    if (nativeMembers) rows.push(row("Native/untagged hosts", String(nativeMembers)));
+
+    // Cross-VLAN partners
+    const partnerLinks = crossLinks.filter(l => {
+      const s = typeof l.source === "object" ? l.source.id : l.source;
+      const t = typeof l.target === "object" ? l.target.id : l.target;
+      return s === v.id || t === v.id;
+    });
+    if (partnerLinks.length) {
+      rows.push(sectionTitle("Cross-VLAN partners"));
+      partnerLinks.forEach(l => {
+        const s = typeof l.source === "object" ? l.source.id : l.source;
+        const t = typeof l.target === "object" ? l.target.id : l.target;
+        const partner = (s === v.id ? t : s).replace("vlan-", "VLAN ").replace("VLAN untagged", "Untagged");
+        rows.push(row(partner, `${fmtNum(l.packets)} pkts · ${fmtBytes(l.bytes)}`));
+      });
+    }
+
+    // Member host list (capped at 30)
+    if (members.length) {
+      rows.push(sectionTitle(`Member Hosts (${members.length})`));
+      members.slice(0, 30).forEach(n => {
+        // Use data-ip instead of inline onclick to avoid JS injection via IP strings
+        rows.push(`<div class="vlan-member-host" data-ip="${escHtml(n.ip)}" style="padding:2px 0;font-size:11px;cursor:pointer;color:var(--link)">${escHtml(n.hostname || n.ip)}${n.multiVlan ? ' <span style="color:var(--yellow);font-size:10px">⚡ multi-VLAN</span>' : ''}</div>`);
+      });
+      if (members.length > 30) rows.push(`<div style="color:var(--text2);font-size:11px">…and ${members.length - 30} more</div>`);
+    }
+
+    body.innerHTML = rows.join("");
+
+    // B4: Spotlight button — show only this VLAN in the main graph
+    const spotBtn = body.querySelector("#vlan-spotlight-btn");
+    if (spotBtn) {
+      spotBtn.addEventListener("click", () => {
+        const vid = spotBtn.dataset.vid;
+        setView("graph");
+        activeVlans.clear();
+        activeVlans.add(vid);
+        // Sync sidebar checkboxes
+        document.querySelectorAll("#vlan-filters input[type=checkbox]").forEach(cb => {
+          cb.checked = cb.id === `f-vlan-${CSS.escape(vid)}`;
+        });
+        updateFilterUI();
+        applyFilters();
+        showToast(`Spotlighting VLAN ${vid === "untagged" ? "Untagged" : vid} in graph view`, "info");
+      });
+    }
+
+    // Bind member-host click handlers after innerHTML assignment (avoids inline onclick XSS)
+    body.querySelectorAll(".vlan-member-host").forEach(el => {
+      el.addEventListener("click", () => {
+        const f = graphData.nodes.find(x => x.ip === el.dataset.ip);
+        if (f) showDetailPanel(f);
+      });
+    });
+  }
+
+  // D1: VLAN search — wire up after selections are in scope
+  const vlanSearchEl = document.getElementById("vlan-search");
+  if (vlanSearchEl) {
+    vlanSearchEl.value = "";
+    vlanSearchEl.oninput = () => {
+      const q = vlanSearchEl.value.trim().toLowerCase();
+      if (!q) { unhighlightVlan(); return; }
+      const matchedVlans = new Set();
+      hostCircles.classed("faded", n => {
+        const hit = n.ip.includes(q)
+          || (n.hostname && n.hostname.toLowerCase().includes(q))
+          || (n.label   && n.label.toLowerCase().includes(q));
+        if (hit) n.parentVlans.forEach(p => matchedVlans.add(p));
+        return !hit;
+      });
+      vlanCircles.classed("faded", v => !matchedVlans.has(v.id));
+      crossEdgeSel.classed("faded", true);
+    };
+  }
+}
+
+/* ── Cross-VLAN flow matrix ───────────────────────────────────────────────── */
+let _vlanMatrixMode = false;
+
+document.getElementById("vlan-matrix-btn").addEventListener("click", () => {
+  _vlanMatrixMode = !_vlanMatrixMode;
+  const btn = document.getElementById("vlan-matrix-btn");
+  btn.classList.toggle("active", _vlanMatrixMode);
+  btn.textContent = _vlanMatrixMode ? "↩ Graph" : "⊞ Matrix";
+  // Canvas / matrix swap
+  document.getElementById("vlan-canvas-wrap").classList.toggle("hidden", _vlanMatrixMode);
+  document.getElementById("vlan-matrix-container").classList.toggle("hidden", !_vlanMatrixMode);
+  // Graph-specific controls (layout buttons + fit) hide in matrix mode
+  const graphCtrl = document.getElementById("vlan-graph-controls");
+  if (graphCtrl) graphCtrl.style.display = _vlanMatrixMode ? "none" : "";
+  // Search bar: hide in matrix mode; restore to "" (may still be hidden by loadGraph if no VLANs)
+  const srchEl = document.getElementById("vlan-search");
+  if (srchEl) srchEl.style.display = _vlanMatrixMode ? "none" : (graphData?.stats?.vlans?.length ? "" : "none");
+  if (_vlanMatrixMode && graphData) renderVlanMatrix(graphData);
+});
+
+function renderVlanMatrix(data) {
+  const ns = "http://www.w3.org/2000/svg";
+  const CELL = 26, LABEL = 72;
+
+  const allVids = [...(data.stats?.vlans || []).map(String)];
+  if ((data.nodes || []).some(n => n.vlan_untagged)) allVids.push("untagged");
+  if (!allVids.length) return;
+
+  // Build node→primaryVlan lookup
+  const nodeByIp = Object.fromEntries((data.nodes || []).map(n => [n.ip, n]));
+  const primaryVlan = ip => {
+    const n = nodeByIp[ip];
+    if (!n) return null;
+    return (n.vlans && n.vlans.length) ? String(n.vlans[0]) : (n.vlan_untagged ? "untagged" : null);
+  };
+
+  // Build VLAN×VLAN flow map
+  const flowMap = {};
+  allVids.forEach(a => { flowMap[a] = {}; allVids.forEach(b => { flowMap[a][b] = null; }); });
+  (data.edges || []).forEach(e => {
+    const sv = primaryVlan(e.source), dv = primaryVlan(e.target);
+    if (!sv || !dv || sv === dv) return;
+    const key1 = sv, key2 = dv;
+    if (!flowMap[key1]) return;
+    if (!flowMap[key1][key2]) flowMap[key1][key2] = { packets: 0, bytes: 0, protocols: new Set() };
+    flowMap[key1][key2].packets += e.packet_count || 0;
+    flowMap[key1][key2].bytes   += e.bytes || 0;
+    (e.protocols || []).forEach(p => flowMap[key1][key2].protocols.add(p));
+    // Mirror (undirected)
+    if (!flowMap[key2]) return;
+    if (!flowMap[key2][key1]) flowMap[key2][key1] = { packets: 0, bytes: 0, protocols: new Set() };
+    flowMap[key2][key1].packets += e.packet_count || 0;
+    flowMap[key2][key1].bytes   += e.bytes || 0;
+    (e.protocols || []).forEach(p => flowMap[key2][key1].protocols.add(p));
+  });
+
+  // Anomalous VLAN pairs
+  const anomVlanPairs = new Set();
+  (data.anomalies || []).forEach(a => {
+    if (a.type === "vlan_cross_segment_ot") {
+      const sv = a.src ? primaryVlan(a.src) : null;
+      const dv = a.dst ? primaryVlan(a.dst) : null;
+      if (sv && dv) { anomVlanPairs.add(`${sv}|${dv}`); anomVlanPairs.add(`${dv}|${sv}`); }
+    }
+  });
+
+  const N = allVids.length;
+  const colsSvg  = document.getElementById("vlan-matrix-cols");
+  const rowsSvg  = document.getElementById("vlan-matrix-rows");
+  const cellsSvg = document.getElementById("vlan-matrix-cells");
+  [colsSvg, rowsSvg, cellsSvg].forEach(s => { s.innerHTML = ""; });
+
+  const truncLabel = v => v === "untagged" ? "Untagged" : `VLAN ${v}`;
+
+  // Column headers (rotated)
+  colsSvg.setAttribute("width",  N * CELL);
+  colsSvg.setAttribute("height", LABEL);
+  allVids.forEach((vid, j) => {
+    const t = document.createElementNS(ns, "text");
+    t.setAttribute("transform", `translate(${j * CELL + CELL / 2 + 2},${LABEL - 4}) rotate(-60)`);
+    t.setAttribute("font-size", "10"); t.setAttribute("fill", "#8b949e");
+    t.setAttribute("text-anchor", "end");
+    t.textContent = truncLabel(vid);
+    colsSvg.appendChild(t);
+  });
+
+  // Row headers
+  rowsSvg.setAttribute("width",  LABEL);
+  rowsSvg.setAttribute("height", N * CELL);
+  allVids.forEach((vid, i) => {
+    const t = document.createElementNS(ns, "text");
+    t.setAttribute("x", LABEL - 4); t.setAttribute("y", i * CELL + CELL * 0.65);
+    t.setAttribute("font-size", "10"); t.setAttribute("fill", "#8b949e");
+    t.setAttribute("text-anchor", "end");
+    t.textContent = truncLabel(vid);
+    rowsSvg.appendChild(t);
+  });
+
+  // Cells
+  cellsSvg.setAttribute("width",  N * CELL);
+  cellsSvg.setAttribute("height", N * CELL);
+
+  allVids.forEach((rowVid, i) => {
+    allVids.forEach((colVid, j) => {
+      const isDiag = i === j;
+      const flow = isDiag ? null : flowMap[rowVid]?.[colVid];
+      const isAnom = !isDiag && (anomVlanPairs.has(`${rowVid}|${colVid}`));
+
+      const rect = document.createElementNS(ns, "rect");
+      rect.setAttribute("x", j * CELL + 1); rect.setAttribute("y", i * CELL + 1);
+      rect.setAttribute("width", CELL - 2); rect.setAttribute("height", CELL - 2);
+      rect.setAttribute("rx", "2");
+
+      if (isDiag) {
+        rect.setAttribute("fill", "#0a0f15"); rect.setAttribute("opacity", "0.8");
+      } else if (flow) {
+        const protos = [...flow.protocols];
+        const fill = isAnom ? "#ff8c00" : (protoColor(protos) || "#555");
+        rect.setAttribute("fill", fill); rect.setAttribute("opacity", "0.75");
+        if (isAnom) { rect.setAttribute("stroke", "#f85149"); rect.setAttribute("stroke-width", "1.5"); }
+        rect.style.cursor = "pointer";
+        rect.addEventListener("mouseenter", ev => {
+          tooltip.innerHTML = `<strong>VLAN ${escHtml(rowVid)} ↔ VLAN ${escHtml(colVid)}</strong><br>
+            ${fmtNum(flow.packets)} pkts · ${fmtBytes(flow.bytes)}<br>
+            ${protos.slice(0, 5).map(escHtml).join(" · ")}
+            ${isAnom ? `<br><span style="color:#f85149;font-size:10px">⚠ OT anomaly</span>` : ""}`;
+          tooltip.classList.add("visible"); positionTooltip(ev);
+        });
+        rect.addEventListener("mousemove", ev => positionTooltip(ev));
+        rect.addEventListener("mouseleave", () => hideTooltip());
+      } else {
+        rect.setAttribute("fill", "#161b22"); rect.setAttribute("opacity", "0.4");
+      }
+      cellsSvg.appendChild(rect);
+    });
+  });
+}
+
 function renderDiff() {
   if (!baselineData || !graphData) return;
   const bNodes = new Map((baselineData.nodes || []).map(n => [n.id, n]));
@@ -4027,6 +5103,23 @@ function renderDiff() {
   _renderDiffCol("diff-hosts-list", newHosts, goneHosts, changedHosts);
   _renderDiffConnsCol("diff-conns-list", newConns, goneConns);
   _renderDiffAnomsCol("diff-anomalies-list", cAnoms);
+
+  // VLAN diff: new/gone VLANs + hosts that changed VLAN membership
+  const bVlans = new Set((baselineData.stats?.vlans || []).map(String));
+  const cVlans = new Set((graphData.stats?.vlans   || []).map(String));
+  const newVlans  = [...cVlans].filter(v => !bVlans.has(v));
+  const goneVlans = [...bVlans].filter(v => !cVlans.has(v));
+  const movedHosts = [];
+  bNodes.forEach((bn, id) => {
+    const cn = cNodes.get(id);
+    if (!cn) return;
+    const bv = new Set((bn.vlans || []).map(String));
+    const cv = new Set((cn.vlans || []).map(String));
+    const added   = [...cv].filter(v => !bv.has(v));
+    const removed = [...bv].filter(v => !cv.has(v));
+    if (added.length || removed.length) movedHosts.push({ id, added, removed });
+  });
+  _renderDiffVlansCol("diff-vlans-list", newVlans, goneVlans, movedHosts);
 }
 
 function _renderDiffCol(id, added, removed, changed) {
@@ -4092,6 +5185,37 @@ function _renderDiffAnomsCol(id, newAnoms) {
     d.className = `diff-item diff-added diff-anom-${a.severity || "low"}`;
     const route = [a.src, a.dst].filter(Boolean).join(" → ");
     d.innerHTML = `<span class="diff-badge add">+ NEW</span> <strong>${escHtml(a.type)}</strong><br><span class="diff-sub">${escHtml(route)} — ${escHtml(a.description)}</span>`;
+    el.appendChild(d);
+  });
+}
+
+function _renderDiffVlansCol(id, newVlans, goneVlans, movedHosts) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = "";
+  if (!newVlans.length && !goneVlans.length && !movedHosts.length) {
+    el.innerHTML = '<div class="diff-empty">No VLAN changes</div>';
+    return;
+  }
+  newVlans.forEach(v => {
+    const d = document.createElement("div");
+    d.className = "diff-item diff-added";
+    d.innerHTML = `<span class="diff-badge add">+ NEW</span> <strong>VLAN ${escHtml(v)}</strong>`;
+    el.appendChild(d);
+  });
+  goneVlans.forEach(v => {
+    const d = document.createElement("div");
+    d.className = "diff-item diff-removed";
+    d.innerHTML = `<span class="diff-badge rem">− GONE</span> <strong>VLAN ${escHtml(v)}</strong>`;
+    el.appendChild(d);
+  });
+  movedHosts.forEach(({ id: hostId, added, removed }) => {
+    const d = document.createElement("div");
+    d.className = "diff-item diff-changed";
+    const parts = [];
+    if (added.length)   parts.push(`+VLAN ${added.join(", ")}`);
+    if (removed.length) parts.push(`−VLAN ${removed.join(", ")}`);
+    d.innerHTML = `<span class="diff-badge chg">~ MOVED</span> <strong>${escHtml(hostId)}</strong> <span class="diff-sub">${parts.map(escHtml).join(" ")}</span>`;
     el.appendChild(d);
   });
 }
@@ -4332,6 +5456,65 @@ document.getElementById("exp-report").addEventListener("click", () => {
   generateAuditReport();
   document.getElementById("export-menu").classList.add("hidden");
 });
+document.getElementById("exp-vlan-inventory").addEventListener("click", () => {
+  exportVlanInventoryCsv();
+  document.getElementById("export-menu").classList.add("hidden");
+});
+document.getElementById("exp-vlan-traffic").addEventListener("click", () => {
+  exportVlanTrafficCsv();
+  document.getElementById("export-menu").classList.add("hidden");
+});
+document.getElementById("exp-vlan-svg").addEventListener("click", () => {
+  exportVlanSvg();
+  document.getElementById("export-menu").classList.add("hidden");
+});
+document.getElementById("imp-vlan-names").addEventListener("click", () => {
+  document.getElementById("export-menu").classList.add("hidden");
+  document.getElementById("vlan-names-file-input").click();
+});
+document.getElementById("vlan-names-file-input").addEventListener("change", function() {
+  const file = this.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    let imported = 0;
+    (e.target.result || "").split(/\r?\n/).forEach(line => {
+      const comma = line.indexOf(",");
+      if (comma === -1) return;
+      const vid  = line.slice(0, comma).trim();
+      const name = line.slice(comma + 1).trim();
+      if (!vid) return;
+      saveVlanLabel(vid, name);
+      imported++;
+    });
+    this.value = "";   // reset so same file can be re-imported
+    if (imported > 0) {
+      showToast(`Imported ${imported} VLAN name${imported !== 1 ? "s" : ""}. Switch to VLAN tab to see labels.`, "info");
+      // Force re-render if VLAN view is active
+      _vlanRendered = false;
+      if (currentView === "vlangraph" && graphData) renderVlanGraph(graphData);
+    } else {
+      showToast("No valid VLAN names found. Format: vid,name (one per line).", "error");
+    }
+  };
+  reader.readAsText(file);
+});
+
+function exportVlanSvg() {
+  if (!(graphData?.stats?.vlans?.length)) {
+    showToast("No VLAN data to export.", "info"); return;
+  }
+  const svgEl = document.getElementById("vlan-svg");
+  if (!svgEl) return;
+  const clone = svgEl.cloneNode(true);
+  clone.setAttribute("style", "background:#0d1117");
+  const svgStr = new XMLSerializer().serializeToString(clone);
+  const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "vlan-diagram.svg"; a.click();
+  URL.revokeObjectURL(url);
+}
 
 function exportPng() {
   const svgEl = document.getElementById("graph-svg");
@@ -4415,6 +5598,127 @@ function exportCredentialsCsv() {
   downloadCsv(rows, "credentials.csv");
 }
 
+function exportVlanInventoryCsv() {
+  if (!graphData || !((graphData.stats?.vlans?.length) || (graphData.nodes || []).some(n => n.vlan_untagged))) {
+    showToast("No VLAN data to export.", "info"); return;
+  }
+  const rows = [["VLAN ID", "IP Address", "Hostname", "Host Type", "IP Version",
+                  "Protocols", "Packet Count", "Bytes Sent", "Bytes Recv",
+                  "PCP Values", "QinQ", "Untagged Frames", "Outer VLAN IDs", "Risk Score"]];
+  const allVlans   = (graphData.stats.vlans || []).map(String);
+  const hasUntagged = (graphData.nodes || []).some(n => n.vlan_untagged);
+
+  // One row per (VLAN, host) pair — multi-VLAN hosts appear on multiple rows for easy pivot/filter
+  [...allVlans, ...(hasUntagged ? ["untagged"] : [])].forEach(vid => {
+    const members = vid === "untagged"
+      ? (graphData.nodes || []).filter(n => n.vlan_untagged && !(n.vlans || []).length)
+      : (graphData.nodes || []).filter(n => (n.vlans || []).map(String).includes(vid));
+    members.forEach(n => rows.push([
+      vid,
+      n.ip,
+      n.hostname || "",
+      n.host_type || "",
+      n.ip_version || 4,
+      (n.protocols || []).join(";"),
+      n.packet_count || 0,
+      n.bytes_sent || 0,
+      n.bytes_recv || 0,
+      (n.vlan_pcps || []).join(";"),
+      n.vlan_qinq    ? "Yes" : "No",
+      n.vlan_untagged ? "Yes" : "No",
+      (n.vlan_outer || []).join(";"),
+      n.risk_score || 0,
+    ]));
+  });
+  downloadCsv(rows, "vlan-inventory.csv");
+}
+
+function exportVlanTrafficCsv() {
+  if (!graphData || !((graphData.stats?.vlans?.length) || (graphData.nodes || []).some(n => n.vlan_untagged))) {
+    showToast("No VLAN data to export.", "info"); return;
+  }
+  const nodeMap = {};
+  (graphData.nodes || []).forEach(n => { nodeMap[n.ip] = n; });
+
+  const rows = [["VLAN(s)", "Source IP", "Source VLAN", "Destination IP", "Dest VLAN",
+                  "Cross-VLAN", "Protocols", "Packet Count", "Bytes", "Ports", "Duration (s)"]];
+
+  (graphData.edges || []).forEach(e => {
+    const src = nodeMap[e.source], dst = nodeMap[e.target];
+    // Use primary VLAN of each endpoint (first tagged VID, or "untagged", or empty)
+    const srcVlan = src && (src.vlans || []).length ? String(src.vlans[0])
+                  : (src?.vlan_untagged ? "untagged" : "");
+    const dstVlan = dst && (dst.vlans || []).length ? String(dst.vlans[0])
+                  : (dst?.vlan_untagged ? "untagged" : "");
+    const crossVlan = srcVlan && dstVlan && srcVlan !== dstVlan ? "Yes" : "No";
+    const duration  = (e.first_seen != null && e.last_seen != null)
+      ? (e.last_seen - e.first_seen).toFixed(3) : "";
+    rows.push([
+      (e.vlans || []).join(";"),
+      e.source, srcVlan,
+      e.target, dstVlan,
+      crossVlan,
+      (e.protocols || []).join(";"),
+      e.packet_count || 0,
+      e.bytes || 0,
+      (e.ports || []).join(";"),
+      duration,
+    ]);
+  });
+  downloadCsv(rows, "vlan-traffic.csv");
+}
+
+/* ── VLAN segmentation security score ───────────────────────────────────────
+ * Returns { score: 0-100, label, color, deductions[] } from VLAN anomaly data.
+ * Purely computed from graphData.anomalies — no backend change needed.
+ */
+function computeVlanSegmentationScore() {
+  if (!graphData) return null;
+  const anomalies = graphData.anomalies || [];
+  const vlanTypes = new Set(["vlan_hopping","vlan_native_leak","vlan_qinq","vlan_cross_segment_ot"]);
+  const vlanAnoms = anomalies.filter(a => vlanTypes.has(a.type));
+
+  // No VLAN anomalies and VLANs are present → perfect score
+  if (!(graphData.stats?.vlans?.length)) return null;
+
+  let score = 100;
+  const deductions = [];
+
+  const crossSegOt = vlanAnoms.filter(a => a.type === "vlan_cross_segment_ot");
+  if (crossSegOt.length) {
+    const d = Math.min(50, crossSegOt.length * 15);
+    score -= d;
+    deductions.push(`OT cross-segment violations: ${crossSegOt.length} (−${d})`);
+  }
+  const hopping = vlanAnoms.filter(a => a.type === "vlan_hopping");
+  if (hopping.length) {
+    const d = Math.min(30, hopping.length * 10);
+    score -= d;
+    deductions.push(`VLAN hopping hosts: ${hopping.length} (−${d})`);
+  }
+  const nativeLeak = vlanAnoms.filter(a => a.type === "vlan_native_leak");
+  if (nativeLeak.length) {
+    const d = Math.min(15, nativeLeak.length * 5);
+    score -= d;
+    deductions.push(`Native VLAN leakage: ${nativeLeak.length} (−${d})`);
+  }
+  const qinq = vlanAnoms.filter(a => a.type === "vlan_qinq");
+  if (qinq.length) {
+    const d = Math.min(10, qinq.length * 5);
+    score -= d;
+    deductions.push(`QinQ double-tagging: ${qinq.length} (−${d})`);
+  }
+  score = Math.max(0, score);
+
+  let label, color;
+  if (score >= 80)      { label = "Good";     color = "#3fb950"; }
+  else if (score >= 60) { label = "Fair";     color = "#e3b341"; }
+  else if (score >= 40) { label = "Poor";     color = "#f0883e"; }
+  else                  { label = "Critical"; color = "#f85149"; }
+
+  return { score, label, color, deductions };
+}
+
 function generateAuditReport() {
   if (!graphData) { showToast("No data loaded.", "error"); return; }
   const now = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
@@ -4447,6 +5751,9 @@ function generateAuditReport() {
   p(`| Credentials captured | ${creds.length} |`);
   p(`| File transfers detected | ${xfiles.length} |`);
   p(`| OT commands | ${otCmds.length} |`);
+  if ((s.vlans_detected || 0) > 0) {
+    p(`| VLANs detected | ${s.vlans_detected} |`);
+  }
   br();
 
   // Risk Overview — top 10 hosts by risk score
@@ -4596,6 +5903,100 @@ function generateAuditReport() {
     }
   }
 
+  // VLAN Security Assessment
+  const vlanIds        = (graphData.stats?.vlans || []);
+  const hasUntaggedNodes = nodes.some(n => n.vlan_untagged);
+  if (vlanIds.length) {
+    h(2, "VLAN Security Assessment");
+    const seg = computeVlanSegmentationScore();
+    if (seg) {
+      p(`**Segmentation Score: ${seg.score}/100 — ${seg.label}**`);
+      br();
+      if (seg.deductions.length) {
+        p("Deductions:");
+        seg.deductions.forEach(d => p(`- ${d}`));
+      } else {
+        p("_No VLAN segmentation violations detected._");
+      }
+      // Sprawl summary
+      br();
+      const crossLinkedIds2 = new Set();
+      (graphData.anomalies || [])
+        .filter(a => a.type === "vlan_cross_segment_ot" || a.type === "vlan_hopping")
+        .forEach(a => { if (a.src) crossLinkedIds2.add(a.src); });
+      const totalVlans2 = vlanIds.length;
+      const singletonCount = nodes.reduce((acc, n) => {
+        (n.vlans || []).forEach(v => { acc[v] = (acc[v] || 0) + 1; }); return acc;
+      }, {});
+      const singletons = Object.values(singletonCount).filter(c => c === 1).length;
+      p(`| Metric | Value |`);
+      p(`|--------|-------|`);
+      p(`| VLANs detected | ${totalVlans2} |`);
+      p(`| Singleton VLANs (1 host) | ${singletons} |`);
+      p(`| Hopping / multi-VLAN hosts | ${nodes.filter(n => (n.vlans||[]).length > 1).length} |`);
+      p(`| Untagged / native-VLAN hosts | ${nodes.filter(n => n.vlan_untagged).length} |`);
+    }
+    br();
+  }
+
+  // VLAN Device Inventory
+  if (vlanIds.length || hasUntaggedNodes) {
+    h(2, "VLAN Device Inventory");
+    const allVids = [...vlanIds.map(String), ...(hasUntaggedNodes ? ["untagged"] : [])];
+    allVids.forEach(vid => {
+      const members = vid === "untagged"
+        ? nodes.filter(n => n.vlan_untagged && !(n.vlans || []).length)
+        : nodes.filter(n => (n.vlans || []).map(String).includes(vid));
+      if (!members.length) return;
+      h(3, vid === "untagged" ? "Untagged / Native VLAN" : `VLAN ${vid}`);
+      p(`| IP Address | Hostname | Host Type | IP Ver | Protocols | Risk Score |`);
+      p(`|------------|----------|-----------|--------|-----------|------------|`);
+      members.forEach(n => {
+        const host = n.hostname || (n.dns_names && n.dns_names[0]) || "—";
+        const protos = (n.protocols || []).slice(0, 5).join(", ") + ((n.protocols||[]).length > 5 ? "…" : "");
+        p(`| ${n.ip} | ${host} | ${n.host_type || "—"} | IPv${n.ip_version || 4} | ${protos} | ${n.risk_score || 0} |`);
+      });
+      br();
+    });
+  }
+
+  // IP-to-IP Traffic by VLAN
+  if (vlanIds.length) {
+    h(2, "IP-to-IP Traffic by VLAN");
+    const nodeMap2 = {};
+    nodes.forEach(n => { nodeMap2[n.ip] = n; });
+
+    // Group edges by VLAN — edges involving both src and dst VLANs are listed in each group
+    const edgesByVlan = {};
+    const allVidsForTraffic = [...vlanIds.map(String), ...(hasUntaggedNodes ? ["untagged"] : [])];
+    allVidsForTraffic.forEach(vid => { edgesByVlan[vid] = []; });
+
+    edges.forEach(e => {
+      const srcVids = (nodeMap2[e.source]?.vlans || []).map(String);
+      const dstVids = (nodeMap2[e.target]?.vlans || []).map(String);
+      const allEdgeVlans = [...new Set([...srcVids, ...dstVids, ...(e.vlans || []).map(String)])];
+      if (!allEdgeVlans.length && hasUntaggedNodes) allEdgeVlans.push("untagged");
+      allEdgeVlans.forEach(vid => { if (edgesByVlan[vid]) edgesByVlan[vid].push(e); });
+    });
+
+    allVidsForTraffic.forEach(vid => {
+      const group = edgesByVlan[vid];
+      if (!group.length) return;
+      h(3, vid === "untagged" ? "Untagged / Native VLAN" : `VLAN ${vid}`);
+      p(`| Source IP | Destination IP | Cross-VLAN | Protocols | Packets | Bytes |`);
+      p(`|-----------|----------------|------------|-----------|---------|-------|`);
+      group.slice(0, 100).forEach(e => {
+        const src = nodeMap2[e.source], dst = nodeMap2[e.target];
+        const srcV = src && (src.vlans || []).length ? String(src.vlans[0]) : (src?.vlan_untagged ? "untagged" : "");
+        const dstV = dst && (dst.vlans || []).length ? String(dst.vlans[0]) : (dst?.vlan_untagged ? "untagged" : "");
+        const cross = srcV && dstV && srcV !== dstV ? `✓ (${srcV}→${dstV})` : "—";
+        p(`| ${e.source} | ${e.target} | ${cross} | ${(e.protocols || []).join(", ")} | ${fmtNum(e.packet_count)} | ${fmtBytes(e.bytes)} |`);
+      });
+      if (group.length > 100) p(`_…and ${group.length - 100} more connections_`);
+      br();
+    });
+  }
+
   p("---");
   p("_Report generated by [PCAP Network Visualizer](https://github.com/esandeepchoudary/pcap-vis-anz)_");
 
@@ -4664,6 +6065,20 @@ document.getElementById("session-file-input").addEventListener("change", (e) => 
   reader.readAsText(file);
   e.target.value = "";
 });
+
+/* ── VLAN labels (user-assigned names, persisted in localStorage) ────────── */
+function getVlanLabel(vid) {
+  return localStorage.getItem("vlan-label:" + vid) || "";
+}
+function saveVlanLabel(vid, text) {
+  if (text) localStorage.setItem("vlan-label:" + vid, text);
+  else       localStorage.removeItem("vlan-label:" + vid);
+}
+// Returns display name: user label if set, else the default "VLAN N" / "Untagged"
+function vlanDisplayName(vid, defaultLabel) {
+  const custom = getVlanLabel(vid);
+  return custom ? `${defaultLabel} (${custom})` : defaultLabel;
+}
 
 /* ── Node annotations ────────────────────────────────────────────────────── */
 function getAnnotation(ip) {
@@ -4745,21 +6160,21 @@ document.addEventListener("click", () => {
 function buildTimeline(data) {
   const tlBar = document.getElementById("timeline-bar");
 
-  // Collect all packet timestamps from packetData
-  const allTimes = [];
+  // Collect all packets: need time, bytes, and (optional) vlan_id
+  const allPkts = [];
   for (const pkts of Object.values(data.packets || {})) {
-    pkts.forEach(p => { if (p.time != null) allTimes.push(p.time); });
+    pkts.forEach(p => { if (p.time != null) allPkts.push(p); });
   }
 
-  if (allTimes.length < 2) {
+  if (allPkts.length < 2) {
     tlBar.classList.add("hidden");
     return;
   }
 
   let minT = Infinity, maxT = -Infinity;
-  for (let i = 0; i < allTimes.length; i++) {
-    if (allTimes[i] < minT) minT = allTimes[i];
-    if (allTimes[i] > maxT) maxT = allTimes[i];
+  for (const p of allPkts) {
+    if (p.time < minT) minT = p.time;
+    if (p.time > maxT) maxT = p.time;
   }
   const span = maxT - minT;
 
@@ -4770,22 +6185,59 @@ function buildTimeline(data) {
 
   tlBar.classList.remove("hidden");
 
-  // Build minimap
+  // Per-VLAN stacked minimap — bucket bytes per VLAN per bin
   const minimap = document.getElementById("tl-minimap");
   minimap.innerHTML = "";
   const BINS = 60;
-  const bins = new Array(BINS).fill(0);
-  allTimes.forEach(t => {
-    const idx = Math.min(Math.floor(((t - minT) / span) * BINS), BINS - 1);
-    bins[idx]++;
+  const hasVlans = (data.stats?.vlans?.length || 0) > 0;
+
+  // binBytes[i] = total bytes in bin i; vlanBins[vid][i] = bytes for that VLAN
+  const binBytes = new Array(BINS).fill(0);
+  const vlanBins = {};   // vid → Float32Array(BINS)
+
+  allPkts.forEach(p => {
+    const idx = Math.min(Math.floor(((p.time - minT) / span) * BINS), BINS - 1);
+    const bytes = p.len || 1;
+    binBytes[idx] += bytes;
+    if (hasVlans) {
+      const vid = p.vlan_id != null ? String(p.vlan_id) : "untagged";
+      if (!vlanBins[vid]) vlanBins[vid] = new Float32Array(BINS);
+      vlanBins[vid][idx] += bytes;
+    }
   });
-  const maxBin = Math.max(1, ...bins);  // bins is only 60 elements — spread safe here
-  bins.forEach(count => {
-    const bar = document.createElement("div");
-    bar.className = "tl-bar";
-    bar.style.height = Math.max(2, (count / maxBin) * 20) + "px";
-    minimap.appendChild(bar);
-  });
+
+  const maxBytes = Math.max(1, ...binBytes);   // safe — only 60 elements
+  const vlanVids = Object.keys(vlanBins);
+
+  for (let i = 0; i < BINS; i++) {
+    const barH = Math.max(2, (binBytes[i] / maxBytes) * 20);
+
+    if (hasVlans && vlanVids.length > 1) {
+      // Stacked bar: one child div per VLAN, heights proportional to that VLAN's bytes
+      const container = document.createElement("div");
+      container.className = "tl-bar tl-bar-stacked";
+      container.style.height = barH + "px";
+
+      // Sort VLANs so the order is stable across bins
+      vlanVids.sort().forEach(vid => {
+        const vBytes = vlanBins[vid][i];
+        if (!vBytes) return;
+        const seg = document.createElement("div");
+        seg.className = "tl-bar-seg";
+        seg.style.height = Math.max(1, (vBytes / binBytes[i]) * barH) + "px";
+        seg.style.background = vlanColor(vid === "untagged" ? null : vid);
+        seg.title = `VLAN ${vid}: ${fmtBytes(vBytes)}`;
+        container.appendChild(seg);
+      });
+      minimap.appendChild(container);
+    } else {
+      // No VLAN data — plain density bar (original behaviour)
+      const bar = document.createElement("div");
+      bar.className = "tl-bar";
+      bar.style.height = barH + "px";
+      minimap.appendChild(bar);
+    }
+  }
 
   const slider = document.getElementById("tl-slider");
   const timeLabel = document.getElementById("tl-time-label");

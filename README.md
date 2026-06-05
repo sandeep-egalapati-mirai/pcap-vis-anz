@@ -9,7 +9,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Interactive graph** — D3.js v7 force simulation with Force, Radial, and Cluster layout modes; drag, zoom, and pan
 - **Host classification** — 38 host types: Router, PLC, IP Camera, Web Server, DNS Server, Windows Host, and more
 - **Protocol detection** — 80+ protocols identified by port (HTTP, SSH, DNS, RDP, MySQL, Modbus, MQTT, CoAP, …)
-- **IPv4 and IPv6 support** — both address families tracked; private ranges correctly classified
+- **IPv4 and IPv6 support** — both address families tracked; private ranges correctly classified; IPv6 nodes shown with a dashed-stroke ring; header adoption stat (`IPv6: X% (N/total)`) appears when both families are present; sidebar **IP Version** filter (shown only in mixed captures)
 - **OS fingerprinting** — TTL / hop-limit heuristic (Linux/Unix, Windows, Network Device)
 - **MAC vendor lookup** — OUI lookup covering IT, OT, and IoT vendors (VMware, Cisco, Siemens, Amazon Echo, …)
 - **DNS name resolution** — Extracts hostnames and query logs from captured DNS traffic
@@ -19,23 +19,30 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Filtering** — Filter graph by protocol or host type via sidebar checkboxes
 - **Search** — Find nodes by IP address or hostname (300ms debounce)
 - **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, TLS SNI names, anomalies, OT analysis, conversations, and captured credentials)
-- **Six views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout), OT Log (chronological OT command history), and Diff (baseline comparison)
+- **Seven views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout), OT Log (chronological OT command history), VLAN Graph (VLAN segment topology), and Diff (baseline comparison)
+- **VLAN identification** — Full 802.1Q single-tag and 802.1ad QinQ double-tag parsing: extracts VLAN ID, PCP priority bits, DEI bit, and outer/inner VIDs for QinQ; tracked per host, per connection, and aggregated in stats.
+  - **VLAN Graph view** — dedicated tab showing VLANs as super-nodes with convex-hull cluster polygons; hosts clustered inside; multi-VLAN (hopping) hosts physically placed between segments; cross-VLAN traffic shown as red edges; inter-VLAN gateway nodes marked with a GW badge
+  - **VLAN security analysis** — segmentation score (0–100 with Good/Fair/Poor/Critical rating), ARP spoofing detection per-VLAN, broadcast storm detection (>10% broadcast threshold), PCP priority abuse detection; 4 VLAN anomaly rules (hopping, native leak, QinQ, cross-segment OT)
+  - **VLAN data enrichment** — VLAN-to-subnet mapping, CDP/LLDP frame parsing (extracts device hostname and native VLAN from Cisco Discovery Protocol and IEEE 802.1AB switch frames), per-VLAN aggregate risk score, VLAN sprawl metrics (singleton/isolated VLANs)
+  - **VLAN exports** — VLAN Inventory CSV (14 columns per host per VLAN), VLAN Traffic CSV (with source/dest VLAN and cross-VLAN flag), VLAN Diagram SVG, VLAN sections in Markdown audit report, VLAN name CSV import
+  - **VLAN UX** — color-by-VLAN toggle in main graph, VLAN search in VLAN tab toolbar, user-assigned VLAN labels (double-click to rename, persisted in localStorage), VLAN health summary card in sidebar, ⊞ Matrix view (VLAN×VLAN flow adjacency grid), VLAN spotlight (one-click filter main graph to single VLAN), VLAN change detection column in ⊕ Diff view, per-VLAN bandwidth stacked timeline minimap
+  - **File transfer downloads** — HTTP files captured in PCAPs are available for download directly from the File Transfers sidebar panel (in-memory cache, cleared on new upload)
 - **OT Map** — Full Purdue Model swimlane view (L0 Field → L6 Public Internet) with automatic Public Internet zone for non-RFC1918 IPs (no GeoIP required), D3 zoom/pan (Ctrl+scroll, toolbar buttons), traffic-weighted edges, anomaly callouts (! badge on affected nodes, lane tint for high-severity), cross-zone vs. cross-level edge counting, zone legend, Purdue level tooltips, activeTypes filter integration with sidebar bypass toggle ("Respect filters" button), OT protocol evidence-based Purdue level assignment, and editable mode: drag-to-reclassify, add/remove devices (IP format + Purdue level validation with inline error), risk annotation (Critical → Info, panel positioned near clicked node), and PNG/JSON export
 - **OT Communication Matrix** — Toggle within the OT Map view (⊞ Matrix button) to switch to a device×device adjacency matrix: each cell is coloured by dominant OT protocol, orange for cross-zone traffic, and red-bordered when an anomaly is present; hover for packet count, byte total, OT read/write counts, and cross-zone/anomaly warnings
 - **Timeline** — Scrub or auto-play packet activity over time; packet-density minimap (rAF-throttled for smooth playback); speed selector (0.5×, 1×, 2×, 5×); Space to play/pause, ←/→ arrow keys to step one tick
 - **Packet inspector** — Click any edge or node to open a Wireshark-style panel with three tabs: **Packets** (per-packet protocol tree and hex dump), **Cmd Log** (OT command history for OT connections), and **Stream** (ASCII/hex payload reassembly for TCP sessions)
 - **OT Analysis panel** — Per-node read/write/error ratio bar, master/outstation role badge, Modbus unit IDs, DNP3 link addresses
-- **Exports** — PNG graph screenshot, connections CSV, anomalies CSV, credentials CSV (with passwords), Markdown audit report (capture summary, risk ranking, anomalies by severity, OT inventory, TLS/SNI observations, captured credentials, file transfers, OT write log)
+- **Exports** — PNG graph screenshot, connections CSV, anomalies CSV, credentials CSV (with passwords), Markdown audit report (capture summary, risk ranking, anomalies by severity, OT inventory, VLAN device inventory, VLAN traffic by VLAN, TLS/SNI observations, captured credentials, file transfers, OT write log), VLAN Inventory CSV, VLAN Traffic CSV, VLAN Diagram SVG
 - **File transfer detection** — Detects HTTP file downloads (Content-Disposition: attachment + interesting Content-Type); sidebar "File Transfers" panel with filename, MIME, size, SHA-256 hash; 200 files/capture, 500/merge (deduped by hash)
 - **PCAP baseline diff** — "Set Baseline" button in header; upload a second PCAP and open the "⊕ Diff" tab to compare: new/disappeared hosts, new connections (with protocols), new anomalies vs baseline; three-column diff view, no server round-trip
 - **Session save / load** — Export full analysis to JSON and reload without re-uploading the capture file
 - **Node annotations** — Right-click any node to attach a persistent note (stored in browser localStorage)
-- **Anomaly detection** — 25 detection rules across general network, OT/ICS, and IoT threat categories
+- **Anomaly detection** — 32 detection rules across general network, OT/ICS, IoT, and VLAN threat categories
 - **Large capture support** — Streams up to 1,000,000 packets without loading into memory (up to 1 GB upload); multi-file uploads processed in parallel
 
 ## Anomaly Detection
 
-25 detection rules fire automatically after analysis:
+32 detection rules fire automatically after analysis:
 
 **General network**
 - Port scan — single source contacting >5 IPs across >15 unique ports
@@ -67,6 +74,15 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - Telnet access to an IoT device — classic Mirai botnet vector
 - IP Camera sending data to an external IP — unauthorized stream or C2
 - TR-069 (port 7547) — remote management protocol frequently exploited
+
+**VLAN**
+- Host seen on multiple VLANs — non-routing host tagged with 2+ VLAN IDs; possible VLAN hopping attack
+- Untagged + tagged frame mix — same host sending both untagged and tagged frames; possible native VLAN leakage
+- QinQ (double-tagged) frames — 802.1ad outer tag detected; legitimate in carrier networks but a classic VLAN-hopping vector
+- Cross-VLAN OT traffic — OT/ICS device communicating with a host on a different VLAN; segmentation violation
+- **ARP spoofing within VLAN** — same IP seen with 2+ different MACs on the same VLAN; possible ARP poisoning or MAC flapping
+- **Broadcast storm** — VLAN with >10% broadcast traffic (and >50 broadcast packets); misconfiguration or loop
+- **PCP priority abuse** — end-host (Windows PC, IP camera, IoT sensor) sending frames tagged with PCP ≥ 6 (network-control priority); unexpected QoS manipulation
 
 All anomalies are shown in the sidebar and on the node detail panel; affected nodes pulse with a coloured ring (red = high, yellow = medium).
 
