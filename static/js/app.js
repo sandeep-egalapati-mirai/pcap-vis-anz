@@ -417,11 +417,13 @@ function loadGraph(data) {
   if (vlanSummarySec) vlanSummarySec.style.display = "none";
   _vlanMatrixMode = false;
   const matrixBtn = document.getElementById("vlan-matrix-btn");
-  if (matrixBtn) matrixBtn.classList.remove("active");
+  if (matrixBtn) { matrixBtn.classList.remove("active"); matrixBtn.textContent = "⊞ Matrix"; }
   const matrixCont = document.getElementById("vlan-matrix-container");
   if (matrixCont) matrixCont.classList.add("hidden");
   const canvasWrap = document.getElementById("vlan-canvas-wrap");
   if (canvasWrap) canvasWrap.classList.remove("hidden");
+  const graphCtrl = document.getElementById("vlan-graph-controls");
+  if (graphCtrl) graphCtrl.style.display = "";
   if (vlanSimulation) { vlanSimulation.stop(); vlanSimulation = null; }
   vlanSelectedNode = null;
   closePktInspector();
@@ -4944,8 +4946,16 @@ document.getElementById("vlan-matrix-btn").addEventListener("click", () => {
   _vlanMatrixMode = !_vlanMatrixMode;
   const btn = document.getElementById("vlan-matrix-btn");
   btn.classList.toggle("active", _vlanMatrixMode);
+  btn.textContent = _vlanMatrixMode ? "↩ Graph" : "⊞ Matrix";
+  // Canvas / matrix swap
   document.getElementById("vlan-canvas-wrap").classList.toggle("hidden", _vlanMatrixMode);
   document.getElementById("vlan-matrix-container").classList.toggle("hidden", !_vlanMatrixMode);
+  // Graph-specific controls (layout buttons + fit) hide in matrix mode
+  const graphCtrl = document.getElementById("vlan-graph-controls");
+  if (graphCtrl) graphCtrl.style.display = _vlanMatrixMode ? "none" : "";
+  // Search bar: hide in matrix mode; restore to "" (may still be hidden by loadGraph if no VLANs)
+  const srchEl = document.getElementById("vlan-search");
+  if (srchEl) srchEl.style.display = _vlanMatrixMode ? "none" : (graphData?.stats?.vlans?.length ? "" : "none");
   if (_vlanMatrixMode && graphData) renderVlanMatrix(graphData);
 });
 

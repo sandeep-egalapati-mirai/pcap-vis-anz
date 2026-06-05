@@ -422,26 +422,32 @@
     <!-- VLAN Graph view -->
     <div id="vlan-view" class="hidden">
       <div id="vlan-stats-bar"></div>
-      <!-- vlan-canvas-wrap is the positioning context for the legend/controls overlays -->
-      <div id="vlan-canvas-wrap">
-        <svg id="vlan-svg"></svg>
-        <div id="vlan-legend">
-          <div id="vlan-legend-title">VLAN Segments</div>
-          <div id="vlan-legend-items"></div>
-        </div>
-        <div id="vlan-controls">
+
+      <!-- Toolbar row — always visible, never overlaps the canvas -->
+      <div id="vlan-toolbar">
+        <div id="vlan-graph-controls">
           <div class="layout-group">
             <button class="gc-btn layout-btn active" data-vlan-layout="force" title="Force layout">⊙</button>
             <button class="gc-btn layout-btn" data-vlan-layout="radial" title="Radial layout">◎</button>
             <button class="gc-btn layout-btn" data-vlan-layout="cluster" title="Cluster layout">⊞</button>
           </div>
           <button class="gc-btn" id="vlan-zoom-fit" title="Fit to screen">⊡</button>
-          <button class="gc-btn" id="vlan-matrix-btn" title="Toggle flow matrix view">⊞ Matrix</button>
-          <input id="vlan-search" type="text" placeholder="Search VLANs / IPs…"
-                 style="display:none" autocomplete="off">
+        </div>
+        <button class="gc-btn" id="vlan-matrix-btn" title="Toggle flow matrix view">⊞ Matrix</button>
+        <input id="vlan-search" type="text" placeholder="Search VLANs / IPs…"
+               style="display:none" autocomplete="off">
+      </div>
+
+      <!-- Canvas area — positioning context for legend overlay only -->
+      <div id="vlan-canvas-wrap">
+        <svg id="vlan-svg"></svg>
+        <div id="vlan-legend">
+          <div id="vlan-legend-title">VLAN Segments</div>
+          <div id="vlan-legend-items"></div>
         </div>
         <div id="vlan-empty" style="display:none">No VLAN-tagged traffic found in this capture</div>
       </div>
+
       <!-- Cross-VLAN flow matrix (toggled by ⊞ Matrix button) -->
       <div id="vlan-matrix-container" class="hidden">
         <div id="vlan-matrix-layout">
@@ -450,7 +456,7 @@
           <svg id="vlan-matrix-rows"></svg>
           <svg id="vlan-matrix-cells"></svg>
         </div>
-        <div id="vlan-matrix-legend" style="padding:8px 14px;font-size:11px;color:var(--text2)">
+        <div id="vlan-matrix-legend">
           Cell color = dominant protocol · Orange = cross-VLAN OT anomaly · Red border = VLAN anomaly
         </div>
       </div>
