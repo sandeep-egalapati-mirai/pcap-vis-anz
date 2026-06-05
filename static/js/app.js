@@ -2219,6 +2219,7 @@ function openPktInspectorForHost(ip) {
 }
 
 function closePktInspector() {
+  _currentPktList = [];    // clear stale packets so tabs show nothing after close
   pktInspector.classList.add("hidden");
   graphWrap.classList.remove("pkt-open");
   document.getElementById("legend").style.bottom = "";
@@ -4246,6 +4247,7 @@ document.getElementById("diff-clear-btn").addEventListener("click", () => {
 /* ── VLAN Graph ──────────────────────────────────────────────────────────── */
 function renderVlanGraph(data) {
   _vlanRendered = true;
+  vlanSelectedNode = null;   // clear any stale selection from a previous render
   const svgEl = document.getElementById("vlan-svg");
   const emptyEl = document.getElementById("vlan-empty");
 
@@ -4684,12 +4686,20 @@ function renderVlanGraph(data) {
     if (members.length) {
       rows.push(sectionTitle(`Member Hosts (${members.length})`));
       members.slice(0, 30).forEach(n => {
-        rows.push(`<div style="padding:2px 0;font-size:11px;cursor:pointer;color:var(--link)" onclick="(function(){const f=graphData.nodes.find(x=>x.ip==='${escHtml(n.ip)}');if(f)showDetailPanel(f);})()">${escHtml(n.hostname || n.ip)}${n.multiVlan ? ' <span style="color:var(--yellow);font-size:10px">⚡ multi-VLAN</span>' : ''}</div>`);
+        // Use data-ip instead of inline onclick to avoid JS injection via IP strings
+        rows.push(`<div class="vlan-member-host" data-ip="${escHtml(n.ip)}" style="padding:2px 0;font-size:11px;cursor:pointer;color:var(--link)">${escHtml(n.hostname || n.ip)}${n.multiVlan ? ' <span style="color:var(--yellow);font-size:10px">⚡ multi-VLAN</span>' : ''}</div>`);
       });
       if (members.length > 30) rows.push(`<div style="color:var(--text2);font-size:11px">…and ${members.length - 30} more</div>`);
     }
 
     body.innerHTML = rows.join("");
+    // Bind member-host click handlers after innerHTML assignment (avoids inline onclick XSS)
+    body.querySelectorAll(".vlan-member-host").forEach(el => {
+      el.addEventListener("click", () => {
+        const f = graphData.nodes.find(x => x.ip === el.dataset.ip);
+        if (f) showDetailPanel(f);
+      });
+    });
   }
 }
 

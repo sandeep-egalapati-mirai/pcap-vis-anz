@@ -50,6 +50,7 @@ def _get_executor() -> ThreadPoolExecutor:
 # Captured file bodies keyed by SHA-256; populated during analyze_pcap,
 # cleared at the start of each /upload request.
 _file_body_cache: dict = {}
+_file_body_cache_lock = threading.Lock()
 
 # ── MAC OUI vendor table (common prefixes) ────────────────────────────────────
 MAC_VENDORS = {
@@ -1293,22 +1294,29 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None):
                 "description": f"Regular beaconing detected between {a} and {b} ({len(pkts)} packets, CV={cv:.2%})",
             })
 
-    # ── Data exfiltration: host sending >10MB to non-private IP ──
+    # ── Data exfiltration: >10MB transferred on a connection to/from an external IP ──
     TEN_MB = 10 * 1024 * 1024
-    for ip, h in hosts.items():
-        if h["bytes_sent"] > TEN_MB:
-            # Check if any connections go to non-private IPs
-            for (a, b) in connections:
-                peer = b if a == ip else (a if b == ip else None)
-                if peer and not is_private(peer):
-                    anomalies.append({
-                        "type": "exfiltration",
-                        "severity": "high",
-                        "src": ip,
-                        "dst": peer,
-                        "description": f"{ip} sent {h['bytes_sent'] / 1048576:.1f} MB to external IP {peer} — possible data exfiltration",
-                    })
-                    break
+    _seen_exfil = set()
+    for (a, b), conn in connections.items():
+        a_priv, b_priv = is_private(a), is_private(b)
+        if not (a_priv ^ b_priv):   # skip if both private or both public
+            continue
+        if conn["bytes"] > TEN_MB:
+            internal = a if a_priv else b
+            external = b if a_priv else a
+            key = (internal, external)
+            if key not in _seen_exfil:
+                _seen_exfil.add(key)
+                anomalies.append({
+                    "type": "exfiltration",
+                    "severity": "high",
+                    "src": internal,
+                    "dst": external,
+                    "description": (
+                        f"{internal} transferred {conn['bytes'] / 1048576:.1f} MB "
+                        f"with external IP {external} — possible data exfiltration"
+                    ),
+                })
 
     # ── Suspicious ports ──
     for (a, b), conn in connections.items():
@@ -2967,6 +2975,7 @@ def merge_results(results):
                 merged_nodes[ip]["vlan_qinq"] = bool(n.get("vlan_qinq"))
                 merged_nodes[ip]["host_type_hints"] = Counter(n.get("host_type_hints", {}))
                 merged_nodes[ip]["has_s7_download"] = bool(n.get("has_s7_download", False))
+                merged_nodes[ip]["flags"] = set(n.get("flags", []))
             else:
                 mn = merged_nodes[ip]
                 mn["packet_count"] += n["packet_count"]
@@ -2988,6 +2997,7 @@ def merge_results(results):
                 mn["vlan_qinq"] = mn["vlan_qinq"] or bool(n.get("vlan_qinq"))
                 mn["host_type_hints"].update(n.get("host_type_hints", {}))
                 mn["has_s7_download"] = mn["has_s7_download"] or bool(n.get("has_s7_download", False))
+                mn["flags"].update(n.get("flags", []))
                 if not mn["hostname"] and n["hostname"]:
                     mn["hostname"] = n["hostname"]
                 if not mn["geo"] and n.get("geo"):
@@ -3102,7 +3112,7 @@ def merge_results(results):
             "bytes_recv": mn["bytes_recv"],
             "dns_queries": sorted(mn["dns_queries"])[:10],
             "is_private": mn["is_private"],
-            "flags": mn.get("flags", []),
+            "flags": list(mn.get("flags", [])),
             "geo": mn.get("geo"),
             "ot_role": mn.get("ot_role", "unknown"),
             "modbus_unit_ids": sorted(mn.get("modbus_unit_ids", set())),
@@ -3203,7 +3213,8 @@ def index():
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    _file_body_cache.clear()
+    with _file_body_cache_lock:
+        _file_body_cache.clear()
     files = request.files.getlist("file")
     if not files:
         single = request.files.get("file")
@@ -3262,7 +3273,8 @@ def download_file(sha256):
     """Serve a captured file body from the in-memory cache by its SHA-256 hash."""
     if not re.match(r'^[0-9a-f]{64}$', sha256):
         return jsonify({"error": "Invalid hash"}), 400
-    entry = _file_body_cache.get(sha256)
+    with _file_body_cache_lock:
+        entry = _file_body_cache.get(sha256)
     if entry is None:
         return jsonify({"error": "File not in cache. Re-upload the PCAP to download."}), 404
     resp = make_response(entry["body"])

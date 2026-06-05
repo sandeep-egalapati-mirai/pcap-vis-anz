@@ -365,3 +365,69 @@ def test_merge_ip_version_preserved():
     assert sorted(merged["stats"]["ip_versions"]) == [4, 6]
     assert merged["stats"]["ipv4_count"] >= 1
     assert merged["stats"]["ipv6_count"] >= 1
+
+
+# ── Regression tests for previously-fixed bugs ───────────────────────────────
+
+def test_destination_host_packet_count_incremented():
+    """Regression: dh['packet_count'] must be incremented (Bug 1 fix)."""
+    pkts = [
+        Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1234, dport=80),
+        Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1234, dport=80),
+        Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1234, dport=80),
+    ]
+    r = _analyze(pkts)
+    node_b = _node(r, IP_B)
+    assert node_b is not None
+    assert node_b["packet_count"] >= 1, (
+        "Destination host must have packet_count > 0 (fix: dh['packet_count'] += 1)"
+    )
+
+
+def test_host_type_priority_over_frequency():
+    """Regression: HOST_TYPE_PRIORITY first-observed wins over most-common (Bug 2 fix).
+
+    10 HTTP packets → IP_B accumulates 10 'Web Server' hints.
+    1 Modbus packet → IP_B accumulates 1 'PLC' hint.
+    Expected: IP_B is classified as 'PLC' (higher priority) not 'Web Server'.
+    """
+    pkts = (
+        # 10 HTTP connections → "Web Server" hint (dport 80)
+        [Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1000 + i, dport=80)
+         for i in range(10)]
+        +
+        # 1 Modbus connection → "PLC" hint (dport 502)
+        [Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=2000, dport=502)]
+    )
+    r = _analyze(pkts)
+    node_b = _node(r, IP_B)
+    assert node_b is not None
+    assert node_b["host_type"] == "PLC", (
+        f"Got '{node_b['host_type']}' — HOST_TYPE_PRIORITY should pick 'PLC' over 'Web Server' "
+        "regardless of frequency"
+    )
+
+
+def test_merge_reclassifies_host_type_by_priority():
+    """Regression: merge_results must re-classify host_type using priority (Bug 6 fix).
+
+    r1: IP_B has only HTTP traffic → classified as 'Web Server'.
+    r2: IP_B has only Modbus traffic → classified as 'PLC'.
+    Merged: host_type_hints = {'Web Server': N, 'PLC': M}.
+    Expected: 'PLC' wins (higher priority) regardless of which PCAP was first.
+    """
+    pkts_http = [
+        Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1000, dport=80),
+        Ether(src=MAC_A, dst=MAC_B) / IP(src=IP_A, dst=IP_B) / TCP(sport=1001, dport=80),
+    ]
+    pkts_modbus = [
+        Ether(src=MAC_C, dst=MAC_B) / IP(src=IP_C, dst=IP_B) / TCP(sport=2000, dport=502),
+    ]
+    r1 = _analyze(pkts_http)
+    r2 = _analyze(pkts_modbus)
+    merged = merge_results([r1, r2])
+    node_b = _node(merged, IP_B)
+    assert node_b is not None
+    assert node_b["host_type"] == "PLC", (
+        f"Got '{node_b['host_type']}' — merged host_type should be 'PLC' (higher priority)"
+    )
