@@ -80,9 +80,8 @@
 
 ## VLAN Follow-ups
 
-- [ ] Per-VLAN bandwidth chart — bar chart of bytes/packets per VLAN in the VLAN view
-- [ ] VLAN timeline — filter the main graph timeline by VLAN segment
-- [ ] VLAN export — add vlans column to connections CSV export
+- [x] Per-VLAN bandwidth chart / VLAN timeline — timeline minimap now shows stacked per-VLAN byte bars when VLAN data is present; bars are colored by VLAN using the same vlanColor() palette; falls back to plain density bars for non-VLAN captures
+- [x] VLAN export — covered by Export VLAN Traffic CSV (includes Source/Dest VLAN columns and Cross-VLAN flag)
 
 ## Completed (Enrichments)
 

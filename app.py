@@ -2660,6 +2660,10 @@ def analyze_pcap(filepath):
                             udp_len, icmp_type, icmp_code,
                             smac, dmac, ttl, l3_off, eth_type,
                         )
+                        # Tag packet with its VLAN ID for the per-VLAN timeline
+                        _vid = vlan_inner if vlan_inner is not None else vlan_outer
+                        if _vid is not None:
+                            pd["vlan_id"] = _vid
 
                         # HTTP parsing
                         if protocol == "HTTP" and payload:

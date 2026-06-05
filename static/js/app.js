@@ -6150,21 +6150,21 @@ document.addEventListener("click", () => {
 function buildTimeline(data) {
   const tlBar = document.getElementById("timeline-bar");
 
-  // Collect all packet timestamps from packetData
-  const allTimes = [];
+  // Collect all packets: need time, bytes, and (optional) vlan_id
+  const allPkts = [];
   for (const pkts of Object.values(data.packets || {})) {
-    pkts.forEach(p => { if (p.time != null) allTimes.push(p.time); });
+    pkts.forEach(p => { if (p.time != null) allPkts.push(p); });
   }
 
-  if (allTimes.length < 2) {
+  if (allPkts.length < 2) {
     tlBar.classList.add("hidden");
     return;
   }
 
   let minT = Infinity, maxT = -Infinity;
-  for (let i = 0; i < allTimes.length; i++) {
-    if (allTimes[i] < minT) minT = allTimes[i];
-    if (allTimes[i] > maxT) maxT = allTimes[i];
+  for (const p of allPkts) {
+    if (p.time < minT) minT = p.time;
+    if (p.time > maxT) maxT = p.time;
   }
   const span = maxT - minT;
 
@@ -6175,22 +6175,59 @@ function buildTimeline(data) {
 
   tlBar.classList.remove("hidden");
 
-  // Build minimap
+  // Per-VLAN stacked minimap — bucket bytes per VLAN per bin
   const minimap = document.getElementById("tl-minimap");
   minimap.innerHTML = "";
   const BINS = 60;
-  const bins = new Array(BINS).fill(0);
-  allTimes.forEach(t => {
-    const idx = Math.min(Math.floor(((t - minT) / span) * BINS), BINS - 1);
-    bins[idx]++;
+  const hasVlans = (data.stats?.vlans?.length || 0) > 0;
+
+  // binBytes[i] = total bytes in bin i; vlanBins[vid][i] = bytes for that VLAN
+  const binBytes = new Array(BINS).fill(0);
+  const vlanBins = {};   // vid → Float32Array(BINS)
+
+  allPkts.forEach(p => {
+    const idx = Math.min(Math.floor(((p.time - minT) / span) * BINS), BINS - 1);
+    const bytes = p.len || 1;
+    binBytes[idx] += bytes;
+    if (hasVlans) {
+      const vid = p.vlan_id != null ? String(p.vlan_id) : "untagged";
+      if (!vlanBins[vid]) vlanBins[vid] = new Float32Array(BINS);
+      vlanBins[vid][idx] += bytes;
+    }
   });
-  const maxBin = Math.max(1, ...bins);  // bins is only 60 elements — spread safe here
-  bins.forEach(count => {
-    const bar = document.createElement("div");
-    bar.className = "tl-bar";
-    bar.style.height = Math.max(2, (count / maxBin) * 20) + "px";
-    minimap.appendChild(bar);
-  });
+
+  const maxBytes = Math.max(1, ...binBytes);   // safe — only 60 elements
+  const vlanVids = Object.keys(vlanBins);
+
+  for (let i = 0; i < BINS; i++) {
+    const barH = Math.max(2, (binBytes[i] / maxBytes) * 20);
+
+    if (hasVlans && vlanVids.length > 1) {
+      // Stacked bar: one child div per VLAN, heights proportional to that VLAN's bytes
+      const container = document.createElement("div");
+      container.className = "tl-bar tl-bar-stacked";
+      container.style.height = barH + "px";
+
+      // Sort VLANs so the order is stable across bins
+      vlanVids.sort().forEach(vid => {
+        const vBytes = vlanBins[vid][i];
+        if (!vBytes) return;
+        const seg = document.createElement("div");
+        seg.className = "tl-bar-seg";
+        seg.style.height = Math.max(1, (vBytes / binBytes[i]) * barH) + "px";
+        seg.style.background = vlanColor(vid === "untagged" ? null : vid);
+        seg.title = `VLAN ${vid}: ${fmtBytes(vBytes)}`;
+        container.appendChild(seg);
+      });
+      minimap.appendChild(container);
+    } else {
+      // No VLAN data — plain density bar (original behaviour)
+      const bar = document.createElement("div");
+      bar.className = "tl-bar";
+      bar.style.height = barH + "px";
+      minimap.appendChild(bar);
+    }
+  }
 
   const slider = document.getElementById("tl-slider");
   const timeLabel = document.getElementById("tl-time-label");
