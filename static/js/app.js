@@ -473,6 +473,8 @@ function loadGraph(data) {
   searchTerm = "";
   searchBox.value = "";
   detailPanel.classList.remove("open");
+  const noConnMsgReset = document.getElementById("no-connections-msg");
+  if (noConnMsgReset) noConnMsgReset.classList.remove("visible");
 
   // Reset OT edit state so stale overrides from a prior PCAP don't linger
   Object.keys(otOverrides).forEach(k => delete otOverrides[k]);
@@ -915,7 +917,8 @@ function applyFilters(skipFit) {
   });
 
   linksGroup.selectAll(".link").each(function(d) {
-    const protoOk = (d.protocols || []).some(p => activeProtos.has(p));
+    const protoOk = !(d.protocols && d.protocols.length) ||
+                    (d.protocols || []).some(p => activeProtos.has(p));
     const sid = d.source.id || d.source;
     const tid = d.target.id || d.target;
     const visible = protoOk && visibleNodeIds.has(sid) && visibleNodeIds.has(tid);
@@ -1322,7 +1325,8 @@ function drawCanvasEdges() {
   ctx.globalAlpha = 0.7;
 
   for (const d of _canvasLinks) {
-    const protoOk = (d.protocols || []).some(p => activeProtos.has(p));
+    const protoOk = !(d.protocols && d.protocols.length) ||
+                    (d.protocols || []).some(p => activeProtos.has(p));
     const sid = typeof d.source === "object" ? d.source.id : d.source;
     const tid = typeof d.target === "object" ? d.target.id : d.target;
     if (!protoOk || !visibleNodeIds.has(sid) || !visibleNodeIds.has(tid)) continue;
@@ -1360,8 +1364,12 @@ function renderGraph(data) {
   nodes.forEach(n => nodeById[n.id] = n);
 
   const links = data.edges
-    .filter(e => nodeById[e.source] && nodeById[e.target])
+    .filter(e => nodeById[e.source] && nodeById[e.target] && e.source !== e.target)
     .map(e => ({ ...e, source: e.source, target: e.target }));
+
+  // Show overlay when nodes exist but no IP connections (ARP-only or all self-loops)
+  const noConnMsg = document.getElementById("no-connections-msg");
+  if (noConnMsg) noConnMsg.classList.toggle("visible", links.length === 0 && nodes.length > 0);
 
   const maxPkt = nodes.reduce((m, n) => Math.max(m, n.packet_count), 1);
   function nodeRadius(d) {
