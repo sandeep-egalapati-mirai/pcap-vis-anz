@@ -229,6 +229,180 @@ const ANOMALY_FAMILIES = [
   },
 ];
 
+/* C1: Inline explanations for each anomaly type */
+const ANOMALY_EXPLANATIONS = {
+  port_scan: {
+    what: "A host rapidly probed many ports on one or more targets.",
+    why:  "Port scanning is reconnaissance — attackers map open services before exploiting them.",
+    steps: ["Verify whether the scanning host is authorised (e.g. a pentesting tool).", "Check firewall/IDS logs for blocked probe attempts.", "If unexpected, treat the source as potentially compromised."],
+  },
+  suspicious_port: {
+    what: "Traffic was observed on a port commonly associated with malware or unauthorised services.",
+    why:  "Well-known malware families use predictable ports (e.g. 4444, 6667) for C2 channels.",
+    steps: ["Identify the process listening on that port.", "Cross-reference against known malware port lists.", "Block or quarantine the host if no legitimate use is found."],
+  },
+  beaconing: {
+    what: "A host sent repeated, evenly-spaced connections (low inter-arrival time variance).",
+    why:  "C2 implants beacon home at regular intervals to receive commands; low timing variance is a strong signal.",
+    steps: ["Capture a packet sample and inspect the payload for known C2 signatures.", "Block the destination at the perimeter and isolate the host.", "Run EDR/AV on the beaconing endpoint."],
+  },
+  exfiltration: {
+    what: "A large volume of data was transferred to an external IP.",
+    why:  "Data exfiltration is a late-stage attacker goal; large outbound flows to unknown IPs are a red flag.",
+    steps: ["Identify the external destination and check reputation (threat intel).", "Review what data resides on the source host.", "Block the destination and preserve network logs for forensics."],
+  },
+  dns_tunneling: {
+    what: "Unusually long or numerous DNS queries suggest data is being smuggled in DNS payloads.",
+    why:  "DNS is often allowed through firewalls; attackers embed C2 traffic or exfiltrate data in DNS labels.",
+    steps: ["Capture and decode the suspect DNS queries.", "Check if the queried domain resolves or behaves like a tunnel server.", "Block the domain and inspect the querying host."],
+  },
+  cleartext_credentials: {
+    what: "Username/password pairs were transmitted in plaintext over the network.",
+    why:  "Cleartext credentials (HTTP Basic, FTP, Telnet, etc.) can be trivially intercepted by any on-path observer.",
+    steps: ["Force TLS/SSH for all relevant services.", "Rotate any captured credentials immediately.", "Audit which hosts are still using legacy cleartext protocols."],
+  },
+  password_reuse: {
+    what: "The same credential was observed authenticating to multiple distinct services.",
+    why:  "Credential stuffing attacks exploit password reuse — one breach gives attackers access everywhere.",
+    steps: ["Enforce unique passwords per service via a password manager or SSO.", "Investigate whether those services were accessed by an authorised user.", "Enable MFA on all reachable services."],
+  },
+  unusual_ja3: {
+    what: "A TLS client fingerprint (JA3) was seen that does not match known browser or tool baselines.",
+    why:  "Malware often has distinctive TLS handshake parameters; an unknown JA3 hash may indicate a novel or obfuscated client.",
+    steps: ["Look up the JA3 hash against public threat intel databases.", "Identify the process generating the TLS connection on the host.", "If unrecognised, treat the host as potentially compromised."],
+  },
+  ot_modbus_write: {
+    what: "A Modbus write command (FC 5/6/15/16) was sent to a device.",
+    why:  "Write commands can alter PLC coils and registers, directly affecting physical processes.",
+    steps: ["Verify the source is an authorised engineering workstation.", "Confirm the target register/coil is expected to change at this time.", "Review the change management log for a matching work order."],
+  },
+  ot_modbus_bulk_read: {
+    what: "An unusually large number of Modbus read requests were sent in a short time.",
+    why:  "Bulk reads may indicate reconnaissance of process variables or automated enumeration of connected devices.",
+    steps: ["Check whether the source is a known SCADA/HMI system.", "Review the specific registers being read for sensitive process data.", "Alert the OT security team if source is unknown."],
+  },
+  ot_modbus_broadcast: {
+    what: "A Modbus request was sent to the broadcast address (unit ID 0).",
+    why:  "Broadcast commands affect all devices on the bus simultaneously and are rarely used in production.",
+    steps: ["Determine whether a broadcast was intentionally sent by an operator.", "Check for replay attacks if the same broadcast was sent repeatedly.", "Disable broadcast address support on PLCs if not required."],
+  },
+  ot_modbus_exception: {
+    what: "A PLC returned a Modbus exception response (error code).",
+    why:  "Exceptions indicate the device rejected a command or is in an error state, which can signal misuse or misconfiguration.",
+    steps: ["Identify the exception code and the function code that triggered it.", "Determine if the command came from a legitimate HMI.", "Investigate the device health if exceptions are frequent."],
+  },
+  ot_multiunit_poll: {
+    what: "One host polled many different Modbus unit IDs, suggesting device discovery.",
+    why:  "Scanning multiple unit IDs is a classic OT reconnaissance technique used to enumerate devices on a serial or network segment.",
+    steps: ["Confirm whether the source IP belongs to a known asset management tool.", "Restrict Modbus access to the HMI/SCADA range via ACLs.", "Alert the OT team if the source is unrecognised."],
+  },
+  ot_dnp3_control: {
+    what: "A DNP3 control operation (operate, direct operate) was sent.",
+    why:  "DNP3 control messages can actuate field devices (breakers, valves) and cause physical impact if unauthorised.",
+    steps: ["Verify the operator workstation sent the command.", "Cross-reference with the SCADA alarm log for a corresponding operator action.", "Enforce DNP3 application-layer authentication (SAv5/6)."],
+  },
+  ot_dnp3_unusual_fc: {
+    what: "A rarely-used DNP3 function code was observed.",
+    why:  "Unusual function codes may indicate fuzzing, an exploit attempt, or a misconfigured master station.",
+    steps: ["Log the specific function code and the source master station.", "Check the DNP3 standard documentation for the function's purpose.", "Consider blocking unsupported function codes in DNP3 proxy firewalls."],
+  },
+  ot_s7_critical: {
+    what: "A critical S7 command (CPU start/stop, cold restart) was sent to a Siemens PLC.",
+    why:  "These commands directly control PLC execution state and can halt a process if misused.",
+    steps: ["Confirm the command came from an authorised programming device (PG/PC).", "Review the maintenance schedule for any planned CPU restarts.", "Restrict S7 control functions by source IP and authentication."],
+  },
+  ot_s7_write: {
+    what: "An S7 write to DB or I/O area was observed.",
+    why:  "Writing to data blocks or I/O areas alters process variables and setpoints, potentially causing unsafe conditions.",
+    steps: ["Confirm the write was issued by an authorised HMI or engineering station.", "Identify what data block and offset was modified.", "Enable write protection on critical DBs in the PLC program."],
+  },
+  ot_s7_code_download: {
+    what: "An S7 program download was detected.",
+    why:  "Downloading modified PLC code is the highest-impact OT attack vector (cf. Stuxnet).",
+    steps: ["Immediately verify that the download was authorised and matches a known change request.", "Compare the downloaded program against the golden backup.", "Isolate the programming PC if the download was unexpected."],
+  },
+  ot_enip_write: {
+    what: "An EtherNet/IP explicit message write (set attribute) was sent.",
+    why:  "EtherNet/IP write commands alter Allen-Bradley or other CIP device parameters at runtime.",
+    steps: ["Confirm the source is an authorised Logix or Studio 5000 workstation.", "Log the target tag name and new value.", "Enable CIP security (CIP Security v2) if the controller supports it."],
+  },
+  ot_iec104_command: {
+    what: "An IEC 60870-5-104 command (type ID ≥ 45) was sent.",
+    why:  "IEC 104 commands are used to control substation equipment; unauthorised commands can trip breakers or actuate switches.",
+    steps: ["Verify the source is the authorised control centre.", "Cross-reference with the SCADA journal for the scheduled operation.", "Enable IEC 62351-5 authentication if possible."],
+  },
+  ot_bacnet_write: {
+    what: "A BACnet WriteProperty command was observed.",
+    why:  "BACnet WriteProperty can alter HVAC/BAS setpoints, enabling temperature, airflow, or access control manipulation.",
+    steps: ["Confirm the source is a known BAS workstation or BACnet operator terminal.", "Check what object and property was modified.", "Restrict BACnet traffic to the building automation subnet."],
+  },
+  ot_internet_exposure: {
+    what: "An OT/ICS device communicated directly with an external (internet-routable) IP.",
+    why:  "OT devices should never be internet-accessible; this path is a prime attack vector for ransomware and sabotage.",
+    steps: ["Immediately block the connection at the firewall.", "Identify how the route to the internet was established (misconfigured router, VPN misconfiguration).", "Assess whether any data was exfiltrated or commands were received."],
+  },
+  ot_cleartext: {
+    what: "OT protocol traffic was observed in cleartext between segments that should be isolated.",
+    why:  "Unencrypted OT traffic can be intercepted and replayed, enabling man-in-the-middle attacks on industrial processes.",
+    steps: ["Deploy a protocol-aware OT firewall to segment the traffic.", "Consider protocol-level encryption where supported (e.g. IEC 62351).", "Use unidirectional gateways (data diodes) for flows that only need one-way data."],
+  },
+  iot_mqtt_cleartext: {
+    what: "MQTT traffic was observed on port 1883 (unencrypted).",
+    why:  "Cleartext MQTT exposes IoT telemetry and commands to anyone on the network segment.",
+    steps: ["Migrate all MQTT brokers to port 8883 (TLS-encrypted).", "Enforce client certificate authentication on the broker.", "Segment IoT devices onto a dedicated VLAN."],
+  },
+  iot_telnet: {
+    what: "Telnet (port 23) traffic was detected to or from a device.",
+    why:  "Telnet transmits credentials and commands in plaintext; it is exploited by IoT botnets (e.g. Mirai) to spread.",
+    steps: ["Disable Telnet on all devices and replace with SSH.", "Change default credentials immediately on any device still running Telnet.", "Block port 23 at the network perimeter and between VLANs."],
+  },
+  iot_camera_exfil: {
+    what: "A device classified as an IP camera sent an unusually large amount of data to an external host.",
+    why:  "Compromised cameras have been used to stream footage to attacker-controlled servers.",
+    steps: ["Verify whether the destination IP is the camera vendor's cloud service.", "Check firmware version and apply any security patches.", "Block outbound connections from cameras to unexpected external IPs."],
+  },
+  iot_tr069: {
+    what: "TR-069 (CWMP) traffic was observed — often used for ISP remote management of CPE.",
+    why:  "TR-069 has a history of vulnerabilities; attackers have hijacked ACS servers to compromise millions of routers.",
+    steps: ["Confirm the ACS server IP belongs to the authorised ISP.", "Disable TR-069 if remote management is not required.", "Firewall port 7547 (TR-069) so only the ISP ACS can reach CPE."],
+  },
+  vlan_hopping: {
+    what: "A frame with double 802.1Q tags (QinQ or tag stacking) was detected in a non-QinQ context.",
+    why:  "VLAN hopping exploits switch trunk negotiation to inject frames into a VLAN the attacker should not reach.",
+    steps: ["Set all access ports to 'access' mode (not auto/desirable) to prevent DTP negotiation.", "Change the native VLAN to an unused VLAN ID on all trunk ports.", "Enable BPDU Guard and port security on end-user access ports."],
+  },
+  vlan_native_leak: {
+    what: "Untagged frames were seen on a trunk port's native VLAN, potentially crossing VLAN boundaries.",
+    why:  "Native VLAN mismatches allow traffic to leak between VLANs transparently.",
+    steps: ["Explicitly tag all VLANs on trunk ports and set native VLAN to an unused ID.", "Ensure native VLAN is consistent on both ends of every trunk.", "Enable 'vlan dot1q tag native' on all trunk interfaces."],
+  },
+  vlan_qinq: {
+    what: "QinQ (802.1ad) double-tagged frames were observed.",
+    why:  "Unexpected QinQ frames may indicate a VLAN hopping attempt or misconfigured tunnelling.",
+    steps: ["Verify whether QinQ is intentionally provisioned for carrier VLAN services.", "If not intentional, investigate the source port for VLAN stacking capability.", "Restrict QinQ on ports where it is not required."],
+  },
+  vlan_cross_segment_ot: {
+    what: "Traffic was detected flowing directly between the OT network VLAN and a non-OT VLAN.",
+    why:  "Cross-segment OT traffic bypasses the security zone boundary and can expose PLCs to IT threats.",
+    steps: ["Identify the source and destination hosts and whether a firewall rule permits this flow.", "Block the flow at the L3 boundary and route OT traffic through the DMZ.", "Audit ACLs on the OT VLAN interface."],
+  },
+  arp_spoofing: {
+    what: "A host sent ARP replies claiming an IP address that belongs to another host.",
+    why:  "ARP spoofing enables man-in-the-middle attacks, allowing an attacker to intercept, modify, or drop traffic.",
+    steps: ["Enable Dynamic ARP Inspection (DAI) on all access switches.", "Use static ARP entries for critical hosts (gateways, servers).", "Investigate the host sending the spoofed ARP and check for malware."],
+  },
+  broadcast_storm: {
+    what: "An unusually high volume of broadcast frames was detected.",
+    why:  "Broadcast storms can saturate a switch fabric, causing a denial-of-service for the entire VLAN.",
+    steps: ["Enable STP (Spanning Tree Protocol) with BPDU Guard and PortFast on access ports.", "Enable storm control on switch uplinks with an appropriate threshold.", "Identify the source of the storm (misconfigured NIC, switching loop, or malware)."],
+  },
+  pcp_abuse: {
+    what: "802.1Q Priority Code Point (PCP) bits were set to high-priority values on traffic that should not be prioritised.",
+    why:  "Attackers can abuse QoS priority bits to gain preferential queuing or to fingerprint VLAN infrastructure.",
+    steps: ["Apply ingress QoS policing at access ports to reclassify or drop frames with suspicious PCP values.", "Restrict who can set PCP values (typically only trusted voice/video endpoints).", "Review QoS policy documentation and audit PCP markings."],
+  },
+};
+
 function fmtBytes(b) {
   if (b < 1024) return b + " B";
   if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
@@ -329,6 +503,7 @@ const otMapView      = document.getElementById("ot-map-view");
 const otLogView      = document.getElementById("otlog-view");
 const diffView       = document.getElementById("diff-view");
 const vlanView       = document.getElementById("vlan-view");
+const dashboardView  = document.getElementById("dashboard-view");
 const ctxMenu        = document.getElementById("ctx-menu");
 
 /* ── SVG setup ───────────────────────────────────────────────────────────── */
@@ -458,6 +633,7 @@ function loadGraph(data) {
   _vlanRendered  = false;
   _tlVisibleIps  = null;
   document.getElementById("vlan-tab-btn").classList.add("hidden");
+  document.getElementById("dashboard-tab-btn").classList.add("hidden");
   document.getElementById("vlan-filters-section").style.display = "none";
   document.getElementById("stat-vlans-wrap").style.display = "none";
   document.getElementById("stat-ipver-wrap").style.display = "none";
@@ -569,6 +745,8 @@ function loadGraph(data) {
 
   // Show baseline button now that data is loaded
   document.getElementById("baseline-btn").style.display = "";
+  // Dashboard is always available once data is loaded
+  document.getElementById("dashboard-tab-btn").classList.remove("hidden");
   // If a baseline was already set, show the diff tab
   if (baselineData) {
     document.getElementById("diff-tab-btn").classList.remove("hidden");
@@ -668,9 +846,22 @@ function setView(view) {
     diffView.classList.remove("hidden");
     vlanView.classList.add("hidden");
     renderDiff();
+  } else if (view === "dashboard") {
+    graphWrap.style.display = "none";
+    tlBar.classList.add("hidden");
+    pktIns.classList.add("hidden");
+    tableView.classList.add("hidden");
+    dnsView.classList.add("hidden");
+    otMapView.classList.add("hidden");
+    otLogView.classList.add("hidden");
+    diffView.classList.add("hidden");
+    vlanView.classList.add("hidden");
+    dashboardView.classList.remove("hidden");
+    renderDashboard();
   }
 
-  if (view !== "vlangraph") vlanView.classList.add("hidden");
+  if (view !== "vlangraph")  vlanView.classList.add("hidden");
+  if (view !== "dashboard") dashboardView.classList.add("hidden");
 }
 
 /* ── VLAN health summary card ────────────────────────────────────────────── */
@@ -1131,12 +1322,18 @@ function _renderTypeGroup(rep, items) {
   const div = document.createElement("div");
   div.className = `anomaly-badge ${rep.severity}`;
 
+  const infoBtn = document.createElement("button");
+  infoBtn.className = "ab-info";
+  infoBtn.title = "What is this?";
+  infoBtn.textContent = "ℹ";
+
   if (count > 1) {
     div.innerHTML = `
       <span class="ab-sev ${rep.severity}">${rep.severity}</span>
       <span class="ab-desc">${escHtml(summary)}</span>
       <button class="ab-expand" aria-label="Expand">▾ ${count}</button>
     `;
+    div.appendChild(infoBtn);
     const expandBtn = div.querySelector(".ab-expand");
     let expanded = false;
     const childList = document.createElement("div");
@@ -1160,6 +1357,28 @@ function _renderTypeGroup(rep, items) {
       <span class="ab-sev ${rep.severity}">${rep.severity}</span>
       <span class="ab-desc">${escHtml(summary)}</span>
     `;
+    div.appendChild(infoBtn);
+  }
+
+  // Explanation panel (C1)
+  const exp = ANOMALY_EXPLANATIONS[rep.type];
+  if (exp) {
+    const panel = document.createElement("div");
+    panel.className = "ab-explain hidden";
+    panel.innerHTML = `
+      <div class="ab-explain-what"><strong>What:</strong> ${escHtml(exp.what)}</div>
+      <div class="ab-explain-why"><strong>Why:</strong> ${escHtml(exp.why)}</div>
+      <div class="ab-explain-steps"><strong>Steps:</strong><ol>${exp.steps.map(s => `<li>${escHtml(s)}</li>`).join("")}</ol></div>
+    `;
+    panel.addEventListener("click", e => e.stopPropagation());
+    div.appendChild(panel);
+    infoBtn.addEventListener("click", e => {
+      e.stopPropagation();
+      panel.classList.toggle("hidden");
+      infoBtn.classList.toggle("active", !panel.classList.contains("hidden"));
+    });
+  } else {
+    infoBtn.style.display = "none";
   }
 
   div.addEventListener("click", () => _jumpToAnomaly(rep));
@@ -5348,6 +5567,156 @@ function renderVlanMatrix(data) {
   });
 }
 
+/* ── C2: Dashboard / summary view ───────────────────────────────────────── */
+function renderDashboard() {
+  const view = document.getElementById("dashboard-view");
+  if (!graphData || !view) return;
+  view.innerHTML = "";
+
+  const stats    = graphData.stats || {};
+  const nodes    = graphData.nodes || [];
+  const edges    = graphData.edges || [];
+  const anomalies = graphData.anomalies || [];
+
+  // Summary cards
+  const summaryRow = document.createElement("div");
+  summaryRow.className = "db-summary-row";
+  [
+    { label: "Hosts",       value: fmtNum(nodes.length) },
+    { label: "Connections", value: fmtNum(edges.length) },
+    { label: "Packets",     value: fmtNum(stats.total_packets || 0) },
+    { label: "Anomalies",   value: fmtNum(anomalies.length) },
+    { label: "Protocols",   value: fmtNum((stats.protocols || []).length) },
+  ].forEach(c => {
+    const card = document.createElement("div");
+    card.className = "db-card";
+    card.innerHTML = `<div class="db-card-val">${c.value}</div><div class="db-card-lbl">${escHtml(c.label)}</div>`;
+    summaryRow.appendChild(card);
+  });
+  view.appendChild(summaryRow);
+
+  const cols = document.createElement("div");
+  cols.className = "db-cols";
+
+  // Left column: top risk hosts
+  const leftCol = document.createElement("div");
+  leftCol.className = "db-left-col";
+
+  const riskPanel = document.createElement("div");
+  riskPanel.className = "db-panel";
+  riskPanel.innerHTML = `<div class="db-panel-title">Top Hosts by Risk Score</div>`;
+  const topHosts = nodes
+    .filter(n => (n.risk_score || 0) > 0)
+    .sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0))
+    .slice(0, 10);
+  if (topHosts.length === 0) {
+    riskPanel.innerHTML += '<div class="db-empty">No risks detected</div>';
+  } else {
+    const maxRisk = topHosts[0].risk_score || 1;
+    const barList = document.createElement("div");
+    barList.className = "db-bar-list";
+    topHosts.forEach(n => {
+      const pct = Math.round(((n.risk_score || 0) / maxRisk) * 100);
+      const cls = (n.risk_score || 0) >= 70 ? "high" : (n.risk_score || 0) >= 40 ? "med" : "low";
+      const row = document.createElement("div");
+      row.className = "db-bar-row";
+      row.title = `${n.id}  —  risk ${n.risk_score}`;
+      row.innerHTML = `
+        <div class="db-bar-label">${escHtml(n.ip || n.id)}</div>
+        <div class="db-bar-track"><div class="db-bar-fill ${cls}" style="width:${pct}%"></div></div>
+        <div class="db-bar-val">${n.risk_score || 0}</div>`;
+      row.addEventListener("click", () => {
+        setView("graph");
+        setTimeout(() => {
+          const nd = nodes.find(x => x.id === n.id);
+          if (nd) { selectedNode = nd; buildDetailPanel(nd); highlightNode(nd.ip); }
+        }, 80);
+      });
+      barList.appendChild(row);
+    });
+    riskPanel.appendChild(barList);
+  }
+  leftCol.appendChild(riskPanel);
+  cols.appendChild(leftCol);
+
+  // Right column: protocol dist + anomaly severity + busiest conns
+  const rightCol = document.createElement("div");
+  rightCol.className = "db-right-col";
+
+  // Protocol distribution
+  const protoPanel = document.createElement("div");
+  protoPanel.className = "db-panel";
+  protoPanel.innerHTML = `<div class="db-panel-title">Protocol Distribution</div>`;
+  const protoCounts = {};
+  edges.forEach(e => (e.protocols || []).forEach(p => {
+    protoCounts[p] = (protoCounts[p] || 0) + (e.packet_count || 1);
+  }));
+  const sortedProtos = Object.entries(protoCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (sortedProtos.length === 0) {
+    protoPanel.innerHTML += '<div class="db-empty">No protocol data</div>';
+  } else {
+    const maxP = sortedProtos[0][1] || 1;
+    const pList = document.createElement("div");
+    pList.className = "db-bar-list";
+    sortedProtos.forEach(([proto, cnt]) => {
+      const pct = Math.round((cnt / maxP) * 100);
+      const row = document.createElement("div");
+      row.className = "db-bar-row";
+      row.innerHTML = `
+        <div class="db-bar-label">${escHtml(proto)}</div>
+        <div class="db-bar-track"><div class="db-bar-fill proto" style="width:${pct}%"></div></div>
+        <div class="db-bar-val">${fmtNum(cnt)}</div>`;
+      pList.appendChild(row);
+    });
+    protoPanel.appendChild(pList);
+  }
+  rightCol.appendChild(protoPanel);
+
+  // Anomaly severity breakdown
+  const anomPanel = document.createElement("div");
+  anomPanel.className = "db-panel";
+  anomPanel.innerHTML = `<div class="db-panel-title">Anomaly Severity</div>`;
+  const sevCounts = { high: 0, medium: 0, low: 0, info: 0 };
+  anomalies.forEach(a => { if (a.severity in sevCounts) sevCounts[a.severity]++; });
+  const sevRow = document.createElement("div");
+  sevRow.className = "db-sev-row";
+  [["high","High"],["medium","Med"],["low","Low"],["info","Info"]].forEach(([sev, lbl]) => {
+    const chip = document.createElement("div");
+    chip.className = `db-sev-chip ${sev}`;
+    chip.innerHTML = `<span class="db-sev-count">${sevCounts[sev]}</span><span class="db-sev-lbl">${lbl}</span>`;
+    sevRow.appendChild(chip);
+  });
+  anomPanel.appendChild(sevRow);
+  rightCol.appendChild(anomPanel);
+
+  // Busiest connections
+  const connPanel = document.createElement("div");
+  connPanel.className = "db-panel";
+  connPanel.innerHTML = `<div class="db-panel-title">Busiest Connections</div>`;
+  const topEdges = [...edges].sort((a, b) => (b.packet_count || 0) - (a.packet_count || 0)).slice(0, 6);
+  if (topEdges.length === 0) {
+    connPanel.innerHTML += '<div class="db-empty">No connection data</div>';
+  } else {
+    const cList = document.createElement("div");
+    cList.className = "db-conn-list";
+    topEdges.forEach(e => {
+      const row = document.createElement("div");
+      row.className = "db-conn-row";
+      row.innerHTML = `
+        <span class="db-conn-src" title="${escHtml(e.source)}">${escHtml(e.source)}</span>
+        <span class="db-conn-arrow">→</span>
+        <span class="db-conn-dst" title="${escHtml(e.target)}">${escHtml(e.target)}</span>
+        <span class="db-conn-count">${fmtNum(e.packet_count || 0)} pkts</span>`;
+      cList.appendChild(row);
+    });
+    connPanel.appendChild(cList);
+  }
+  rightCol.appendChild(connPanel);
+
+  cols.appendChild(rightCol);
+  view.appendChild(cols);
+}
+
 function renderDiff() {
   if (!baselineData || !graphData) return;
   const bNodes = new Map((baselineData.nodes || []).map(n => [n.id, n]));
@@ -5363,16 +5732,38 @@ function renderDiff() {
   const changedHosts = [...cNodes.values()].filter(n => {
     if (!bNodes.has(n.id)) return false;
     const bn = bNodes.get(n.id);
+    if (n.host_type !== bn.host_type) return true;
+    if (Math.abs((n.risk_score || 0) - (bn.risk_score || 0)) > 20) return true;
     const bProtos = new Set(bn.protocols || []);
-    return (n.protocols || []).some(p => !bProtos.has(p));
+    if ((n.protocols || []).some(p => !bProtos.has(p))) return true;
+    const bPorts = new Set((bn.open_ports || []).map(String));
+    if ((n.open_ports || []).some(p => !bPorts.has(String(p)))) return true;
+    return false;
   });
 
   // Connection diff
   const newConns  = (graphData.edges || []).filter(e => !bEdges.has(`${e.source}|${e.target}`));
   const goneConns = (baselineData.edges || []).filter(e => !cEdges.has(`${e.source}|${e.target}`));
 
-  _renderDiffCol("diff-hosts-list", newHosts, goneHosts, changedHosts);
-  _renderDiffConnsCol("diff-conns-list", newConns, goneConns);
+  // Changed connections: exist in both but byte count shifted significantly (>2× or <0.5×)
+  const bEdgeMap = new Map();
+  (baselineData.edges || []).forEach(e => {
+    bEdgeMap.set(`${e.source}|${e.target}`, e);
+    bEdgeMap.set(`${e.target}|${e.source}`, e);
+  });
+  const changedConns = [];
+  (graphData.edges || []).forEach(e => {
+    const be = bEdgeMap.get(`${e.source}|${e.target}`) || bEdgeMap.get(`${e.target}|${e.source}`);
+    if (!be) return;
+    const ob = be.bytes || be.packet_count || 0;
+    const nb = e.bytes  || e.packet_count  || 0;
+    if (!ob || !nb) return;
+    const ratio = nb / ob;
+    if (ratio > 2 || ratio < 0.5) changedConns.push({ edge: e, ratio });
+  });
+
+  _renderDiffCol("diff-hosts-list", newHosts, goneHosts, changedHosts, bNodes);
+  _renderDiffConnsCol("diff-conns-list", newConns, goneConns, changedConns);
   _renderDiffAnomsCol("diff-anomalies-list", cAnoms);
 
   // VLAN diff: new/gone VLANs + hosts that changed VLAN membership
@@ -5393,7 +5784,7 @@ function renderDiff() {
   _renderDiffVlansCol("diff-vlans-list", newVlans, goneVlans, movedHosts);
 }
 
-function _renderDiffCol(id, added, removed, changed) {
+function _renderDiffCol(id, added, removed, changed, bNodes) {
   const el = document.getElementById(id);
   el.innerHTML = "";
   if (!added.length && !removed.length && !changed.length) {
@@ -5413,20 +5804,33 @@ function _renderDiffCol(id, added, removed, changed) {
     el.appendChild(d);
   });
   changed.forEach(n => {
-    const bn = (baselineData.nodes || []).find(x => x.id === n.id);
-    const bProtos = new Set(bn ? (bn.protocols || []) : []);
-    const newProtos = (n.protocols || []).filter(p => !bProtos.has(p));
+    const bn = bNodes ? bNodes.get(n.id) : null;
+    const changes = [];
+    if (bn) {
+      if (n.host_type !== bn.host_type)
+        changes.push(`type: ${bn.host_type || "?"} → ${n.host_type || "?"}`);
+      const riskDelta = (n.risk_score || 0) - (bn.risk_score || 0);
+      if (Math.abs(riskDelta) > 20)
+        changes.push(`risk: ${riskDelta > 0 ? "+" : ""}${riskDelta}`);
+      const bProtos = new Set(bn.protocols || []);
+      const newProtos = (n.protocols || []).filter(p => !bProtos.has(p));
+      if (newProtos.length) changes.push(`new proto: ${newProtos.join(", ")}`);
+      const bPorts = new Set((bn.open_ports || []).map(String));
+      const newPorts = (n.open_ports || []).filter(p => !bPorts.has(String(p)));
+      if (newPorts.length) changes.push(`new port: ${newPorts.join(", ")}`);
+    }
+    const changeDesc = changes.length ? changes.map(escHtml).join(" · ") : "changed";
     const d = document.createElement("div");
     d.className = "diff-item diff-changed";
-    d.innerHTML = `<span class="diff-badge chg">~ NEW PROTO</span> <strong>${escHtml(n.id)}</strong> <span class="diff-sub">${newProtos.map(escHtml).join(", ")}</span>`;
+    d.innerHTML = `<span class="diff-badge chg">~ CHG</span> <strong>${escHtml(n.id)}</strong> <span class="diff-sub">${changeDesc}</span>`;
     el.appendChild(d);
   });
 }
 
-function _renderDiffConnsCol(id, added, removed) {
+function _renderDiffConnsCol(id, added, removed, changed) {
   const el = document.getElementById(id);
   el.innerHTML = "";
-  if (!added.length && !removed.length) {
+  if (!added.length && !removed.length && !(changed && changed.length)) {
     el.innerHTML = '<div class="diff-empty">No connection changes</div>';
     return;
   }
@@ -5440,6 +5844,13 @@ function _renderDiffConnsCol(id, added, removed) {
     const d = document.createElement("div");
     d.className = "diff-item diff-removed";
     d.innerHTML = `<span class="diff-badge rem">− GONE</span> ${escHtml(e.source)} → ${escHtml(e.target)}`;
+    el.appendChild(d);
+  });
+  (changed || []).forEach(({ edge: e, ratio }) => {
+    const dir = ratio > 1 ? `▲${ratio.toFixed(1)}×` : `▼${(1 / ratio).toFixed(1)}×`;
+    const d = document.createElement("div");
+    d.className = "diff-item diff-changed";
+    d.innerHTML = `<span class="diff-badge chg">~ ${escHtml(dir)}</span> ${escHtml(e.source)} → ${escHtml(e.target)}`;
     el.appendChild(d);
   });
 }
@@ -6518,36 +6929,54 @@ function buildTimeline(data) {
     }
   }
 
-  const slider = document.getElementById("tl-slider");
+  const bStart   = document.getElementById("tl-brush-start");
+  const bEnd     = document.getElementById("tl-brush-end");
   const timeLabel = document.getElementById("tl-time-label");
 
-  slider.value = 100;
+  bStart.value = 0;
+  bEnd.value   = 100;
   timeLabel.textContent = "All time";
-  tlWindowPct = 100;
+  _updateBrushUI(0, 100);
 
   let _tlRafPending = false;
-  slider.oninput = () => {
+
+  function _applyBrush() {
     if (_tlRafPending) return;
     _tlRafPending = true;
     requestAnimationFrame(() => {
       _tlRafPending = false;
-      const pct = parseInt(slider.value) / 100;
-      tlWindowPct = parseInt(slider.value);
-      if (pct >= 1.0) {
+      const sVal = parseInt(bStart.value);
+      const eVal = parseInt(bEnd.value);
+      _updateBrushUI(sVal, eVal);
+      if (sVal <= 0 && eVal >= 100) {
         timeLabel.textContent = "All time";
         applyTimelineFilter(null, null);
       } else {
-        const windowSize = span * 0.15; // 15% window
-        const center = minT + pct * span;
-        const tStart = center - windowSize / 2;
-        const tEnd   = center + windowSize / 2;
+        const tStart = minT + (sVal / 100) * span;
+        const tEnd   = minT + (eVal / 100) * span;
         timeLabel.textContent = tlAbsTime
-          ? new Date(center * 1000).toISOString().substr(11, 8)
-          : `+${(center - minT).toFixed(1)}s`;
+          ? new Date(tStart * 1000).toISOString().substr(11, 8) + "–" + new Date(tEnd * 1000).toISOString().substr(11, 8)
+          : `+${(tStart - minT).toFixed(1)}s–+${(tEnd - minT).toFixed(1)}s`;
         applyTimelineFilter(tStart, tEnd);
       }
     });
+  }
+
+  bStart.oninput = () => {
+    if (parseInt(bStart.value) > parseInt(bEnd.value)) bStart.value = bEnd.value;
+    _applyBrush();
   };
+  bEnd.oninput = () => {
+    if (parseInt(bEnd.value) < parseInt(bStart.value)) bEnd.value = bStart.value;
+    _applyBrush();
+  };
+}
+
+function _updateBrushUI(sVal, eVal) {
+  const sel = document.getElementById("tl-selection");
+  if (!sel) return;
+  sel.style.left  = sVal + "%";
+  sel.style.width = (eVal - sVal) + "%";
 }
 
 function applyTimelineFilter(tStart, tEnd) {
@@ -6572,10 +7001,11 @@ function applyTimelineFilter(tStart, tEnd) {
   applyFilters(true);  // skipFit — timeline slider moves are frequent
 }
 
-// Play button
+// Play button — advances a sliding window across the timeline
 document.getElementById("tl-play-btn").addEventListener("click", () => {
-  const btn = document.getElementById("tl-play-btn");
-  const slider = document.getElementById("tl-slider");
+  const btn    = document.getElementById("tl-play-btn");
+  const bStart = document.getElementById("tl-brush-start");
+  const bEnd   = document.getElementById("tl-brush-end");
 
   if (tlPlaying) {
     clearInterval(tlTimer);
@@ -6584,18 +7014,28 @@ document.getElementById("tl-play-btn").addEventListener("click", () => {
   } else {
     tlPlaying = true;
     btn.textContent = "⏸";
-    if (parseInt(slider.value) >= 100) slider.value = 0;
+    const DEFAULT_WIN = 20;
+    const curWin = parseInt(bEnd.value) - parseInt(bStart.value);
+    const winSize = (curWin <= 0 || curWin >= 100) ? DEFAULT_WIN : curWin;
+    // If fully expanded, start from the beginning
+    if (parseInt(bEnd.value) >= 100 && parseInt(bStart.value) <= 0) {
+      bStart.value = 0;
+      bEnd.value   = winSize;
+    }
+    bStart.dispatchEvent(new Event("input"));
     tlTimer = setInterval(() => {
-      const cur = parseInt(slider.value);
-      if (cur >= 100) {
+      const s = parseInt(bStart.value);
+      const e = parseInt(bEnd.value);
+      if (e >= 100) {
         clearInterval(tlTimer);
         tlPlaying = false;
         btn.textContent = "▶";
-        slider.dispatchEvent(new Event("input"));
+        bStart.dispatchEvent(new Event("input"));
         return;
       }
-      slider.value = cur + 1;
-      slider.dispatchEvent(new Event("input"));
+      bStart.value = s + 1;
+      bEnd.value   = Math.min(100, e + 1);
+      bStart.dispatchEvent(new Event("input"));
     }, Math.round(80 / tlSpeed));
   }
 });
@@ -6638,7 +7078,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   // 1–7 → switch views
-  const VIEW_MAP = { "1": "graph", "2": "table", "3": "dns", "4": "ot", "5": "otlog", "6": "vlangraph", "7": "diff" };
+  const VIEW_MAP = { "1": "graph", "2": "table", "3": "dns", "4": "ot", "5": "otlog", "6": "vlangraph", "7": "diff", "8": "dashboard" };
   if (VIEW_MAP[e.key] && graphData) {
     const btn = document.querySelector(`.vt-btn[data-view="${VIEW_MAP[e.key]}"]`);
     if (btn && !btn.classList.contains("hidden")) { setView(VIEW_MAP[e.key]); return; }
@@ -6668,18 +7108,27 @@ document.addEventListener("keydown", (e) => {
   // Space / Arrow keys → timeline controls
   const tlBar = document.getElementById("timeline-bar");
   if (!tlBar || tlBar.classList.contains("hidden")) return;
-  const slider = document.getElementById("tl-slider");
+  const bStart = document.getElementById("tl-brush-start");
+  const bEnd   = document.getElementById("tl-brush-end");
   if (e.code === "Space") {
     e.preventDefault();
     document.getElementById("tl-play-btn").click();
   } else if (e.code === "ArrowRight") {
     e.preventDefault();
-    slider.value = Math.min(100, parseInt(slider.value) + 1);
-    slider.dispatchEvent(new Event("input"));
+    const s = parseInt(bStart.value), en = parseInt(bEnd.value), w = en - s;
+    if (en < 100) {
+      bStart.value = Math.min(100 - w, s + 1);
+      bEnd.value   = Math.min(100, en + 1);
+      bStart.dispatchEvent(new Event("input"));
+    }
   } else if (e.code === "ArrowLeft") {
     e.preventDefault();
-    slider.value = Math.max(0, parseInt(slider.value) - 1);
-    slider.dispatchEvent(new Event("input"));
+    const s = parseInt(bStart.value), en = parseInt(bEnd.value), w = en - s;
+    if (s > 0) {
+      bStart.value = Math.max(0, s - 1);
+      bEnd.value   = Math.max(w, en - 1);
+      bStart.dispatchEvent(new Event("input"));
+    }
   }
 });
 
@@ -6725,9 +7174,9 @@ document.getElementById("tl-abs-btn").addEventListener("click", () => {
     btn.classList.toggle("active", !tlAbsTime);
     btn.title = tlAbsTime ? "Show relative time" : "Show absolute time (UTC)";
   }
-  // Re-dispatch the slider input to reformat the label
-  const slider = document.getElementById("tl-slider");
-  if (slider) slider.dispatchEvent(new Event("input"));
+  // Re-dispatch brush input to reformat the label
+  const bs = document.getElementById("tl-brush-start");
+  if (bs) bs.dispatchEvent(new Event("input"));
 });
 
 /* ── B1: Node pinning ───────────────────────────────────────────────────── */

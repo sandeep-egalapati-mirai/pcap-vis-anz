@@ -84,6 +84,7 @@
       <button class="vt-btn" data-view="otlog">OT Log</button>
       <button class="vt-btn hidden" data-view="vlangraph" id="vlan-tab-btn">VLAN</button>
       <button class="vt-btn hidden" data-view="diff" id="diff-tab-btn">⊕ Diff</button>
+      <button class="vt-btn hidden" data-view="dashboard" id="dashboard-tab-btn">⊛ Dashboard</button>
     </div>
 
     <!-- Active-filters chip — visible on all tabs when any filter is narrowed -->
@@ -252,8 +253,12 @@
             <option value="5">5×</option>
           </select>
           <div id="tl-slider-wrap">
-            <input type="range" id="tl-slider" min="0" max="100" value="100" step="1">
             <div id="tl-minimap"></div>
+            <div id="tl-brush-wrap">
+              <div id="tl-selection"></div>
+              <input type="range" id="tl-brush-start" min="0" max="100" value="0" step="1">
+              <input type="range" id="tl-brush-end" min="0" max="100" value="100" step="1">
+            </div>
           </div>
           <span id="tl-time-label">All time</span>
           <button id="tl-abs-btn" title="Toggle absolute/relative time">abs</button>
@@ -450,6 +455,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Dashboard view -->
+    <div id="dashboard-view" class="hidden"></div>
 
     <!-- VLAN Graph view -->
     <div id="vlan-view" class="hidden">

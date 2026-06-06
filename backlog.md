@@ -60,7 +60,7 @@
 
 ## Timeline
 
-- [ ] Brush selection on minimap — click-drag to select a time window (Wireshark mental model)
+- [x] Brush selection on timeline — two-handle range brush replaces single slider; select an arbitrary time window; play advances the window; ←/→ shift the window; blue selection highlight overlay
 - [x] Playback speed control — 0.5×, 1×, 2×, 5× selector next to the play button
 - [x] Timestamp format toggle — "abs" button switches between UTC HH:MM:SS and relative +Ns format
 
@@ -75,8 +75,8 @@
 
 - [ ] PCAP diff / comparison mode — upload two files and highlight added hosts, connections, anomalies
 - [ ] Saved filter presets — name and save a filter combination for one-click recall
-- [ ] Inline anomaly explanation panel — contextual explanation of what each anomaly means and why it's suspicious
-- [ ] Dashboard / summary view (5th view) — card-based overview: top talkers, protocol breakdown donut, anomaly severity bar, busiest connections
+- [x] Inline anomaly explanation panel — ℹ button on every anomaly badge expands a "What / Why / Steps" explanation covering all ~30 anomaly types; toggles closed with a second click
+- [x] Dashboard / summary view — 8th view tab (⊛ Dashboard); 5 summary cards (hosts/connections/packets/anomalies/protocols); top-10 risk-score horizontal bar chart; protocol distribution bars; anomaly severity chips (High/Med/Low/Info counts); busiest-connections list; clicking a risk-bar row jumps to graph and highlights the node; key shortcut: 8
 
 ## VLAN Follow-ups
 
@@ -110,6 +110,7 @@
 - [x] Feature #6: Unified OT command log — chronological global table of all Modbus/DNP3/S7comm/EtherNet/IP/IEC-104/BACnet commands; 5th view tab ("OT Log"); filter by protocol + direction; color-coded read/write/error/diagnostic; 5000 cmd cap per capture
 - [x] Feature #7: HTTP file transfer detection — detects HTTP server responses with interesting Content-Type (application/*, image/*, audio/*, video/*, text/csv, text/xml) or Content-Disposition: attachment; extracts filename, MIME type, Content-Length, SHA-256 of body bytes; sidebar "File Transfers" panel with hash; capped at 200/capture, 500/merge (deduped by SHA-256); 12 unit tests added
 - [x] Feature #8: PCAP baseline diff — "Set Baseline" header button saves current graphData; uploading a second PCAP reveals "⊕ Diff" view tab; three-column diff shows new/disappeared hosts, new connections (with protocols), and new anomalies vs baseline; frontend-only, no server round-trip
+- [x] Diff view enhancement — host diff now detects type changes, risk-score delta >20, new protocols, new open ports, each shown as a descriptive badge; connection diff adds a "changed traffic" row when byte/packet count ratio is >2× or <0.5× between captures
 - [x] Feature #9: Markdown audit report — "Export Audit Report" in export dropdown; generates a `.md` file client-side with: capture summary table, top-10 hosts by risk score, anomalies grouped by severity, OT inventory by Purdue level, TLS/SNI observations, DNS tunneling suspects, captured credentials table, file transfers table, OT write operations; no server round-trip
 
 ## Completed (Bug Fixes)
