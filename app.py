@@ -2352,6 +2352,8 @@ def analyze_pcap(filepath):
                                         _hv_s = _hv.strip()
                                         if _hk_l == "content-type":
                                             _mime = _hv_s.split(";")[0].strip().lower()
+                                            if not re.match(r'^[a-z0-9][a-z0-9!#$&\-^_.+/]*$', _mime):
+                                                _mime = "application/octet-stream"
                                         elif _hk_l == "content-disposition":
                                             _fnm = re.search(r'filename\*?=["\']?([^"\';\r\n]+)', _hv_s, re.IGNORECASE)
                                             if _fnm:

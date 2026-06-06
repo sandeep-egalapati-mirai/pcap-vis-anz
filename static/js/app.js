@@ -446,6 +446,7 @@ function loadGraph(data) {
   packetData = data.packets || {};
   _otLogRendered = false;
   _vlanRendered  = false;
+  _tlVisibleIps  = null;
   document.getElementById("vlan-tab-btn").classList.add("hidden");
   document.getElementById("vlan-filters-section").style.display = "none";
   document.getElementById("stat-vlans-wrap").style.display = "none";
@@ -937,9 +938,15 @@ function applyFilters(skipFit) {
 
   if (useCanvasEdges) drawCanvasEdges();
 
-  // Zero-results feedback
+  // Zero-results feedback — message distinguishes timeline filter from other filters
   const noResults = document.getElementById("no-results-msg");
   if (noResults) noResults.classList.toggle("visible", visibleNodeIds.size === 0 && !!graphData);
+  const noResultsText = document.getElementById("no-results-text");
+  if (noResultsText) {
+    noResultsText.textContent = (_tlVisibleIps !== null && visibleNodeIds.size === 0)
+      ? "No activity in this time window"
+      : "No hosts match the current filters";
+  }
 
   // Fit viewport to visible nodes (debounced so it doesn't fire during simulation)
   if (!skipFit && visibleNodeIds.size > 0 && visibleNodeIds.size < (graphData.nodes || []).length) {
@@ -1230,8 +1237,7 @@ function buildFilesSidebar(files) {
         <span class="file-mime">${escHtml(mime)}</span>
         <span class="file-size">${size}</span>
         <span style="margin-left:auto;color:var(--text2);font-size:10px">${ts}</span>
-        <a class="file-dl-btn" href="/download/${encodeURIComponent(f.sha256)}"
-           download="${escHtml(f.filename)}" title="Download captured file">⬇</a>
+        <button class="file-dl-btn" onclick="downloadFile('${escHtml(f.sha256)}','${escHtml(f.filename || 'file')}')" title="Download captured file">⬇</button>
       </div>
       <div class="file-route">${escHtml(f.src)} → ${escHtml(f.dst)}</div>
       <div class="file-hash" title="SHA-256">${escHtml(f.sha256)}</div>`;
@@ -1244,6 +1250,24 @@ function _fmtBytes(n) {
   if (n < 1024) return n + " B";
   if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
   return (n / 1048576).toFixed(1) + " MB";
+}
+
+function downloadFile(sha256, filename) {
+  fetch(`/download/${sha256}`)
+    .then(r => {
+      if (!r.ok) {
+        return r.json().catch(() => ({})).then(j =>
+          showToast(j.error || `Download failed (${r.status})`, "error")
+        );
+      }
+      return r.blob().then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = filename; a.click();
+        URL.revokeObjectURL(url);
+      });
+    })
+    .catch(err => showToast("Download failed: " + err.message, "error"));
 }
 
 function _anomalySummary(type, src, count, items) {

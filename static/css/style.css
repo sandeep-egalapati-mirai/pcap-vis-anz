@@ -451,6 +451,9 @@ header h1 span { color: var(--accent); }
   border-radius: 3px;
   line-height: 1;
   flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
 }
 .file-dl-btn:hover { background: var(--bg3); }
 
