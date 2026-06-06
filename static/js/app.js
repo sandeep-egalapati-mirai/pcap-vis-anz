@@ -282,6 +282,7 @@ let vlanSelectedNode = null;  // separate from main selectedNode — no cross-vi
 let baselineData = null;
 let currentLayout  = "force"; // "force" | "radial" | "cluster"
 let colorByVlan    = false;   // when true, main graph nodes are colored by VLAN not host type
+let _tlVisibleIps  = null;    // Set of IPs in the current timeline window, null = no filter
 let _currentPktList = [];    // packets for the currently-open inspector panel
 let anomalyNodeIps = {};     // ip → highest severity
 let credIpSet = new Set();   // IPs with captured credentials
@@ -917,7 +918,8 @@ function applyFilters(skipFit) {
       (d.vlans || []).some(v => activeVlans.has(String(v))) ||
       (d.vlan_untagged && activeVlans.has("untagged"));
     const ipVerOk = !ipVerFilterActive || activeIpVersions.has(String(d.ip_version || 4));
-    const visible = activeTypes.has(d.host_type) && vlanOk && ipVerOk &&
+    const tlOk    = !_tlVisibleIps || _tlVisibleIps.has(d.ip);
+    const visible = activeTypes.has(d.host_type) && vlanOk && ipVerOk && tlOk &&
       (!searchTerm || d.ip.includes(searchTerm) ||
        (d.hostname && d.hostname.toLowerCase().includes(searchTerm)));
     d3.select(this).classed("faded", !visible);
@@ -6174,7 +6176,9 @@ function generateAuditReport() {
 }
 
 function downloadCsv(rows, filename) {
-  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+  // Prefix formula-starting characters to prevent CSV injection in spreadsheet software
+  const sanitize = v => { const s = String(v); return /^[=+\-@|%\t]/.test(s) ? "'" + s : s; };
+  const csv = rows.map(r => r.map(v => `"${sanitize(v).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -6231,11 +6235,13 @@ document.getElementById("session-file-input").addEventListener("change", (e) => 
 
 /* ── VLAN labels (user-assigned names, persisted in localStorage) ────────── */
 function getVlanLabel(vid) {
-  return localStorage.getItem("vlan-label:" + vid) || "";
+  try { return localStorage.getItem("vlan-label:" + vid) || ""; } catch (e) { return ""; }
 }
 function saveVlanLabel(vid, text) {
-  if (text) localStorage.setItem("vlan-label:" + vid, text);
-  else       localStorage.removeItem("vlan-label:" + vid);
+  try {
+    if (text) localStorage.setItem("vlan-label:" + vid, text);
+    else       localStorage.removeItem("vlan-label:" + vid);
+  } catch (e) { /* private browsing / quota */ }
 }
 // Returns display name: user label if set, else the default "VLAN N" / "Untagged"
 function vlanDisplayName(vid, defaultLabel) {
@@ -6245,15 +6251,14 @@ function vlanDisplayName(vid, defaultLabel) {
 
 /* ── Node annotations ────────────────────────────────────────────────────── */
 function getAnnotation(ip) {
-  return localStorage.getItem("ann:" + ip) || "";
+  try { return localStorage.getItem("ann:" + ip) || ""; } catch (e) { return ""; }
 }
 
 function saveAnnotation(ip, text) {
-  if (text) {
-    localStorage.setItem("ann:" + ip, text);
-  } else {
-    localStorage.removeItem("ann:" + ip);
-  }
+  try {
+    if (text) localStorage.setItem("ann:" + ip, text);
+    else       localStorage.removeItem("ann:" + ip);
+  } catch (e) { /* private browsing / quota */ }
 }
 
 function applyAnnotations() {
@@ -6436,33 +6441,22 @@ function applyTimelineFilter(tStart, tEnd) {
   if (!graphData) return;
 
   if (tStart === null) {
-    // Show all
-    nodesGroup.selectAll(".node").classed("faded", false);
-    linksGroup.selectAll(".link").classed("faded", false);
+    _tlVisibleIps = null;
     applyFilters();
     return;
   }
 
-  // Collect IPs visible in time window
+  // Collect IPs with activity in the time window, then run all filters together
   const visibleIps = new Set();
   for (const [key, pkts] of Object.entries(packetData)) {
-    const inWindow = pkts.some(p => p.time >= tStart && p.time <= tEnd);
-    if (inWindow) {
+    if (pkts.some(p => p.time >= tStart && p.time <= tEnd)) {
       const [a, b] = key.split("|");
       visibleIps.add(a);
       visibleIps.add(b);
     }
   }
-
-  nodesGroup.selectAll(".node").each(function(d) {
-    d3.select(this).classed("faded", !visibleIps.has(d.ip));
-  });
-
-  linksGroup.selectAll(".link").each(function(d) {
-    const sid = d.source.id || d.source;
-    const tid = d.target.id || d.target;
-    d3.select(this).classed("faded", !visibleIps.has(sid) || !visibleIps.has(tid));
-  });
+  _tlVisibleIps = visibleIps;
+  applyFilters(true);  // skipFit — timeline slider moves are frequent
 }
 
 // Play button

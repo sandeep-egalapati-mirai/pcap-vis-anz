@@ -124,8 +124,8 @@ def test_cleartext_not_detected_without_payload():
 
 def test_beaconing_detected_regular_intervals():
     base = 1000.0
-    # 15 packets at exactly 10-second intervals → CV = 0
-    pkts = [_pkt("10.0.0.1", "10.0.0.2", t=base + i * 10.0) for i in range(15)]
+    # 20 packets at exactly 10-second intervals → CV = 0 (minimum threshold is now 20)
+    pkts = [_pkt("10.0.0.1", "10.0.0.2", t=base + i * 10.0) for i in range(20)]
     hosts = {"10.0.0.1": _host(), "10.0.0.2": _host()}
     connections = {("10.0.0.1", "10.0.0.2"): _conn()}
     packet_store = {("10.0.0.1", "10.0.0.2"): pkts}
@@ -140,8 +140,8 @@ def test_beaconing_not_detected_irregular():
     import random
     random.seed(42)
     base = 1000.0
-    # 15 packets with highly variable timing
-    times = sorted(base + random.uniform(0, 500) for _ in range(15))
+    # 20 packets with highly variable timing
+    times = sorted(base + random.uniform(0, 500) for _ in range(20))
     pkts = [_pkt("10.0.0.1", "10.0.0.2", t=t) for t in times]
     hosts = {"10.0.0.1": _host(), "10.0.0.2": _host()}
     connections = {("10.0.0.1", "10.0.0.2"): _conn()}
@@ -150,9 +150,10 @@ def test_beaconing_not_detected_irregular():
     assert "beaconing" not in _anomaly_types(anomalies)
 
 
-def test_beaconing_requires_10_packets():
+def test_beaconing_requires_20_packets():
     base = 1000.0
-    pkts = [_pkt("10.0.0.1", "10.0.0.2", t=base + i * 10.0) for i in range(9)]
+    # 19 packets (one below the new minimum of 20) → should not fire
+    pkts = [_pkt("10.0.0.1", "10.0.0.2", t=base + i * 10.0) for i in range(19)]
     hosts = {"10.0.0.1": _host(), "10.0.0.2": _host()}
     connections = {("10.0.0.1", "10.0.0.2"): _conn()}
     packet_store = {("10.0.0.1", "10.0.0.2"): pkts}

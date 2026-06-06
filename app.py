@@ -1275,11 +1275,11 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
 
     # ── Beaconing: regular inter-packet timing (vectorized via CuPy/NumPy) ──
     for conn_key, pkts in packet_store.items():
-        if len(pkts) < 10:
+        if len(pkts) < 20:          # need ≥20 packets (19 intervals) for reliable CV
             continue
         times = _xp.array(sorted(p["time"] for p in pkts), dtype=_xp.float64)
         intervals = _xp.diff(times)
-        if len(intervals) == 0:
+        if len(intervals) < 3:
             continue
         mean_interval = float(_xp.mean(intervals))
         if mean_interval <= 0:
@@ -1681,7 +1681,7 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
     routing_types = {"Router", "Network Device", "VPN Gateway"}
     for ip, h in hosts.items():
         vlan_ids = h.get("vlan_ids", set())
-        if len(vlan_ids) > 1 and h.get("host_type") not in routing_types:
+        if len(vlan_ids) > 1 and h.get("host_type") not in routing_types and not h.get("vlan_qinq"):
             anomalies.append({
                 "type": "vlan_hopping",
                 "severity": "medium",
@@ -1756,7 +1756,7 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
     }
     for ip, h in hosts.items():
         pcps = h.get("vlan_pcps", set())
-        high_pcps = sorted(p for p in pcps if p >= 6)
+        high_pcps = sorted(p for p in pcps if p >= 7)
         if high_pcps and h.get("host_type") in _HIGH_PCP_HOSTS:
             anomalies.append({
                 "type": "pcp_abuse",
@@ -2160,11 +2160,13 @@ def analyze_pcap(filepath):
                             _tt = (_th >> 9) & 0x7F   # TLV type
                             _tl = _th & 0x01FF         # TLV length
                             _lldp_off += 2
-                            if _lldp_off + _tl > len(raw): break
-                            _tv = raw[_lldp_off:_lldp_off + _tl]
                             if _tt == 0:               # End TLV
                                 break
-                            elif _tt == 5 and _tv:     # System Name
+                            if _tl == 0:               # zero-length non-End TLV → malformed, stop
+                                break
+                            if _lldp_off + _tl > len(raw): break
+                            _tv = raw[_lldp_off:_lldp_off + _tl]
+                            if _tt == 5 and _tv:       # System Name
                                 _lldp_hostname = _tv.decode("utf-8", errors="replace").strip()
                             elif _tt == 127 and len(_tv) >= 4:   # Org-specific TLV
                                 _oui = bytes(_tv[:3])
@@ -3333,7 +3335,7 @@ def merge_results(results):
         "edges": edges_out,
         "packets": merged_packets,
         "anomalies": merged_anomalies,
-        "anomaly_error": any(r.get("anomaly_error") for r in results),
+        "anomaly_error": any(r.get("anomaly_error") for r in results if "error" not in r),
         "credentials": merged_credentials,
         "files": merged_files,
         "ot_commands": merged_ot_commands,
