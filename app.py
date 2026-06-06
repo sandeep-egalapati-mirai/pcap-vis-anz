@@ -2922,9 +2922,15 @@ def analyze_pcap(filepath):
             h["host_type"] = "Engineering Workstation"
 
     # ── Anomaly detection ─────────────────────────────────────────────────────
-    anomalies = analyze_anomalies(hosts, connections, packet_store, credentials,
-                                   vlan_pkt_total=vlan_pkt_total,
-                                   vlan_pkt_bcast=vlan_pkt_bcast)
+    _anomaly_failed = False
+    try:
+        anomalies = analyze_anomalies(hosts, connections, packet_store, credentials,
+                                      vlan_pkt_total=vlan_pkt_total,
+                                      vlan_pkt_bcast=vlan_pkt_bcast)
+    except Exception:
+        logger.warning("analyze_anomalies failed", exc_info=True)
+        anomalies = []
+        _anomaly_failed = True
 
     # ── Per-host risk score (0–100) ───────────────────────────────────────────
     _SEV_WEIGHT = {"high": 30, "medium": 15, "low": 5}
@@ -3064,6 +3070,7 @@ def analyze_pcap(filepath):
         "edges": edges,
         "packets": packets_out,
         "anomalies": anomalies,
+        "anomaly_error": _anomaly_failed,
         "credentials": credentials,
         "files": files,
         "ot_commands": ot_commands,
@@ -3325,6 +3332,7 @@ def merge_results(results):
         "edges": edges_out,
         "packets": merged_packets,
         "anomalies": merged_anomalies,
+        "anomaly_error": any(r.get("anomaly_error") for r in results),
         "credentials": merged_credentials,
         "files": merged_files,
         "ot_commands": merged_ot_commands,
@@ -3390,6 +3398,7 @@ def upload():
 
     results = []
     tmp_paths = []
+    file_names = []
     try:
         for f in files:
             if not allowed_file(f.filename, f.stream):
@@ -3400,6 +3409,7 @@ def upload():
             tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
             tmp.close()
             tmp_paths.append(tmp.name)  # register before save so cleanup always runs
+            file_names.append(f.filename)
             f.save(tmp.name)
 
         ex = _get_executor()
@@ -3415,12 +3425,18 @@ def upload():
         if not results:
             return jsonify({"error": "No valid files processed"}), 400
 
-        # Check for errors
-        errors = [r.get("error") for r in results if "error" in r]
-        if errors and len(errors) == len(results):
-            return jsonify({"error": errors[0]}), 400
+        # Check for errors — if all files failed return an error; if some failed, merge the rest with warnings
+        file_warnings = [
+            f"Could not parse '{n}': {r['error']}"
+            for n, r in zip(file_names, results)
+            if "error" in r
+        ]
+        valid_results = [r for r in results if "error" not in r]
+        if not valid_results:
+            return jsonify({"error": file_warnings[0] if file_warnings else "No valid files processed"}), 400
 
-        result = merge_results([r for r in results if "error" not in r])
+        result = merge_results(valid_results)
+        result["warnings"] = file_warnings
         return jsonify(result)
     finally:
         for path in tmp_paths:

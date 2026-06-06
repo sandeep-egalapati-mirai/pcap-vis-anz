@@ -1530,6 +1530,7 @@ header h1 span { color: var(--accent); }
 .toast.error  { border-color: var(--red);    }
 .toast.success{ border-color: var(--green);  }
 .toast.info   { border-color: var(--accent); }
+.toast.warn   { border-color: var(--yellow); }
 .toast-icon   { flex-shrink: 0; font-size: 15px; margin-top: 1px; }
 .toast-msg    { flex: 1; line-height: 1.4; }
 .toast-close  { flex-shrink: 0; background: none; border: none; color: var(--text2);

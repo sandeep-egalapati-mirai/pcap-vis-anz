@@ -241,7 +241,7 @@ function fmtNum(n) {
 
 /* ── Toast notifications ─────────────────────────────────────────────────── */
 function showToast(msg, type = "info", duration = 4000) {
-  const icons = { error: "✕", success: "✓", info: "ℹ" };
+  const icons = { error: "✕", success: "✓", info: "ℹ", warn: "⚠" };
   const container = document.getElementById("toast-container");
   const el = document.createElement("div");
   el.className = `toast ${type}`;
@@ -489,6 +489,14 @@ function loadGraph(data) {
     truncBanner.classList.add("visible");
   } else {
     truncBanner.classList.remove("visible");
+  }
+
+  // Processing warnings (partial file failures, anomaly detection failure)
+  if (data.anomaly_error) {
+    showToast("Anomaly detection failed for this capture — anomaly results may be incomplete.", "warn", 8000);
+  }
+  if (data.warnings && data.warnings.length) {
+    data.warnings.forEach(w => showToast(w, "warn", 10000));
   }
 
   // Stats
