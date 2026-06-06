@@ -501,6 +501,7 @@ let _canvasMaxEdgePkt = 1;
 // Timeline state
 let tlPlaying = false;
 let tlTimer = null;
+let _zoomFitTimer = null;  // L3: cleared on re-render
 let tlWindowPct = 100; // full width by default
 let tlSpeed = 1;
 let tlAbsTime = true;  // true = absolute HH:MM:SS, false = relative +Ns
@@ -635,8 +636,14 @@ async function uploadFiles(files) {
 
   try {
     const resp = await fetch("/upload", { method: "POST", body: form });
-    if (!resp.ok) throw new Error(`Server error ${resp.status}: ${resp.statusText}`);
-    const data = await resp.json();
+    let data;
+    try {
+      data = await resp.json();
+    } catch(_) {
+      const raw = await resp.text().catch(() => "");
+      throw new Error(`Server returned non-JSON (${resp.status}): ${raw.slice(0, 120)}`);
+    }
+    if (!resp.ok) throw new Error(data?.error || `Server error ${resp.status}: ${resp.statusText}`);
     progress && progress.stop();
     if (data.error) {
       showToast(data.error, "error");
@@ -696,6 +703,11 @@ function loadGraph(data) {
   highlightAnomsMode = false;
   const sparklineEl = document.querySelector("#stat-pkts")?.closest(".stat")?.querySelector(".stat-sparkline");
   if (sparklineEl) sparklineEl.remove();
+  // Hide view empty states
+  document.getElementById("dns-empty-state")?.classList.add("hidden");
+  document.getElementById("ot-empty-state")?.classList.add("hidden");
+  document.getElementById("dns-host-list") && (document.getElementById("dns-host-list").style.display = "");
+  document.getElementById("dns-query-panel") && (document.getElementById("dns-query-panel").style.display = "");
   detailPanel.classList.remove("open");
   const noConnMsgReset = document.getElementById("no-connections-msg");
   if (noConnMsgReset) noConnMsgReset.classList.remove("visible");
@@ -716,6 +728,12 @@ function loadGraph(data) {
   }
 
   // Processing warnings (partial file failures, anomaly detection failure)
+  if (stats.geoip_available === false) {
+    showToast("GeoIP database not found — country/city data unavailable. Install GeoLite2-City.mmdb to /usr/share/GeoIP/.", "info", 8000);
+  }
+  if (stats.parse_errors > 0) {
+    showToast(`${stats.parse_errors} packet(s) could not be parsed and were skipped.`, "warn", 6000);
+  }
   if (data.anomaly_error) {
     showToast("Anomaly detection failed for this capture — anomaly results may be incomplete.", "warn", 8000);
   }
@@ -794,7 +812,21 @@ document.querySelectorAll(".vt-btn").forEach(btn => {
 });
 
 function setView(view) {
-  if (!graphData && view !== "graph") return;
+  if (!graphData && view !== "graph") {
+    // Show empty state for views accessible before upload
+    if (view === "dns") {
+      dnsView.classList.remove("hidden");
+      const es = document.getElementById("dns-empty-state");
+      if (es) es.classList.remove("hidden");
+      document.getElementById("dns-host-list")?.style && (document.getElementById("dns-host-list").style.display = "none");
+      document.getElementById("dns-query-panel")?.style && (document.getElementById("dns-query-panel").style.display = "none");
+    } else if (view === "ot") {
+      otMapView.classList.remove("hidden");
+      const es = document.getElementById("ot-empty-state");
+      if (es) es.classList.remove("hidden");
+    }
+    return;
+  }
   currentView = view;
   document.querySelectorAll(".vt-btn").forEach(b => b.classList.toggle("active", b.dataset.view === view));
 
@@ -1617,7 +1649,7 @@ function _jumpToAnomaly(a) {
   const node = graphData && graphData.nodes.find(n => n.ip === a.src);
   if (!node) return;
   selectedNode = node;
-  showDetailPanel(node);
+  showDetailPanel(node, { from: "anomaly", label: a.type.replace(/_/g, " ") });
   detailPanel.classList.add("open");
   const linkSel = linksGroup.selectAll(".link");
   const nodeSel = nodesGroup.selectAll(".node");
@@ -1683,7 +1715,8 @@ function drawCanvasEdges() {
 function renderGraph(data) {
   linksGroup.selectAll("*").remove();
   nodesGroup.selectAll("*").remove();
-  if (simulation) simulation.stop();
+  if (simulation) { simulation.on("tick", null).on("end", null); simulation.stop(); }
+  clearTimeout(_zoomFitTimer);
 
   data._nodeMap = {};
   data.nodes.forEach(n => { data._nodeMap[n.id] = n; n._visible = true; });
@@ -1878,8 +1911,8 @@ function renderGraph(data) {
     if (_minimapInitialized) updateMinimap();
   });
 
-  simulation.on("end", () => zoomFit());
-  setTimeout(() => zoomFit(), 2500);
+  simulation.on("end", () => { clearTimeout(_zoomFitTimer); zoomFit(); });
+  _zoomFitTimer = setTimeout(() => zoomFit(), 2500);
 
   // Restore pin visual for nodes that were pinned before a filter cycle
   updatePinVisuals();
@@ -1888,7 +1921,7 @@ function renderGraph(data) {
 }
 
 function buildSimulation(nodes, links, cx, cy, layout) {
-  if (simulation) simulation.stop();
+  if (simulation) { simulation.on("tick", null).on("end", null); simulation.stop(); }
 
   const _maxPkt = nodes.reduce((m, n) => Math.max(m, n.packet_count), 1);
   const sim = d3.forceSimulation(nodes)
@@ -2149,7 +2182,43 @@ function hideTooltip() {
 }
 
 /* ── Detail panel ─────────────────────────────────────────────────────────── */
-function showDetailPanel(d) {
+function showDetailPanel(d, navCtx) {
+  // Breadcrumb: show navigation context if provided (e.g. jumped from anomaly sidebar)
+  const bcBar = document.getElementById("breadcrumb-bar");
+  if (bcBar) {
+    if (navCtx) {
+      bcBar.innerHTML = "";
+      bcBar.classList.remove("hidden");
+      if (navCtx.from === "anomaly") {
+        const backBtn = document.createElement("button");
+        backBtn.textContent = "Anomalies";
+        backBtn.addEventListener("click", () => {
+          bcBar.classList.add("hidden");
+          bcBar.innerHTML = "";
+          // Scroll anomaly sidebar into view
+          const anomSidebar = document.querySelector(".sidebar-section .anomaly-badge");
+          if (anomSidebar) anomSidebar.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        });
+        bcBar.appendChild(backBtn);
+        const sep = document.createElement("span");
+        sep.className = "bc-sep";
+        sep.textContent = "›";
+        bcBar.appendChild(sep);
+        const cur = document.createElement("span");
+        cur.className = "bc-cur";
+        cur.textContent = navCtx.label;
+        bcBar.appendChild(cur);
+        const sep2 = document.createElement("span"); sep2.className = "bc-sep"; sep2.textContent = "›";
+        bcBar.appendChild(sep2);
+        const ip = document.createElement("span"); ip.className = "bc-cur"; ip.textContent = d.ip;
+        bcBar.appendChild(ip);
+      }
+    } else {
+      bcBar.classList.add("hidden");
+      bcBar.innerHTML = "";
+    }
+  }
+
   detailPanel.classList.add("open");
   document.getElementById("dh-ip").innerHTML =
     escHtml(d.ip) + ` <button class="copy-btn" onclick="copyText('${escHtml(d.ip)}')" title="Copy IP">⧉</button>`;
@@ -2213,7 +2282,7 @@ function showDetailPanel(d) {
   if ((d.open_ports || []).length) {
     rows.push(sectionTitle("Ports seen"));
     rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;padding-left:0;margin-bottom:6px">${
-      (d.open_ports || []).slice(0, 20).join(", ")
+      (d.open_ports || []).slice(0, 20).map(escHtml).join(", ")
     }</div>`);
   }
 
@@ -2363,10 +2432,10 @@ function showDetailPanel(d) {
       </details>`);
     }
     if (d.modbus_unit_ids && d.modbus_unit_ids.length) {
-      rows.push(`<div style="font-size:11px;color:var(--text2)">Modbus unit IDs: <span style="font-family:var(--font-mono)">${d.modbus_unit_ids.join(", ")}</span></div>`);
+      rows.push(`<div style="font-size:11px;color:var(--text2)">Modbus unit IDs: <span style="font-family:var(--font-mono)">${d.modbus_unit_ids.map(escHtml).join(", ")}</span></div>`);
     }
     if (d.dnp3_addresses && d.dnp3_addresses.length) {
-      rows.push(`<div style="font-size:11px;color:var(--text2);margin-top:3px">DNP3 link addresses: <span style="font-family:var(--font-mono)">${d.dnp3_addresses.join(", ")}</span></div>`);
+      rows.push(`<div style="font-size:11px;color:var(--text2);margin-top:3px">DNP3 link addresses: <span style="font-family:var(--font-mono)">${d.dnp3_addresses.map(escHtml).join(", ")}</span></div>`);
     }
   }
 
@@ -3101,7 +3170,7 @@ function renderPktDetail(p) {
     const s7Fields = [
       {k: "ROSCTR", v: `${s7.rosctr} — ${s7.rosctr_name}`},
       {k: "PDU Reference", v: s7.pdu_ref},
-      ...(s7.function_code !== null ? [{k: "Function Code", v: `0x${s7.function_code.toString(16).toUpperCase()} — ${s7.function_name}`}] : []),
+      ...(s7.function_code != null ? [{k: "Function Code", v: `0x${s7.function_code.toString(16).toUpperCase()} — ${s7.function_name}`}] : []),
       ...Object.entries(s7.details || {}).map(([k, v]) => ({k, v})),
     ];
     if (s7.is_write) s7Fields.push({k: "⚠ WARNING", v: "WRITE/CONTROL command — modifies PLC state"});
@@ -3215,7 +3284,7 @@ function renderPktDetail(p) {
     pktTree.appendChild(bnDiv);
   }
 
-  // Hex dump
+  // Protocol-coloured hex dump
   const hexStr = p.hex || "";
   if (!hexStr) {
     pktHex.innerHTML = "";
@@ -3225,16 +3294,58 @@ function renderPktDetail(p) {
   pktHexEmpty.style.display = "none";
   const bytes = [];
   for (let i = 0; i < hexStr.length; i += 2) bytes.push(parseInt(hexStr.slice(i, i + 2), 16));
+
+  // Build per-byte color map from layer start/end offsets
+  const LAYER_COLORS = {
+    "Ethernet":                      "#1f4e79",
+    "Internet Protocol":             "#1b4332",
+    "Internet Protocol Version 6":   "#1b4332",
+    "Transmission Control Protocol": "#4a1942",
+    "User Datagram Protocol":        "#44370a",
+    "Internet Control Message Protocol": "#3d1a00",
+    "Payload":                       "#1a2a1a",
+  };
+  const byteColor = new Array(bytes.length).fill(null);
+  const byteLayer = new Array(bytes.length).fill(null);
+  (p.layers || []).forEach(layer => {
+    if (layer.start == null || layer.end == null) return;
+    const color = LAYER_COLORS[layer.name] || null;
+    const label = layer.name;
+    for (let b = layer.start; b < Math.min(layer.end, bytes.length); b++) {
+      byteColor[b] = color;
+      byteLayer[b] = label;
+    }
+  });
+
   const ROW = 16;
   let out = "";
   for (let off = 0; off < bytes.length; off += ROW) {
     const chunk = bytes.slice(off, off + ROW);
     const offset = off.toString(16).padStart(4, "0");
-    const hex1 = chunk.slice(0, 8).map(b => b.toString(16).padStart(2, "0")).join(" ");
-    const hex2 = chunk.slice(8).map(b => b.toString(16).padStart(2, "0")).join(" ");
-    const hexPart = (hex1 + (hex2 ? "  " + hex2 : "")).padEnd(49);
-    const ascii = chunk.map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : ".").join("");
-    out += `<span class="hx-off">${offset}</span>  <span class="hx-byt">${hexPart}</span><span class="hx-asc">${escHtml(ascii)}</span>\n`;
+
+    const buildHexSpans = (slice, sliceOff) => slice.map((b, i) => {
+      const bi = off + sliceOff + i;
+      const col = byteColor[bi];
+      const lbl = byteLayer[bi];
+      const hex = b.toString(16).padStart(2, "0");
+      const style = col ? ` style="background:${col};border-radius:2px"` : "";
+      const title = lbl ? ` title="${escHtml(lbl)}"` : "";
+      return `<span class="hx-byte"${style}${title}>${hex}</span>`;
+    }).join(" ");
+
+    const hex1 = buildHexSpans(chunk.slice(0, 8), 0);
+    const hex2 = buildHexSpans(chunk.slice(8), 8);
+    const hexPad = chunk.length <= 8 ? "".padEnd((8 - chunk.length) * 3) : "";
+    const gap = chunk.length > 8 ? "  " : hexPad + "  ";
+
+    const ascii = chunk.map((b, i) => {
+      const bi = off + i;
+      const col = byteColor[bi];
+      const ch = (b >= 32 && b < 127) ? escHtml(String.fromCharCode(b)) : ".";
+      return col ? `<span style="color:${col === "#1a2a1a" ? "#7ec8a0" : "#a0c8ff"};">${ch}</span>` : ch;
+    }).join("");
+
+    out += `<span class="hx-off">${offset}</span>  ${hex1}${gap}${hex2}  <span class="hx-asc">${ascii}</span>\n`;
   }
   pktHex.innerHTML = out;
 }
@@ -3286,19 +3397,29 @@ const VT_ROW_H  = 34;   // must match CSS height on tbody tr
 const VT_BUFFER = 8;    // extra rows rendered above and below the viewport
 
 let _vtRows = [];        // current sorted + decorated edge array
+let _sortedEdges = [];   // PF4: cached sorted edges — rebuilt only when sort key/dir or data changes
+let _sortedEdgesKey = ""; // fingerprint: "col:dir:nodecount"
+
+function _getSortedEdges() {
+  const key = `${tableSort.col}:${tableSort.dir}:${(graphData?.edges?.length || 0)}`;
+  if (key !== _sortedEdgesKey) {
+    _sortedEdges = [...(graphData?.edges || [])].sort((a, b) => {
+      const av = a[tableSort.col] || 0, bv = b[tableSort.col] || 0;
+      if (typeof av === "string")
+        return tableSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      return tableSort.dir === "asc" ? av - bv : bv - av;
+    });
+    _sortedEdgesKey = key;
+  }
+  return _sortedEdges;
+}
 
 function _buildConnRows() {
   if (!graphData) return [];
   const nodeMap = {};
   graphData.nodes.forEach(n => { nodeMap[n.ip] = n; });
 
-  return [...graphData.edges]
-    .sort((a, b) => {
-      const av = a[tableSort.col] || 0, bv = b[tableSort.col] || 0;
-      if (typeof av === "string")
-        return tableSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
-      return tableSort.dir === "asc" ? av - bv : bv - av;
-    })
+  return _getSortedEdges()
     .map(e => {
       const srcNode = nodeMap[e.source], dstNode = nodeMap[e.target];
       const protoOk  = e.protocols.some(p => activeProtos.has(p));
@@ -4070,11 +4191,18 @@ function startOTDrag(evt, node, origPos, svgEl, zoomGroup) {
   let targetLevel = null;
 
   function onMove(e) {
+    // Re-read bounding rect each move to handle window resize/scroll during drag
+    const liveRect = svgEl.getBoundingClientRect();
+    const liveSvgW = parseFloat(svgEl.getAttribute("width"))  || liveRect.width;
+    const liveSvgH = parseFloat(svgEl.getAttribute("height")) || liveRect.height;
+    const liveScaleX = liveSvgW / liveRect.width;
+    const liveScaleY = liveSvgH / liveRect.height;
     // Convert screen coords to SVG user space, then to zoom-group content space
-    const svgX = (e.clientX - svgRect.left) * scaleX;
-    const svgY = (e.clientY - svgRect.top)  * scaleY;
-    const contentX = (svgX - otZoomState.x) / otZoomState.k;
-    const contentY = (svgY - otZoomState.y) / otZoomState.k;
+    const svgX = (e.clientX - liveRect.left) * liveScaleX;
+    const svgY = (e.clientY - liveRect.top)  * liveScaleY;
+    const k = Math.max(0.01, otZoomState.k); // guard against zero scale
+    const contentX = (svgX - otZoomState.x) / k;
+    const contentY = (svgY - otZoomState.y) / k;
     ghost.setAttribute("cx", contentX); ghost.setAttribute("cy", contentY);
     targetLevel = null;
     for (const [lvlStr, y] of Object.entries(otLaneY)) {
@@ -4171,13 +4299,31 @@ function exportOTMapPng() {
   const savedTransform = zoomGroup ? zoomGroup.getAttribute("transform") : null;
   if (zoomGroup) zoomGroup.setAttribute("transform", "translate(0,0) scale(1)");
 
-  // Clone SVG and inject an explicit background rect
+  // Clone SVG; compute bounding box of the zoom-group content for fit-to-full export
   const svgEl  = document.getElementById("ot-map-svg");
-  const svgW   = parseFloat(svgEl.getAttribute("width"))  || 900;
-  const svgH   = parseFloat(svgEl.getAttribute("height")) || 600;
+  let svgW   = parseFloat(svgEl.getAttribute("width"))  || 900;
+  let svgH   = parseFloat(svgEl.getAttribute("height")) || 600;
+  let viewBox = null;
+  if (zoomGroup) {
+    try {
+      const bb = zoomGroup.getBBox();
+      if (bb.width > 0 && bb.height > 0) {
+        const P = 20;
+        viewBox = `${bb.x - P} ${bb.y - P} ${bb.width + P * 2} ${bb.height + P * 2}`;
+        svgW = bb.width + P * 2;
+        svgH = bb.height + P * 2;
+      }
+    } catch(_) {}
+  }
   const clone  = svgEl.cloneNode(true);
+  if (viewBox) clone.setAttribute("viewBox", viewBox);
+  clone.setAttribute("width",  svgW);
+  clone.setAttribute("height", svgH);
   const bgRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-  bgRect.setAttribute("width", svgW); bgRect.setAttribute("height", svgH);
+  bgRect.setAttribute("x", viewBox ? viewBox.split(" ")[0] : "0");
+  bgRect.setAttribute("y", viewBox ? viewBox.split(" ")[1] : "0");
+  bgRect.setAttribute("width",  viewBox ? viewBox.split(" ")[2] : svgW);
+  bgRect.setAttribute("height", viewBox ? viewBox.split(" ")[3] : svgH);
   bgRect.setAttribute("fill", "#0d1117");
   clone.insertBefore(bgRect, clone.firstChild);
   const svgStr = new XMLSerializer().serializeToString(clone);
@@ -4841,7 +4987,7 @@ function showDnsQueries(node) {
     }
     div.innerHTML = `
       <div class="dns-q-name">${escHtml(q)}</div>
-      ${resolvedIps.length ? `<div class="dns-resolved">→ ${resolvedIps.join(", ")}</div>` : ""}
+      ${resolvedIps.length ? `<div class="dns-resolved">→ ${resolvedIps.map(escHtml).join(", ")}</div>` : ""}
     `;
     list.appendChild(div);
   });
@@ -6219,6 +6365,7 @@ document.getElementById("vlan-names-file-input").addEventListener("change", func
       showToast("No valid VLAN names found. Format: vid,name (one per line).", "error");
     }
   };
+  reader.onerror = () => showToast("Failed to read VLAN names file.", "error");
   reader.readAsText(file);
 });
 
@@ -6599,7 +6746,7 @@ function generateAuditReport() {
     xfiles.slice(0, 50).forEach(f => {
       const t = f.rel_time != null ? `+${f.rel_time}s` : "—";
       const sz = _fmtBytes(f.size);
-      p(`| ${t} | ${f.filename} | ${f.mime_type || "—"} | ${sz} | \`${f.sha256.slice(0, 16)}…\` | ${f.src} → ${f.dst} |`);
+      p(`| ${t} | ${f.filename} | ${f.mime_type || "—"} | ${sz} | \`${(f.sha256 || '').slice(0, 16)}…\` | ${f.src} → ${f.dst} |`);
     });
     if (xfiles.length > 50) p(`_…and ${xfiles.length - 50} more_`);
     br();
@@ -6786,6 +6933,7 @@ document.getElementById("session-file-input").addEventListener("change", (e) => 
       showToast("Failed to load session: " + err.message, "error");
     }
   };
+  reader.onerror = () => showToast("Failed to read session file.", "error");
   reader.readAsText(file);
   e.target.value = "";
 });
@@ -7599,4 +7747,162 @@ function updateNodeColors() {
     else localStorage.removeItem("pv_colorblind");
     updateNodeColors();
   });
+})();
+
+/* ── Cluster expand/collapse ──────────────────────────────────────────────── */
+const collapsedTypes = new Set();
+let _clusterCollapseMode = false;
+
+function renderClusterOverlay() {
+  const overlay = document.getElementById("cluster-overlay");
+  if (!overlay || !graphData) { if (overlay) overlay.innerHTML = ""; return; }
+  overlay.innerHTML = "";
+  if (!_clusterCollapseMode || collapsedTypes.size === 0) return;
+
+  const svgEl = document.getElementById("graph-svg");
+  const svgRect = svgEl.getBoundingClientRect();
+  const wrapRect = document.getElementById("graph-wrap").getBoundingClientRect();
+  const t = currentZoomTransform;
+
+  collapsedTypes.forEach(type => {
+    const typeNodes = [];
+    nodesGroup.selectAll(".node").each(function(d) {
+      if (d.host_type === type && d.x != null && d.y != null) typeNodes.push(d);
+    });
+    if (typeNodes.length === 0) return;
+
+    // Compute centroid in screen space
+    const cx = typeNodes.reduce((s, n) => s + n.x, 0) / typeNodes.length;
+    const cy = typeNodes.reduce((s, n) => s + n.y, 0) / typeNodes.length;
+    const screenX = cx * t.k + t.x + (svgRect.left - wrapRect.left);
+    const screenY = cy * t.k + t.y + (svgRect.top  - wrapRect.top);
+
+    const chip = document.createElement("div");
+    chip.className = "cluster-chip";
+    chip.style.left = screenX + "px";
+    chip.style.top  = screenY + "px";
+    chip.innerHTML = `${escHtml(type)}<span class="cc-count">${typeNodes.length}</span>`;
+    chip.title = `Click to expand ${typeNodes.length} ${type} node(s)`;
+    chip.addEventListener("click", () => {
+      collapsedTypes.delete(type);
+      applyClusterCollapse();
+    });
+    overlay.appendChild(chip);
+  });
+}
+
+function applyClusterCollapse() {
+  if (!graphData) return;
+  nodesGroup.selectAll(".node").each(function(d) {
+    const collapsed = _clusterCollapseMode && collapsedTypes.has(d.host_type);
+    d3.select(this).classed("faded", function() {
+      return d3.select(this).classed("faded") || collapsed;
+    });
+    d3.select(this).style("display", collapsed ? "none" : "");
+  });
+  renderClusterOverlay();
+}
+
+(function() {
+  const btn = document.getElementById("cluster-collapse-btn");
+  if (!btn) return;
+
+  // Rebuild overlay after zoom/pan
+  const origZoom = svg.on("zoom.cluster");
+  svg.on("zoom.clusterOverlay", () => { if (_clusterCollapseMode) renderClusterOverlay(); });
+
+  btn.addEventListener("click", () => {
+    if (!graphData) return;
+    _clusterCollapseMode = !_clusterCollapseMode;
+    btn.classList.toggle("active", _clusterCollapseMode);
+    btn.title = _clusterCollapseMode ? "Exit cluster mode (click type in sidebar to collapse)" : "Collapse/expand host-type clusters";
+
+    if (!_clusterCollapseMode) {
+      collapsedTypes.clear();
+      nodesGroup.selectAll(".node").style("display", "");
+      document.getElementById("cluster-overlay").innerHTML = "";
+      applyFilters(true);
+    } else {
+      showToast("Cluster mode: click a host-type filter label to collapse that type.", "info", 4000);
+    }
+  });
+
+  // Wire host-type filter labels to toggle collapse when in cluster mode
+  document.getElementById("type-filters")?.addEventListener("click", e => {
+    if (!_clusterCollapseMode) return;
+    const item = e.target.closest(".filter-item");
+    if (!item) return;
+    const labelEl = item.querySelector("label");
+    if (!labelEl) return;
+    const typeName = labelEl.textContent?.trim();
+    if (!typeName) return;
+    if (collapsedTypes.has(typeName)) collapsedTypes.delete(typeName);
+    else collapsedTypes.add(typeName);
+    applyClusterCollapse();
+  });
+})();
+
+/* ── Floating packet inspector ────────────────────────────────────────────── */
+(function() {
+  const inspector = document.getElementById("packet-inspector");
+  if (!inspector) return;
+
+  let floating = false;
+  let _dragStartX = 0, _dragStartY = 0, _dragStartLeft = 0, _dragStartTop = 0;
+
+  // Add float button to inspector header
+  const floatBtn = document.createElement("button");
+  floatBtn.id = "pkt-float-btn";
+  floatBtn.title = "Detach inspector to floating panel";
+  floatBtn.textContent = "⧉";
+  floatBtn.className = "pkt-hdr-btn";
+  const hdr = document.getElementById("pkt-header");
+  if (hdr) hdr.appendChild(floatBtn);
+
+  function setFloating(val) {
+    floating = val;
+    inspector.classList.toggle("pkt-floating", floating);
+    floatBtn.textContent = floating ? "⊡" : "⧉";
+    floatBtn.title = floating ? "Dock inspector back" : "Detach inspector to floating panel";
+    if (floating) {
+      const svgRect = document.getElementById("graph-svg")?.getBoundingClientRect() || {left: 100, top: 100};
+      inspector.style.left = (svgRect.left + 20) + "px";
+      inspector.style.top  = (svgRect.top  + 20) + "px";
+      inspector.style.width = "640px";
+      inspector.style.height = "420px";
+      inspector.style.bottom = "";
+      inspector.style.right = "";
+      graphWrap.classList.remove("pkt-open");
+    } else {
+      inspector.style.left = "";
+      inspector.style.top  = "";
+      inspector.style.width = "";
+      inspector.style.height = "";
+      if (inspector.classList.contains("open")) graphWrap.classList.add("pkt-open");
+    }
+  }
+
+  floatBtn.addEventListener("click", () => setFloating(!floating));
+
+  // Drag to reposition (only when floating)
+  const resizeHandle = document.getElementById("pkt-resize-handle");
+  if (resizeHandle) {
+    resizeHandle.addEventListener("mousedown", e => {
+      if (!floating) return; // let existing resize handle work when docked
+      _dragStartX = e.clientX; _dragStartY = e.clientY;
+      _dragStartLeft = inspector.offsetLeft;
+      _dragStartTop  = inspector.offsetTop;
+      e.preventDefault(); e.stopPropagation();
+      function onMove(ev) {
+        inspector.style.left = (_dragStartLeft + ev.clientX - _dragStartX) + "px";
+        inspector.style.top  = (_dragStartTop  + ev.clientY - _dragStartY) + "px";
+      }
+      function onUp() {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup",   onUp);
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup",   onUp);
+    });
+  }
 })();

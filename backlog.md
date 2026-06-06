@@ -40,8 +40,8 @@
 - [x] Collapsible sidebar — toggle arrow (`‹`/`›`) collapses sidebar to 32 px; state persisted in localStorage
 - [x] Keyboard shortcuts — F = fit graph, 1–8 = switch views, / = focus search, Esc = close; `?` overlay lists all shortcuts
 - [x] Expanded right-click context menu — Highlight Anomalies (fades non-anomaly nodes), Open in Table (switches view and pre-filters to that node's IP)
-- [ ] Breadcrumb / back button when jumping from anomaly sidebar → node → packet inspector
-- [ ] View-specific empty states for DNS Map and OT Map before upload (illustrated placeholder)
+- [x] Breadcrumb / back button when jumping from anomaly sidebar → node → packet inspector — `showDetailPanel` accepts `navCtx`; breadcrumb bar shows "Anomalies › <type> › <ip>" with back-arrow
+- [x] View-specific empty states for DNS Map and OT Map before upload (illustrated placeholder) — `#dns-empty-state` / `#ot-empty-state` divs shown via `setView()` when no data loaded
 
 ## Graph View
 
@@ -49,13 +49,13 @@
 - [x] Minimap — 150×100 overview thumbnail (bottom-right) with viewport rectangle; drag to pan; live sync with simulation
 - [x] Isolate mode — double-click a node to show only it + direct neighbours; double-click again to restore
 - [x] Edge label on hover — inline packet count label at edge midpoint; hidden in canvas mode (>150 nodes)
-- [ ] Cluster expand / collapse — clicking cluster centre collapses all nodes of that type into one summary node
+- [x] Cluster expand / collapse — ⊕ button in graph controls enters cluster mode; click a host-type label in sidebar to collapse that type into a centroid chip overlay; click chip to expand; mode indicator and localStorage-free toggle
 
 ## Packet Inspector & Detail Panel
 
-- [ ] Protocol-coloured hex dump — byte regions highlighted by layer (Ethernet / IP / TCP / payload)
+- [x] Protocol-coloured hex dump — byte regions highlighted by layer (Ethernet / IP / TCP / payload); backend emits start/end byte offsets per layer; frontend builds per-byte color array and wraps hex bytes in colored spans
 - [x] Copy buttons next to IP addresses, hostnames, JA3 fingerprints, and SHA-256 hashes in detail panel and files sidebar
-- [ ] Floating inspector mode — detach packet inspector into a resizable floating panel
+- [x] Floating inspector mode — ⧉ button in packet inspector header detaches to fixed overlay; draggable via resize handle; ⊡ button re-docks; docking restores graph-wrap layout
 - [x] Search within packet list — live-filter input above packet table; shows `N / M` count badge; clears on new connection open
 
 ## Timeline
@@ -146,28 +146,28 @@
 
 Items surfaced in the 2026-05-17 robustness review (`REVIEW.md`) that were not addressed in `feature/robustness-fixes` (all HIGH items are fixed). Sorted roughly by risk.
 
-- [ ] **E3** — `except Exception: pass` in packet-store enrichment loop drops errors silently; surface a `parse_errors` count in `stats`
-- [ ] **E4** — Non-JSON 502 responses from `/upload` show a cryptic SyntaxError in the UI; wrap `resp.json()` in a try and show raw response head
-- [ ] **E5** — `FileReader` in session-load has no `onerror` handler; corrupt file silently does nothing
-- [ ] **U4** — Tempfile path appended to `tmp_paths` *after* `f.save()`; if save raises, the tempfile leaks — reverse the order
-- [ ] **U5** — `secure_filename` on a unicode-only name returns empty string; suffix becomes the full name → whitelist suffix to `.pcap/.pcapng/.cap`
-- [ ] **P3** — BACnet NPDU routing-field truncation falls through instead of returning `None`; can produce garbage `apdu_offset`
-- [ ] **P4** — IEC104 `apdu_len = payload_bytes[1]` never validated against `len(payload_bytes)`
-- [ ] **X5** — `c.dport` in nodeCreds block interpolated raw into innerHTML (`':'+c.dport`)
-- [ ] **X6** — `d.modbus_unit_ids.join()` / `d.dnp3_addresses.join()` inserted unescaped into innerHTML
-- [ ] **X7** — OT-edge tooltip (`app.js:2930`): `e.source`/`e.target` raw
-- [ ] **X8** — `resolvedIps.join(", ")` inserted raw into innerHTML in DNS view
-- [ ] **X9** — `d.open_ports.slice(0,20).join(", ")` inserted raw
-- [ ] **N5** — `f.sha256.slice(0,16)` crashes if backend omits `sha256` field
-- [ ] **N6** — `s7.function_code.toString(16)` crashes if backend sends `null` (not `undefined`)
-- [ ] **L2** — D3 simulation tick/end handlers not nulled out before `stop()` — old closures fire briefly
-- [ ] **L3** — `setTimeout(() => zoomFit(), 2500)` not cleared on re-upload; stale fit fires on new graph
+- [x] **E3** — surface `parse_errors` count in `stats`; shown as info toast on upload
+- [x] **E4** — `fetch /upload` wraps `.json()` in try/catch; falls back to `resp.text()` for non-JSON error bodies
+- [x] **E5** — `FileReader.onerror` handler added to both file-load usages; shows toast on failure
+- [x] **U4** — Tempfile path appended to `tmp_paths` before `f.save()` so cleanup always runs
+- [x] **U5** — `secure_filename` on unicode-only names returns empty string; whitelist suffix to `.pcap/.pcapng/.cap`
+- [x] **P3** — BACnet NPDU routing-field bounds check tightened; falls through with `return None` on truncation
+- [x] **P4** — IEC104 `apdu_len` validated against `len(payload_bytes)` before use
+- [x] **X5** — `c.dport` in nodeCreds block escaped via `escHtml()`
+- [x] **X6** — `modbus_unit_ids` / `dnp3_addresses` escaped with `.map(escHtml).join(", ")`
+- [x] **X7** — OT-edge tooltip source/target values escaped
+- [x] **X8** — `resolvedIps.map(escHtml).join(", ")` in DNS view
+- [x] **X9** — `open_ports.slice(0,20).map(escHtml).join(", ")`
+- [x] **N5** — `(f.sha256 || '').slice(0,16)` guards missing sha256 field
+- [x] **N6** — `s7.function_code != null` (loose equality catches both null and undefined)
+- [x] **L2** — Simulation tick/end handlers nulled out before `stop()` in `renderGraph` and `buildSimulation`
+- [x] **L3** — `_zoomFitTimer` cleared on re-upload; no stale zoomFit after new graph load
+- [x] **PF4** — `_getSortedEdges()` cache with fingerprint string avoids re-sorting on every filter toggle
+- [x] **S3** — `_geoip_lock` already in place; double-checked and confirmed thread-safe
+- [x] **S4** — `app.secret_key = os.environ.get("PCAPVIS_SECRET_KEY", os.urandom(32))`
+- [x] **T5** — `tests/conftest.py` created with shared fixtures and packet-builder helpers
+- [x] **D1** — `geoip2>=4.0.0,<5` pinned in requirements.txt
 - [ ] **PF3** — `openPktInspectorForHost` concatenates all packets and sorts in main thread (150k packets → jank)
-- [ ] **PF4** — `renderConnTable` re-sorts entire edges array on each filter toggle
 - [ ] **S2** — No CSRF protection on `/upload` POST (low risk on localhost; medium when `--public`)
-- [ ] **S3** — `_get_geoip_reader` double-init not protected by a lock (thread safety)
-- [ ] **S4** — No `app.secret_key` from env var; any future session/flash use will break on restart
-- [ ] **T5** — No `tests/conftest.py`; packet-builder helpers duplicated across test files
-- [ ] **D1** — `geoip2` version not pinned in requirements.txt
-- [ ] **H3** — README does not warn that `--public` exposes a Werkzeug dev server (see also `--public` banner added in B6)
+- [ ] **H3** — README does not warn that `--public` exposes a Werkzeug dev server
 - [ ] **General** — No `prompt()` modal replacement (blocks page, disabled by Firefox after 2 dialogs); affects OT risk note input and annotation input

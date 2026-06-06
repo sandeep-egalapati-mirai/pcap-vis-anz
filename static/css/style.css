@@ -2632,6 +2632,72 @@ header h1 span { color: var(--accent); }
 #tl-brush-start { z-index: 3; }
 #tl-brush-end   { z-index: 4; }
 
+/* ── Cluster collapse overlay ────────────────────────────────────────────── */
+#cluster-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cluster-chip {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: all;
+  background: var(--bg3);
+  border: 2px solid var(--accent);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px #0004;
+  transition: border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+.cluster-chip:hover { background: var(--bg2); border-color: var(--fg); }
+.cluster-chip .cc-count { color: var(--accent); margin-left: 4px; }
+
+/* ── Breadcrumb navigation bar ───────────────────────────────────────────── */
+#breadcrumb-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text2);
+  flex-shrink: 0;
+}
+#breadcrumb-bar button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  text-decoration: underline;
+}
+#breadcrumb-bar button:hover { color: var(--fg); }
+#breadcrumb-bar .bc-sep { color: var(--text2); margin: 0 2px; }
+#breadcrumb-bar .bc-cur { color: var(--text1); font-weight: 600; }
+
+/* ── View-specific empty states ─────────────────────────────────────────── */
+.view-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 10px;
+  color: var(--text2);
+  pointer-events: none;
+}
+.ves-icon { font-size: 48px; opacity: 0.35; }
+.ves-title { font-size: 18px; font-weight: 600; color: var(--text1); }
+.ves-body  { font-size: 13px; max-width: 320px; text-align: center; line-height: 1.5; }
+
 /* ── D2: Packet inspector search bar ────────────────────────────────────── */
 #pkt-search-bar {
   display: flex;
@@ -2733,3 +2799,40 @@ header h1 span { color: var(--accent); }
 
 /* ── E3: Colour-blind button active state ───────────────────────────────── */
 #cb-mode-btn.active { color: var(--accent); border-color: var(--accent); }
+
+/* ── Cluster collapse: chip count badge ─────────────────────────────────── */
+.cluster-chip .cc-count {
+  display: inline-block;
+  margin-left: 5px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 10px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+#cluster-collapse-btn.active { color: var(--accent); border-color: var(--accent); }
+
+/* ── Floating packet inspector ──────────────────────────────────────────── */
+#packet-inspector.pkt-floating {
+  position: fixed;
+  z-index: 900;
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  resize: both;
+  overflow: auto;
+  min-width: 400px;
+  min-height: 280px;
+}
+#packet-inspector.pkt-floating #pkt-resize-handle { cursor: move; }
+.pkt-hdr-btn {
+  background: none;
+  border: none;
+  color: var(--text2);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  line-height: 1;
+}
+.pkt-hdr-btn:hover { color: var(--fg); }

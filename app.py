@@ -27,6 +27,7 @@ except Exception:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
+app.secret_key = os.environ.get("PCAPVIS_SECRET_KEY", os.urandom(32))
 Compress(app)
 
 logger = logging.getLogger(__name__)
@@ -903,6 +904,8 @@ def parse_iec104(payload_bytes):
         if payload_bytes[0] != 0x68:
             return None
         apdu_len = payload_bytes[1]
+        if len(payload_bytes) < 2 + apdu_len:
+            return None
         cf1 = payload_bytes[2]
 
         if (cf1 & 0x01) == 0:
@@ -1001,15 +1004,19 @@ def parse_bacnet(payload_bytes):
         # Skip NPDU routing fields: DNET(2)+DLEN(1)+DADR(DLEN)+hop_count(1) / SNET(2)+SLEN(1)+SADR(SLEN)
         apdu_offset = 6
         if npdu_ctrl & 0x04:  # Destination specifier present
-            if apdu_offset + 2 >= len(payload_bytes):
+            if apdu_offset + 3 > len(payload_bytes):
                 return None
             dlen = payload_bytes[apdu_offset + 2]   # DLEN is after the 2-byte DNET field
             apdu_offset += 2 + 1 + dlen + 1         # DNET + DLEN + DADR + hop_count
+            if apdu_offset > len(payload_bytes):
+                return None
         if npdu_ctrl & 0x08:  # Source specifier present
-            if apdu_offset + 2 >= len(payload_bytes):
+            if apdu_offset + 3 > len(payload_bytes):
                 return None
             slen = payload_bytes[apdu_offset + 2]   # SLEN is after the 2-byte SNET field
             apdu_offset += 2 + 1 + slen              # SNET + SLEN + SADR
+            if apdu_offset > len(payload_bytes):
+                return None
 
         if apdu_offset >= len(payload_bytes):
             return {
@@ -1891,20 +1898,22 @@ def _build_packet_detail(raw, rel_t, sip, dip, protocol, plen,
     }
 
     if smac is not None:
-        pd["layers"].append({"name": "Ethernet", "fields": [
+        pd["layers"].append({"name": "Ethernet", "start": 0, "end": l3_off, "fields": [
             {"k": "Dst MAC", "v": dmac},
             {"k": "Src MAC", "v": smac},
             {"k": "Type",    "v": hex(eth_type)},
         ]})
 
+    l4_off = l3_off  # default; updated below per-protocol
     if not is_ipv6 and l3_off + 20 <= len(raw):
         ihl = (raw[l3_off] & 0x0f) * 4
+        l4_off = l3_off + ihl
         total_len = (raw[l3_off + 2] << 8) | raw[l3_off + 3]
         ip_id = (raw[l3_off + 4] << 8) | raw[l3_off + 5]
         df = bool(raw[l3_off + 6] & 0x40)
         mf = bool(raw[l3_off + 6] & 0x20)
         ip_flags_str = '+'.join(x for x, cond in [('DF', df), ('MF', mf)] if cond) or '0'
-        pd["layers"].append({"name": "Internet Protocol", "fields": [
+        pd["layers"].append({"name": "Internet Protocol", "start": l3_off, "end": l4_off, "fields": [
             {"k": "Version",    "v": 4},
             {"k": "Hdr Length", "v": f"{ihl} bytes"},
             {"k": "Total Len",  "v": total_len},
@@ -1916,11 +1925,12 @@ def _build_packet_detail(raw, rel_t, sip, dip, protocol, plen,
             {"k": "Dst",        "v": dip},
         ]})
     elif is_ipv6 and l3_off + 40 <= len(raw):
+        l4_off = l3_off + 40
         tc = ((raw[l3_off] & 0x0f) << 4) | (raw[l3_off + 1] >> 4)
         fl = ((raw[l3_off + 1] & 0x0f) << 16) | (raw[l3_off + 2] << 8) | raw[l3_off + 3]
         ipv6_plen = (raw[l3_off + 4] << 8) | raw[l3_off + 5]
         nh = raw[l3_off + 6]
-        pd["layers"].append({"name": "Internet Protocol Version 6", "fields": [
+        pd["layers"].append({"name": "Internet Protocol Version 6", "start": l3_off, "end": l4_off, "fields": [
             {"k": "Version",       "v": 6},
             {"k": "Traffic Class", "v": tc},
             {"k": "Flow Label",    "v": hex(fl)},
@@ -1933,7 +1943,8 @@ def _build_packet_detail(raw, rel_t, sip, dip, protocol, plen,
 
     if tcp_flags is not None:
         flag_str = _tcp_flag_str(tcp_flags)
-        pd["layers"].append({"name": "Transmission Control Protocol", "fields": [
+        tcp_hdr_end = l4_off + (tcp_doff_bytes if tcp_doff_bytes else 20)
+        pd["layers"].append({"name": "Transmission Control Protocol", "start": l4_off, "end": tcp_hdr_end, "fields": [
             {"k": "Src Port", "v": sport},
             {"k": "Dst Port", "v": dport},
             {"k": "Seq",      "v": tcp_seq},
@@ -1941,18 +1952,22 @@ def _build_packet_detail(raw, rel_t, sip, dip, protocol, plen,
             {"k": "Flags",    "v": flag_str},
             {"k": "Window",   "v": tcp_window},
         ]})
+        if payload:
+            pd["layers"].append({"name": "Payload", "start": tcp_hdr_end, "end": tcp_hdr_end + len(payload), "fields": []})
         pd["info"] = f"{sport} → {dport} [{flag_str}] Seq={tcp_seq}"
         if payload:
             pd["info"] += f" Len={len(payload)}"
     elif udp_len is not None:
-        pd["layers"].append({"name": "User Datagram Protocol", "fields": [
+        pd["layers"].append({"name": "User Datagram Protocol", "start": l4_off, "end": l4_off + 8, "fields": [
             {"k": "Src Port", "v": sport},
             {"k": "Dst Port", "v": dport},
             {"k": "Length",   "v": udp_len},
         ]})
+        if payload:
+            pd["layers"].append({"name": "Payload", "start": l4_off + 8, "end": l4_off + 8 + len(payload), "fields": []})
         pd["info"] = f"{sport} → {dport}"
     elif icmp_type is not None:
-        pd["layers"].append({"name": "Internet Control Message Protocol", "fields": [
+        pd["layers"].append({"name": "Internet Control Message Protocol", "start": l4_off, "end": l4_off + 8, "fields": [
             {"k": "Type", "v": f"{icmp_type} ({_ICMP_TYPE_NAMES.get(icmp_type, 'Unknown')})"},
             {"k": "Code", "v": icmp_code},
         ]})
@@ -2036,6 +2051,7 @@ def analyze_pcap(filepath):
     MAX_FILES = 200
     MAX_OT_COMMANDS = 5_000
     processed = 0
+    parse_errors = 0
     packet_store = defaultdict(list)
     MAX_STORED_PER_CONN = 50
     first_pkt_time = None
@@ -2863,7 +2879,7 @@ def analyze_pcap(filepath):
 
                         packet_store[conn_key].append(pd)
                     except Exception:
-                        pass
+                        parse_errors += 1
 
     except Exception:
         logger.warning("analyze_pcap failed", exc_info=True)
@@ -3095,6 +3111,8 @@ def analyze_pcap(filepath):
             "truncated": processed >= MAX_PACKETS,
             "capture_start": first_pkt_time,
             "capture_end": last_pkt_time,
+            "parse_errors": parse_errors,
+            "geoip_available": _get_geoip_reader() is not None,
         },
     }
 
@@ -3408,7 +3426,8 @@ def upload():
         for f in files:
             if not allowed_file(f.filename, f.stream):
                 return jsonify({"error": f"Unsupported file type: {f.filename}. Upload .pcap, .pcapng, or .cap files."}), 400
-            ext = f.filename.rsplit(".", 1)[-1].lower()
+            parts = f.filename.rsplit(".", 1)
+            ext = parts[-1].lower() if len(parts) == 2 else ""
             if ext not in ALLOWED_EXTENSIONS:
                 ext = "pcap"
             tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)

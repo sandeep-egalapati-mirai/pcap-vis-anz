@@ -213,6 +213,7 @@
     <div id="graph-wrap">
       <canvas id="edge-canvas"></canvas>
       <svg id="graph-svg"></svg>
+      <div id="cluster-overlay"></div>
       <svg id="minimap" width="150" height="100" style="display:none"></svg>
 
       <!-- Zero-results overlay -->
@@ -253,6 +254,7 @@
         <button class="gc-btn" id="btn-zoom-fit" title="Fit to screen">⊡</button>
         <button class="gc-btn" id="btn-color-vlan" title="Color nodes by VLAN" style="display:none">⬡ VLAN</button>
         <button class="gc-btn" id="cb-mode-btn" title="Colour-blind safe palette">◑</button>
+        <button class="gc-btn" id="cluster-collapse-btn" title="Collapse/expand host-type clusters">⊕</button>
       </div>
 
       <!-- Legend -->
@@ -348,6 +350,11 @@
 
     <!-- OT Map view (Purdue Model) -->
     <div id="ot-map-view" class="hidden">
+      <div id="ot-empty-state" class="view-empty-state hidden">
+        <div class="ves-icon">⚙</div>
+        <div class="ves-title">No capture loaded</div>
+        <div class="ves-body">Upload a PCAP file containing OT/ICS traffic to see the Purdue Model zone layout.</div>
+      </div>
       <div id="ot-map-header">
         <div id="ot-stats-bar"></div>
         <div id="ot-zone-count"></div>
@@ -527,6 +534,11 @@
 
     <!-- DNS Map view -->
     <div id="dns-view" class="hidden">
+      <div id="dns-empty-state" class="view-empty-state hidden">
+        <div class="ves-icon">🌐</div>
+        <div class="ves-title">No capture loaded</div>
+        <div class="ves-body">Upload a PCAP file to explore DNS queries and resolutions.</div>
+      </div>
       <div id="dns-host-list">
         <div class="dns-section-title">Hosts with DNS queries</div>
         <div id="dns-hosts"></div>
@@ -539,6 +551,7 @@
 
     <!-- Detail panel -->
     <div id="detail-panel">
+      <div id="breadcrumb-bar" class="hidden"></div>
       <div id="detail-header">
         <button id="detail-close">×</button>
         <div class="dh-ip" id="dh-ip">—</div>
