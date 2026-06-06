@@ -37,9 +37,9 @@
 
 ## Navigation & Discoverability
 
-- [ ] Collapsible sidebar — toggle arrow to collapse the 240 px sidebar to a narrow icon rail
-- [x] Keyboard shortcuts — F = fit graph, 1–7 = switch views, / = focus search, Esc = close; `?` overlay lists all shortcuts
-- [ ] Expanded right-click context menu — Highlight anomalies, Open in Table view
+- [x] Collapsible sidebar — toggle arrow (`‹`/`›`) collapses sidebar to 32 px; state persisted in localStorage
+- [x] Keyboard shortcuts — F = fit graph, 1–8 = switch views, / = focus search, Esc = close; `?` overlay lists all shortcuts
+- [x] Expanded right-click context menu — Highlight Anomalies (fades non-anomaly nodes), Open in Table (switches view and pre-filters to that node's IP)
 - [ ] Breadcrumb / back button when jumping from anomaly sidebar → node → packet inspector
 - [ ] View-specific empty states for DNS Map and OT Map before upload (illustrated placeholder)
 
@@ -56,7 +56,7 @@
 - [ ] Protocol-coloured hex dump — byte regions highlighted by layer (Ethernet / IP / TCP / payload)
 - [x] Copy buttons next to IP addresses, hostnames, JA3 fingerprints, and SHA-256 hashes in detail panel and files sidebar
 - [ ] Floating inspector mode — detach packet inspector into a resizable floating panel
-- [ ] Search within packet list — filter input above packet table to narrow by IP, protocol, or info string
+- [x] Search within packet list — live-filter input above packet table; shows `N / M` count badge; clears on new connection open
 
 ## Timeline
 
@@ -67,14 +67,14 @@
 ## Polish & Accessibility
 
 - [x] Persistent filter state — last-used protocol/host-type selections saved to localStorage; restored on next load
-- [ ] Light / dark mode toggle (~30 CSS variable overrides)
-- [ ] Stats bar sparklines — tiny inline bar charts next to Hosts / Connections / Packets showing distribution
-- [ ] Colour-blind safe palette option — deuteranopia-safe scheme (blues / oranges + pattern fills) toggle
+- [x] Light / dark mode toggle — ☀/☾ button in header; CSS variable overrides for full dark/light switch; persisted in localStorage; FOUC-prevention inline script
+- [x] Stats bar sparklines — 48×12 px inline SVG bar chart (60 bins) next to Packets stat; shows packet density over capture time
+- [x] Colour-blind safe palette option — ◑ button; deuteranopia-safe overrides (greens→teal, reds→orange); re-colors all graph nodes + filter swatches; persisted in localStorage
 
 ## Bigger Ideas
 
-- [ ] PCAP diff / comparison mode — upload two files and highlight added hosts, connections, anomalies
-- [ ] Saved filter presets — name and save a filter combination for one-click recall
+- [x] PCAP diff / comparison mode — upload two files and highlight added hosts, connections, anomalies
+- [x] Saved filter presets — name and save a filter combination for one-click recall; presets stored in localStorage; chip list in sidebar with delete buttons; auto-shown when at least one preset exists
 - [x] Inline anomaly explanation panel — ℹ button on every anomaly badge expands a "What / Why / Steps" explanation covering all ~30 anomaly types; toggles closed with a second click
 - [x] Dashboard / summary view — 8th view tab (⊛ Dashboard); 5 summary cards (hosts/connections/packets/anomalies/protocols); top-10 risk-score horizontal bar chart; protocol distribution bars; anomaly severity chips (High/Med/Low/Info counts); busiest-connections list; clicking a risk-bar row jumps to graph and highlights the node; key shortcut: 8
 

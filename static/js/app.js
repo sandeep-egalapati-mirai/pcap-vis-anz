@@ -149,21 +149,46 @@ const PROTO_COLORS = {
   "CAP":          "#FFC107",
 };
 
+/* E3: Colour-blind safe palette overrides (deuteranopia — green/red safe) */
+const HOST_COLORS_CB = Object.assign({}, HOST_COLORS, {
+  "DNS Server":      "#0099bb",
+  "DHCP Server":     "#00a8a8",
+  "Smart Home Hub":  "#0099bb",
+  "Security Tool":   "#ee7733",
+  "SCADA Server":    "#ee3377",
+  "Linux Server":    "#cc5500",
+  "Telnet Server":   "#cc5500",
+  "OMRON-FINS":      "#0099bb",
+});
+const PROTO_COLORS_CB = Object.assign({}, PROTO_COLORS, {
+  "DNS":         "#0099bb",
+  "mDNS":        "#0099bb",
+  "MongoDB":     "#0099bb",
+  "OMRON-FINS":  "#0099bb",
+  "XMPP":        "#0099bb",
+  "XMPP-TLS":    "#007799",
+  "Redis":       "#ee7733",
+  "RDP":         "#ee7733",
+  "GE-SRTP":     "#ee7733",
+  "TR-069":      "#ee7733",
+});
+
 function protoColor(protocols) {
   if (!protocols || !protocols.length) return "#607D8B";
+  const map = colorBlindMode ? PROTO_COLORS_CB : PROTO_COLORS;
   const priority = [
     "HTTPS","HTTP","SSH","RDP","DNS","SMTP","SMTPS","IMAP","IMAPS",
     "POP3","POP3S","FTP","FTP-Data","MySQL","PostgreSQL","MongoDB",
     "Redis","SMB","SNMP","DHCP","NTP","BGP","ICMP","TCP","UDP",
   ];
   for (const p of priority) {
-    if (protocols.includes(p)) return PROTO_COLORS[p] || "#607D8B";
+    if (protocols.includes(p)) return map[p] || "#607D8B";
   }
-  return PROTO_COLORS[protocols[0]] || "#607D8B";
+  return map[protocols[0]] || "#607D8B";
 }
 
 function hostColor(type) {
-  return HOST_COLORS[type] || "#546E7A";
+  return (colorBlindMode ? HOST_COLORS_CB : HOST_COLORS)[type] || "#546E7A";
 }
 
 // Hash-based HSL color for VLAN IDs — no palette collision (VLANs 1, 21, 41 no longer clash)
@@ -461,6 +486,9 @@ let _currentPktList = [];    // packets for the currently-open inspector panel
 let anomalyNodeIps = {};     // ip → highest severity
 let credIpSet = new Set();   // IPs with captured credentials
 let tableSort = { col: "packet_count", dir: "desc" };
+let highlightAnomsMode = false;   // D4
+let colorBlindMode = false;        // E3
+let filterPresets = [];            // E2
 
 // Canvas edge rendering (GPU-composited, activated for large graphs)
 const CANVAS_THRESHOLD = 150;  // node count above which canvas edges are used
@@ -665,6 +693,9 @@ function loadGraph(data) {
   if (_mmEl) _mmEl.style.display = "none";
   searchTerm = "";
   searchBox.value = "";
+  highlightAnomsMode = false;
+  const sparklineEl = document.querySelector("#stat-pkts")?.closest(".stat")?.querySelector(".stat-sparkline");
+  if (sparklineEl) sparklineEl.remove();
   detailPanel.classList.remove("open");
   const noConnMsgReset = document.getElementById("no-connections-msg");
   if (noConnMsgReset) noConnMsgReset.classList.remove("visible");
@@ -738,6 +769,7 @@ function loadGraph(data) {
   buildCredentialsSidebar(data.credentials || []);
   buildFilesSidebar(data.files || []);
   buildTimeline(data);
+  renderPresetList();
   // setView("graph") before renderGraph so graphWrap is visible when renderGraph
   // reads svg.clientWidth/Height (needed for correct cx/cy and canvas sizing)
   setView("graph");
@@ -1149,6 +1181,9 @@ function applyFilters(skipFit) {
 
   // Apply isolated ring to the focus node
   nodesGroup.selectAll(".node").classed("isolated", d => d.ip === isolatedNodeIp);
+
+  // D4: Highlight anomaly nodes — fade all nodes that have no anomalies
+  nodesGroup.selectAll(".node").classed("anom-faded", d => highlightAnomsMode && !anomalyNodeIps[d.ip]);
 
   linksGroup.selectAll(".link").each(function(d) {
     const protoOk = !(d.protocols && d.protocols.length) ||
@@ -2845,6 +2880,9 @@ function renderPktTable(pkts) {
   pktTreeEmpty.style.display = "block";
   pktHexEmpty.style.display = "block";
 
+  const pktSearchEl = document.getElementById("pkt-search");
+  if (pktSearchEl) pktSearchEl.value = "";
+
   const t0 = pkts.length ? pkts[0].time : 0;
   _appendPktRows(pkts, t0, 0, PKT_PAGE_SIZE);
 
@@ -2857,6 +2895,8 @@ function renderPktTable(pkts) {
     });
     pktTbody.appendChild(moreRow);
   }
+
+  applyPktSearch();
 }
 
 function protoRowClass(proto) {
@@ -6970,6 +7010,8 @@ function buildTimeline(data) {
     if (parseInt(bEnd.value) < parseInt(bStart.value)) bEnd.value = bStart.value;
     _applyBrush();
   };
+
+  renderStatsSparkline(binBytes, maxBytes);
 }
 
 function _updateBrushUI(sVal, eVal) {
@@ -7299,3 +7341,262 @@ function updateMinimapViewport(bounds, bw, bh) {
     .attr("x", rx).attr("y", ry)
     .attr("width", rw).attr("height", rh);
 }
+
+/* ── D1: Collapsible sidebar ─────────────────────────────────────────────── */
+(function() {
+  const sidebar = document.getElementById("sidebar");
+  const toggleBtn = document.getElementById("sidebar-toggle");
+  if (!sidebar || !toggleBtn) return;
+
+  function setSidebarCollapsed(collapsed) {
+    sidebar.classList.toggle("collapsed", collapsed);
+    toggleBtn.textContent = collapsed ? "›" : "‹";
+    toggleBtn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    if (collapsed) localStorage.setItem("pv_sidebar_collapsed", "1");
+    else localStorage.removeItem("pv_sidebar_collapsed");
+  }
+
+  toggleBtn.addEventListener("click", () => {
+    setSidebarCollapsed(!sidebar.classList.contains("collapsed"));
+  });
+
+  // Restore on load
+  if (localStorage.getItem("pv_sidebar_collapsed") === "1") {
+    setSidebarCollapsed(true);
+  }
+})();
+
+/* ── D2: Packet inspector search ─────────────────────────────────────────── */
+function applyPktSearch() {
+  const input = document.getElementById("pkt-search");
+  const countEl = document.getElementById("pkt-search-count");
+  if (!input || !pktTbody) return;
+  const term = input.value.trim().toLowerCase();
+  const rows = pktTbody.querySelectorAll("tr");
+  let visible = 0;
+  let total = 0;
+  rows.forEach(row => {
+    if (row.querySelector("td[colspan]")) return; // "Load more" row
+    total++;
+    const text = row.textContent.toLowerCase();
+    const show = !term || text.includes(term);
+    row.style.display = show ? "" : "none";
+    if (show) visible++;
+  });
+  if (countEl) countEl.textContent = term ? `${visible} / ${total}` : "";
+}
+
+(function() {
+  const pktSearch = document.getElementById("pkt-search");
+  if (pktSearch) {
+    pktSearch.addEventListener("input", applyPktSearch);
+  }
+})();
+
+/* ── D3: Stats sparkline ─────────────────────────────────────────────────── */
+function renderStatsSparkline(binBytes, maxBytes) {
+  const statEl = document.getElementById("stat-pkts")?.closest(".stat");
+  if (!statEl) return;
+  const existing = statEl.querySelector(".stat-sparkline");
+  if (existing) existing.remove();
+
+  const W = 48, H = 12;
+  const bins = binBytes.length;
+  const barW = W / bins;
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svgEl = document.createElementNS(svgNS, "svg");
+  svgEl.setAttribute("width", W);
+  svgEl.setAttribute("height", H);
+  svgEl.setAttribute("class", "stat-sparkline");
+  svgEl.setAttribute("aria-hidden", "true");
+
+  binBytes.forEach((val, i) => {
+    const h = Math.max(1, (val / maxBytes) * H);
+    const rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("x", i * barW);
+    rect.setAttribute("y", H - h);
+    rect.setAttribute("width", Math.max(1, barW - 0.5));
+    rect.setAttribute("height", h);
+    rect.setAttribute("fill", "var(--accent)");
+    rect.setAttribute("opacity", "0.6");
+    svgEl.appendChild(rect);
+  });
+
+  statEl.appendChild(svgEl);
+}
+
+/* ── D4: Context menu — Highlight Anomalies & Open in Table ──────────────── */
+document.getElementById("ctx-highlight-anoms").addEventListener("click", () => {
+  ctxMenu.classList.add("hidden");
+  highlightAnomsMode = !highlightAnomsMode;
+  const item = document.getElementById("ctx-highlight-anoms");
+  item.classList.toggle("active", highlightAnomsMode);
+  item.textContent = (highlightAnomsMode ? "⬤ Hide Anomaly Highlight" : "⬤ Highlight Anomalies");
+  applyFilters(true);
+});
+
+document.getElementById("ctx-open-table").addEventListener("click", () => {
+  ctxMenu.classList.add("hidden");
+  if (!ctxTarget) return;
+  const ip = ctxTarget.ip;
+  ctxTarget = null;
+  setView("table");
+  if (searchBox) {
+    searchBox.value = ip;
+    searchBox.dispatchEvent(new Event("input"));
+  }
+});
+
+/* ── E1: Light/dark theme toggle ─────────────────────────────────────────── */
+(function() {
+  const btn = document.getElementById("theme-toggle");
+  if (!btn) return;
+
+  function applyTheme(theme) {
+    if (theme === "light") {
+      document.body.dataset.theme = "light";
+      btn.textContent = "☾";
+      btn.title = "Switch to dark theme";
+    } else {
+      delete document.body.dataset.theme;
+      btn.textContent = "☀";
+      btn.title = "Switch to light theme";
+    }
+  }
+
+  // Apply saved theme (also handled by FOUC-prevention script in HTML)
+  const saved = localStorage.getItem("pv_theme");
+  applyTheme(saved || "dark");
+
+  btn.addEventListener("click", () => {
+    const next = document.body.dataset.theme === "light" ? "dark" : "light";
+    applyTheme(next);
+    if (next === "light") localStorage.setItem("pv_theme", "light");
+    else localStorage.removeItem("pv_theme");
+  });
+})();
+
+/* ── E2: Saved filter presets ────────────────────────────────────────────── */
+(function() {
+  try {
+    const raw = localStorage.getItem("pv_filter_presets");
+    if (raw) filterPresets = JSON.parse(raw);
+  } catch(_) { filterPresets = []; }
+})();
+
+function saveCurrentPreset(name) {
+  if (!name) return;
+  filterPresets = filterPresets.filter(p => p.name !== name);
+  filterPresets.push({ name, protos: [...activeProtos], types: [...activeTypes] });
+  try { localStorage.setItem("pv_filter_presets", JSON.stringify(filterPresets)); } catch(_) {}
+  renderPresetList();
+}
+
+function loadPreset(p) {
+  if (!graphData) return;
+  const stats = graphData.stats || {};
+  const availProtos = new Set(stats.protocols || []);
+  const availTypes  = new Set(stats.host_types || []);
+  activeProtos = new Set((p.protos || []).filter(x => availProtos.has(x)));
+  activeTypes  = new Set((p.types  || []).filter(x => availTypes.has(x)));
+  if (activeProtos.size === 0) activeProtos = new Set(stats.protocols || []);
+  if (activeTypes.size  === 0) activeTypes  = new Set(stats.host_types || []);
+  buildFilters(graphData);
+  applyFilters();
+}
+
+function deleteFilterPreset(name) {
+  filterPresets = filterPresets.filter(p => p.name !== name);
+  try { localStorage.setItem("pv_filter_presets", JSON.stringify(filterPresets)); } catch(_) {}
+  renderPresetList();
+}
+
+function renderPresetList() {
+  const section = document.getElementById("presets-section");
+  const list    = document.getElementById("preset-list");
+  const badge   = document.getElementById("presets-badge");
+  if (!section || !list) return;
+
+  list.innerHTML = "";
+  filterPresets.forEach(p => {
+    const chip = document.createElement("div");
+    chip.className = "preset-chip";
+    chip.title = `${p.protos?.length || 0} protocols, ${p.types?.length || 0} host types`;
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "preset-chip-name";
+    nameSpan.textContent = p.name;
+    nameSpan.addEventListener("click", () => loadPreset(p));
+    const del = document.createElement("button");
+    del.className = "preset-chip-del";
+    del.textContent = "✕";
+    del.title = "Delete preset";
+    del.addEventListener("click", e => { e.stopPropagation(); deleteFilterPreset(p.name); });
+    chip.appendChild(nameSpan);
+    chip.appendChild(del);
+    list.appendChild(chip);
+  });
+
+  if (badge) badge.textContent = filterPresets.length || "";
+  section.style.display = filterPresets.length > 0 ? "" : "none";
+}
+
+(function() {
+  const saveBtn   = document.getElementById("preset-save-btn");
+  const nameInput = document.getElementById("preset-name-input");
+  if (!saveBtn || !nameInput) return;
+
+  saveBtn.addEventListener("click", () => {
+    if (nameInput.style.display === "none" || nameInput.style.display === "") {
+      nameInput.style.display = "inline-block";
+      nameInput.focus();
+    } else {
+      const name = nameInput.value.trim();
+      if (name) {
+        saveCurrentPreset(name);
+        nameInput.value = "";
+        nameInput.style.display = "none";
+      }
+    }
+  });
+
+  nameInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      const name = nameInput.value.trim();
+      if (name) {
+        saveCurrentPreset(name);
+        nameInput.value = "";
+        nameInput.style.display = "none";
+      }
+    } else if (e.key === "Escape") {
+      nameInput.value = "";
+      nameInput.style.display = "none";
+    }
+  });
+})();
+
+/* ── E3: Colour-blind safe palette ───────────────────────────────────────── */
+function updateNodeColors() {
+  nodesGroup.selectAll(".node circle").attr("fill", d => hostColor(d.host_type));
+  if (graphData) buildFilters(graphData);
+  if (useCanvasEdges) drawCanvasEdges();
+}
+
+(function() {
+  const btn = document.getElementById("cb-mode-btn");
+  if (!btn) return;
+
+  if (localStorage.getItem("pv_colorblind") === "1") {
+    colorBlindMode = true;
+    btn.classList.add("active");
+    btn.title = "Colour-blind safe palette (on)";
+  }
+
+  btn.addEventListener("click", () => {
+    colorBlindMode = !colorBlindMode;
+    btn.classList.toggle("active", colorBlindMode);
+    btn.title = colorBlindMode ? "Colour-blind safe palette (on)" : "Colour-blind safe palette";
+    if (colorBlindMode) localStorage.setItem("pv_colorblind", "1");
+    else localStorage.removeItem("pv_colorblind");
+    updateNodeColors();
+  });
+})();

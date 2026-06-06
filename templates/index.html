@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
+<script>if(localStorage.getItem("pv_theme")==="light")document.body.dataset.theme="light";</script>
 
 <!-- ── Loading overlay ─────────────────────────────────────────────────── -->
 <div id="loading-overlay">
@@ -41,6 +42,8 @@
 <div id="ctx-menu" class="hidden">
   <div id="ctx-add-note">✎ Add Note</div>
   <div id="ctx-unpin-all" style="display:none">⊘ Unpin All</div>
+  <div id="ctx-highlight-anoms">⬤ Highlight Anomalies</div>
+  <div id="ctx-open-table">⊞ Open in Table</div>
 </div>
 
 <!-- ── Keyboard shortcuts overlay ────────────────────────────────────────── -->
@@ -50,7 +53,7 @@
     <h3>Keyboard Shortcuts</h3>
     <table class="sc-table">
       <tr><td>?</td><td>Show / hide this panel</td></tr>
-      <tr><td>1 – 7</td><td>Switch views</td></tr>
+      <tr><td>1 – 8</td><td>Switch views</td></tr>
       <tr><td>F</td><td>Fit graph to window</td></tr>
       <tr><td>/</td><td>Focus search box</td></tr>
       <tr><td>Space</td><td>Play / pause timeline</td></tr>
@@ -115,6 +118,7 @@
     <input type="file" id="session-file-input" accept=".json" style="display:none">
     <input type="file" id="vlan-names-file-input" accept=".csv,.txt" style="display:none">
 
+    <button class="header-btn icon-btn" id="theme-toggle" title="Toggle light/dark theme">☀</button>
     <button id="upload-btn">Upload File</button>
   </header>
 
@@ -126,6 +130,8 @@
 
     <!-- Sidebar -->
     <div id="sidebar">
+      <button id="sidebar-toggle" title="Collapse sidebar">‹</button>
+      <div id="sidebar-content">
 
       <div class="sidebar-section">
         <h3>Search</h3>
@@ -173,6 +179,17 @@
         <button id="clear-filters-btn">✕ Clear all filters</button>
       </div>
 
+      <div class="sidebar-section" id="presets-section" style="display:none">
+        <div class="filter-section-header">
+          <h3>Filter Presets <span id="presets-badge" class="filter-count-badge"></span></h3>
+        </div>
+        <div id="preset-save-row">
+          <input id="preset-name-input" type="text" placeholder="Preset name…" autocomplete="off" style="display:none">
+          <button id="preset-save-btn">+ Save current</button>
+        </div>
+        <div id="preset-list"></div>
+      </div>
+
       <div class="sidebar-section" id="anomaly-section" style="display:none">
         <h3>Anomalies <span id="anomaly-count-badge" class="filter-count-badge"></span></h3>
         <div id="anomaly-list"></div>
@@ -189,6 +206,7 @@
         <div id="files-list"></div>
       </div>
 
+      </div><!-- /sidebar-content -->
     </div><!-- /sidebar -->
 
     <!-- Graph view -->
@@ -234,6 +252,7 @@
         <button class="gc-btn" id="btn-zoom-out" title="Zoom out">−</button>
         <button class="gc-btn" id="btn-zoom-fit" title="Fit to screen">⊡</button>
         <button class="gc-btn" id="btn-color-vlan" title="Color nodes by VLAN" style="display:none">⬡ VLAN</button>
+        <button class="gc-btn" id="cb-mode-btn" title="Colour-blind safe palette">◑</button>
       </div>
 
       <!-- Legend -->
@@ -268,6 +287,10 @@
       <!-- Packet Inspector -->
       <div id="packet-inspector" class="hidden">
         <div id="pkt-resize-handle"></div>
+        <div id="pkt-search-bar">
+          <input id="pkt-search" type="text" placeholder="Filter packets…" autocomplete="off">
+          <span id="pkt-search-count"></span>
+        </div>
         <div id="pkt-header">
           <span id="pkt-title">Packets</span>
           <span id="pkt-conn-label"></span>

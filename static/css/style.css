@@ -2,24 +2,51 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:        #0d1117;
-  --bg1:       #0d1117;
-  --bg2:       #161b22;
-  --bg3:       #1c2128;
-  --border:    #30363d;
-  --text:      #e6edf3;
-  --text1:     #e6edf3;
-  --text2:     #8b949e;
-  --accent:    #58a6ff;
-  --accent2:   #1f6feb;
-  --green:     #3fb950;
-  --red:       #f85149;
-  --yellow:    #d29922;
-  --purple:    #bc8cff;
-  --teal:      #39d353;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  --radius:    6px;
+  --bg:           #0d1117;
+  --bg1:          #0d1117;
+  --bg2:          #161b22;
+  --bg3:          #1c2128;
+  --bg-secondary: #161b22;
+  --border:       #30363d;
+  --fg:           #e6edf3;
+  --text:         #e6edf3;
+  --text1:        #e6edf3;
+  --text2:        #8b949e;
+  --accent:       #58a6ff;
+  --accent2:      #1f6feb;
+  --green:        #3fb950;
+  --red:          #f85149;
+  --yellow:       #d29922;
+  --purple:       #bc8cff;
+  --teal:         #39d353;
+  --font-mono:    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --radius:       6px;
 }
+
+/* ── E1: Light theme ─────────────────────────────────────────────────────── */
+body[data-theme="light"] {
+  --bg:           #ffffff;
+  --bg1:          #ffffff;
+  --bg2:          #f6f8fa;
+  --bg3:          #eaeef2;
+  --bg-secondary: #f6f8fa;
+  --border:       #d0d7de;
+  --fg:           #24292f;
+  --text:         #24292f;
+  --text1:        #24292f;
+  --text2:        #57606a;
+  --accent:       #0969da;
+  --accent2:      #0550ae;
+  --green:        #1a7f37;
+  --red:          #cf222e;
+  --yellow:       #9a6700;
+  --purple:       #8250df;
+  --teal:         #0a8271;
+}
+body[data-theme="light"] #graph-svg { background: #f0f4f8; }
+body[data-theme="light"] #edge-canvas { background: #f0f4f8; }
+body[data-theme="light"] .link { stroke: #94a3b8 !important; }
+body[data-theme="light"] #tl-abs-btn { color: var(--text2); }
 
 html, body {
   height: 100%;
@@ -169,13 +196,46 @@ header h1 span { color: var(--accent); }
 /* ── Sidebar ──────────────────────────────────────────────────────────────── */
 #sidebar {
   width: 240px;
-  min-width: 200px;
+  min-width: 240px;
   background: var(--bg2);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
   flex-shrink: 0;
+  transition: width 0.2s ease, min-width 0.2s ease;
+  position: relative;
+}
+#sidebar.collapsed {
+  width: 32px;
+  min-width: 32px;
+  overflow: hidden;
+}
+#sidebar.collapsed #sidebar-content { display: none; }
+#sidebar-toggle {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  width: 100%;
+  background: var(--bg3);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text2);
+  font-size: 14px;
+  padding: 5px 0;
+  cursor: pointer;
+  text-align: right;
+  padding-right: 8px;
+  flex-shrink: 0;
+}
+#sidebar-toggle:hover { color: var(--fg); background: var(--bg2); }
+#sidebar.collapsed #sidebar-toggle {
+  text-align: center;
+  padding-right: 0;
+  writing-mode: vertical-lr;
+  letter-spacing: 2px;
+  font-size: 12px;
+  height: 100%;
 }
 
 .sidebar-section {
@@ -2571,3 +2631,105 @@ header h1 span { color: var(--accent); }
 }
 #tl-brush-start { z-index: 3; }
 #tl-brush-end   { z-index: 4; }
+
+/* ── D2: Packet inspector search bar ────────────────────────────────────── */
+#pkt-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#pkt-search {
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font-size: 11px;
+  padding: 3px 7px;
+  outline: none;
+}
+#pkt-search:focus { border-color: var(--accent); }
+#pkt-search-count {
+  font-size: 10px;
+  color: var(--text2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── D3: Stats sparkline ──────────────────────────────────────────────────── */
+.stat-sparkline {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 5px;
+  opacity: 0.7;
+}
+
+/* ── D4: Context menu highlight mode ────────────────────────────────────── */
+.node.anom-faded { opacity: 0.1 !important; }
+#ctx-highlight-anoms.active { color: var(--accent); }
+
+/* ── E1: Theme toggle button ────────────────────────────────────────────── */
+#theme-toggle { font-size: 14px; }
+
+/* ── E2: Filter presets ─────────────────────────────────────────────────── */
+#preset-save-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+#preset-name-input {
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font-size: 11px;
+  padding: 3px 7px;
+  outline: none;
+}
+#preset-name-input:focus { border-color: var(--accent); }
+#preset-save-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#preset-save-btn:hover { background: var(--bg2); border-color: var(--accent); }
+#preset-list { display: flex; flex-direction: column; gap: 3px; }
+.preset-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.preset-chip:hover { border-color: var(--accent); color: var(--fg); }
+.preset-chip-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text2); }
+.preset-chip:hover .preset-chip-name { color: var(--fg); }
+.preset-chip-del {
+  background: none;
+  border: none;
+  color: var(--text2);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.preset-chip-del:hover { color: var(--red); }
+
+/* ── E3: Colour-blind button active state ───────────────────────────────── */
+#cb-mode-btn.active { color: var(--accent); border-color: var(--accent); }

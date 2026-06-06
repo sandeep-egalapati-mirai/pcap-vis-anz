@@ -20,6 +20,13 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Search** — Find nodes by IP address or hostname (300ms debounce); `/` keyboard shortcut focuses the search box
 - **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, TLS SNI names, anomalies, OT analysis, conversations, and captured credentials); copy buttons (⧉) next to IP, hostname, JA3 fingerprints, and SHA-256 hashes
 - **Eight views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout), OT Log (chronological OT command history), VLAN Graph (VLAN segment topology), Diff (baseline comparison), and **Dashboard** (summary cards, risk-score bar chart, protocol distribution, anomaly severity breakdown, busiest connections; key `8`)
+- **Light/dark mode** — ☀/☾ toggle in header; full CSS variable override for both themes; persisted in localStorage with FOUC prevention
+- **Collapsible sidebar** — `‹`/`›` toggle button collapses the sidebar to a 32 px icon rail; state persisted in localStorage
+- **Packet inspector search** — live-filter input above the packet table; matches any column text; shows `N / M` count badge; clears when switching connections
+- **Filter presets** — save the current protocol + host-type filter selection as a named preset; chip list in sidebar with one-click load and delete; stored in localStorage across sessions
+- **Colour-blind safe palette** — ◑ button in graph controls switches all node and edge colours to a deuteranopia-safe palette (greens → teal, reds → orange); persisted in localStorage
+- **Stats sparkline** — 48×12 px inline SVG bar chart next to the Packets stat shows packet-density distribution across the capture duration
+- **Expanded right-click menu** — "Highlight Anomalies" fades all non-anomaly nodes for immediate triage focus; "Open in Table" switches to the connection table pre-filtered to that node's IP
 - **VLAN identification** — Full 802.1Q single-tag and 802.1ad QinQ double-tag parsing: extracts VLAN ID, PCP priority bits, DEI bit, and outer/inner VIDs for QinQ; tracked per host, per connection, and aggregated in stats.
   - **VLAN Graph view** — dedicated tab showing VLANs as super-nodes with convex-hull cluster polygons; hosts clustered inside; multi-VLAN (hopping) hosts physically placed between segments; cross-VLAN traffic shown as red edges; inter-VLAN gateway nodes marked with a GW badge
   - **VLAN security analysis** — segmentation score (0–100 with Good/Fair/Poor/Critical rating), ARP spoofing detection per-VLAN, broadcast storm detection (>10% broadcast threshold), PCP priority abuse detection; 4 VLAN anomaly rules (hopping, native leak, QinQ, cross-segment OT)
