@@ -2348,7 +2348,7 @@ header h1 span { color: var(--accent); }
 /* ── Minimap ──────────────────────────────────────────────────────────────── */
 #minimap {
   position: absolute;
-  bottom: 58px;
+  top: 8px;
   right: 8px;
   background: rgba(13,17,23,0.88);
   border: 1px solid var(--border);
