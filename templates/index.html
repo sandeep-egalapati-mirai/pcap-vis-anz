@@ -40,6 +40,25 @@
 <!-- ── Node context menu ────────────────────────────────────────────────── -->
 <div id="ctx-menu" class="hidden">
   <div id="ctx-add-note">✎ Add Note</div>
+  <div id="ctx-unpin-all" style="display:none">⊘ Unpin All</div>
+</div>
+
+<!-- ── Keyboard shortcuts overlay ────────────────────────────────────────── -->
+<div id="shortcuts-modal" class="sc-overlay" style="display:none">
+  <div class="sc-box">
+    <button class="sc-close" id="shortcuts-close">&times;</button>
+    <h3>Keyboard Shortcuts</h3>
+    <table class="sc-table">
+      <tr><td>?</td><td>Show / hide this panel</td></tr>
+      <tr><td>1 – 7</td><td>Switch views</td></tr>
+      <tr><td>F</td><td>Fit graph to window</td></tr>
+      <tr><td>/</td><td>Focus search box</td></tr>
+      <tr><td>Space</td><td>Play / pause timeline</td></tr>
+      <tr><td>← / →</td><td>Step timeline</td></tr>
+      <tr><td>P</td><td>Pin / unpin selected node</td></tr>
+      <tr><td>Esc</td><td>Close panel · deselect</td></tr>
+    </table>
+  </div>
 </div>
 
 <!-- ── App shell ────────────────────────────────────────────────────────── -->
@@ -175,6 +194,7 @@
     <div id="graph-wrap">
       <canvas id="edge-canvas"></canvas>
       <svg id="graph-svg"></svg>
+      <svg id="minimap" width="150" height="100" style="display:none"></svg>
 
       <!-- Zero-results overlay -->
       <div id="no-results-msg">
@@ -236,6 +256,7 @@
             <div id="tl-minimap"></div>
           </div>
           <span id="tl-time-label">All time</span>
+          <button id="tl-abs-btn" title="Toggle absolute/relative time">abs</button>
         </div>
       </div>
 

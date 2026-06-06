@@ -301,6 +301,15 @@ let tlPlaying = false;
 let tlTimer = null;
 let tlWindowPct = 100; // full width by default
 let tlSpeed = 1;
+let tlAbsTime = true;  // true = absolute HH:MM:SS, false = relative +Ns
+let _tlMinT = 0;       // capture start time (seconds)
+let _tlSpan = 1;       // capture duration (seconds)
+
+// Graph power-user state (B1, B2, B3)
+const pinnedNodes = new Set();
+let isolatedNodeIp = null;
+let _minimapInitialized = false;
+let _minimapNodes = [];
 
 /* ── DOM refs ────────────────────────────────────────────────────────────── */
 const svg            = d3.select("#graph-svg");
@@ -333,6 +342,7 @@ const zoom = d3.zoom()
     zoomGroup.attr("transform", e.transform);
     currentZoomTransform = e.transform;
     if (useCanvasEdges) drawCanvasEdges();
+    updateMinimapViewport();
   });
 svg.call(zoom);
 
@@ -472,6 +482,11 @@ function loadGraph(data) {
   vlanSelectedNode = null;
   closePktInspector();
   selectedNode = null;
+  pinnedNodes.clear();
+  isolatedNodeIp = null;
+  _minimapInitialized = false;
+  const _mmEl = document.getElementById("minimap");
+  if (_mmEl) _mmEl.style.display = "none";
   searchTerm = "";
   searchBox.value = "";
   detailPanel.classList.remove("open");
@@ -537,6 +552,8 @@ function loadGraph(data) {
   activeVlans      = new Set((stats.vlans || []).map(String));
   if ((data.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
   activeIpVersions = new Set((stats.ip_versions || []).map(String));
+  // Restore persisted filter preferences (narrows the sets above to last-used selection)
+  loadFilterState(stats.protocols || [], stats.host_types || []);
 
   buildFilters(data);
   buildVlanSummary(data);
@@ -746,7 +763,7 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
                 : kind === "ipver" ? (item === "4" ? "IPv4" : "IPv6")
                 : item;
     div.innerHTML = `
-      <input type="checkbox" id="f-${kind}-${CSS.escape(item)}" checked>
+      <input type="checkbox" id="f-${kind}-${CSS.escape(item)}" ${activeSet.has(item) ? 'checked' : ''}>
       <div class="dot" style="background:${color}"></div>
       ${iconSpan}<label for="f-${kind}-${CSS.escape(item)}">${label}</label>
       <span class="count">${counts[item] || 0}</span>
@@ -755,6 +772,7 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
     cb.addEventListener("change", () => {
       if (cb.checked) activeSet.add(item);
       else activeSet.delete(item);
+      if (kind === "proto" || kind === "type") saveFilterState();
       updateFilterUI();
       applyFilters();
       if (currentView === "table") renderConnTable();
@@ -842,7 +860,7 @@ document.getElementById("proto-clear-btn").addEventListener("click", () => {
   activeProtos.clear();
   if (selectAll) all.forEach(p => activeProtos.add(p));
   document.querySelectorAll("#proto-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
-  updateFilterUI(); applyFilters();
+  saveFilterState(); updateFilterUI(); applyFilters();
   if (currentView === "table") renderConnTable();
 });
 document.getElementById("type-clear-btn").addEventListener("click", () => {
@@ -852,7 +870,7 @@ document.getElementById("type-clear-btn").addEventListener("click", () => {
   activeTypes.clear();
   if (selectAll) all.forEach(t => activeTypes.add(t));
   document.querySelectorAll("#type-filters input[type=checkbox]").forEach(cb => { cb.checked = selectAll; });
-  updateFilterUI(); applyFilters();
+  saveFilterState(); updateFilterUI(); applyFilters();
   if (currentView === "table") renderConnTable();
 });
 document.getElementById("vlan-clear-btn").addEventListener("click", () => {
@@ -908,6 +926,16 @@ document.getElementById("no-results-clear").addEventListener("click", () => {
 function applyFilters(skipFit) {
   if (!graphData) return;
 
+  // Compute isolate-mode neighbour set
+  let isolateSet = null;
+  if (isolatedNodeIp) {
+    isolateSet = new Set([isolatedNodeIp]);
+    (graphData.edges || []).forEach(e => {
+      if (e.source === isolatedNodeIp) isolateSet.add(e.target);
+      if (e.target === isolatedNodeIp) isolateSet.add(e.source);
+    });
+  }
+
   const visibleNodeIds = new Set();
   const allVlans = (graphData.stats.vlans || []).map(String);
   if ((graphData.nodes || []).some(n => n.vlan_untagged)) allVlans.push("untagged");
@@ -915,17 +943,21 @@ function applyFilters(skipFit) {
   const allIpVers = (graphData.stats.ip_versions || []).map(String);
   const ipVerFilterActive = allIpVers.length > 1 && activeIpVersions.size < allIpVers.length;
   nodesGroup.selectAll(".node").each(function(d) {
-    const vlanOk = !vlanFilterActive ||
+    const vlanOk    = !vlanFilterActive ||
       (d.vlans || []).some(v => activeVlans.has(String(v))) ||
       (d.vlan_untagged && activeVlans.has("untagged"));
-    const ipVerOk = !ipVerFilterActive || activeIpVersions.has(String(d.ip_version || 4));
-    const tlOk    = !_tlVisibleIps || _tlVisibleIps.has(d.ip);
-    const visible = activeTypes.has(d.host_type) && vlanOk && ipVerOk && tlOk &&
+    const ipVerOk   = !ipVerFilterActive || activeIpVersions.has(String(d.ip_version || 4));
+    const tlOk      = !_tlVisibleIps || _tlVisibleIps.has(d.ip);
+    const isolateOk = !isolateSet || isolateSet.has(d.ip);
+    const visible   = activeTypes.has(d.host_type) && vlanOk && ipVerOk && tlOk && isolateOk &&
       (!searchTerm || d.ip.includes(searchTerm) ||
        (d.hostname && d.hostname.toLowerCase().includes(searchTerm)));
     d3.select(this).classed("faded", !visible);
     if (visible) visibleNodeIds.add(d.id);
   });
+
+  // Apply isolated ring to the focus node
+  nodesGroup.selectAll(".node").classed("isolated", d => d.ip === isolatedNodeIp);
 
   linksGroup.selectAll(".link").each(function(d) {
     const protoOk = !(d.protocols && d.protocols.length) ||
@@ -936,14 +968,23 @@ function applyFilters(skipFit) {
     d3.select(this).classed("faded", !visible);
   });
 
+  // Sync edge-label faded state with their links
+  linksGroup.selectAll(".edge-label").each(function(d) {
+    const sid = typeof d.source === "object" ? d.source.id : d.source;
+    const tid = typeof d.target === "object" ? d.target.id : d.target;
+    d3.select(this).classed("faded", !visibleNodeIds.has(sid) || !visibleNodeIds.has(tid));
+  });
+
   if (useCanvasEdges) drawCanvasEdges();
 
-  // Zero-results feedback — message distinguishes timeline filter from other filters
+  // Zero-results feedback — message distinguishes filter type
   const noResults = document.getElementById("no-results-msg");
   if (noResults) noResults.classList.toggle("visible", visibleNodeIds.size === 0 && !!graphData);
   const noResultsText = document.getElementById("no-results-text");
   if (noResultsText) {
-    noResultsText.textContent = (_tlVisibleIps !== null && visibleNodeIds.size === 0)
+    noResultsText.textContent = (isolatedNodeIp && visibleNodeIds.size === 0)
+      ? "No neighbours found"
+      : (_tlVisibleIps !== null && visibleNodeIds.size === 0)
       ? "No activity in this time window"
       : "No hosts match the current filters";
   }
@@ -1240,7 +1281,7 @@ function buildFilesSidebar(files) {
         <button class="file-dl-btn" onclick="downloadFile('${escHtml(f.sha256)}','${escHtml(f.filename || 'file')}')" title="Download captured file">⬇</button>
       </div>
       <div class="file-route">${escHtml(f.src)} → ${escHtml(f.dst)}</div>
-      <div class="file-hash" title="SHA-256">${escHtml(f.sha256)}</div>`;
+      <div class="file-hash" title="SHA-256">${escHtml(f.sha256 || '')}${f.sha256 ? ` <button class="copy-btn" onclick="copyText('${escHtml(f.sha256)}')" title="Copy SHA-256">⧉</button>` : ''}</div>`;
     list.appendChild(card);
   });
 }
@@ -1471,6 +1512,25 @@ function renderGraph(data) {
     linkSel.style("display", "none");
   }
 
+  // Edge packet-count labels (SVG mode only; hover to reveal)
+  if (!useCanvasEdges) {
+    linksGroup.selectAll(".link-labels").remove();
+    linksGroup.append("g").attr("class", "link-labels")
+      .selectAll("text")
+      .data(links)
+      .join("text")
+      .attr("class", "edge-label")
+      .text(d => d.packet_count || "");
+
+    linkSel
+      .on("mouseenter.label", (event, d) => {
+        linksGroup.selectAll(".edge-label").filter(ld => ld === d).style("opacity", 1);
+      })
+      .on("mouseleave.label", (event, d) => {
+        linksGroup.selectAll(".edge-label").filter(ld => ld === d).style("opacity", null);
+      });
+  }
+
   // ── Nodes ──
   const nodeSel = nodesGroup.selectAll(".node")
     .data(nodes)
@@ -1484,7 +1544,11 @@ function renderGraph(data) {
       .on("drag", (event, d) => { d.fx = event.x; d.fy = event.y; })
       .on("end", (event, d) => {
         if (!event.active) simulation.alphaTarget(0);
-        d.fx = null; d.fy = null;
+        if (pinnedNodes.has(d.ip)) {
+          d.fx = event.x; d.fy = event.y; // drag updates the pin position
+        } else {
+          d.fx = null; d.fy = null;
+        }
       })
     )
     .on("mouseenter", (event, d) => {
@@ -1518,6 +1582,11 @@ function renderGraph(data) {
       event.preventDefault();
       event.stopPropagation();
       showCtxMenu(event, d);
+    })
+    .on("dblclick", (event, d) => {
+      event.stopPropagation();
+      isolatedNodeIp = (isolatedNodeIp === d.ip) ? null : d.ip;
+      applyFilters();
     });
 
   // Node decorations: anomaly ring, cred icon, circle, host glyph, labels, risk badge
@@ -1547,12 +1616,21 @@ function renderGraph(data) {
         .attr("y1", d => d.source.y)
         .attr("x2", d => d.target.x)
         .attr("y2", d => d.target.y);
+      linksGroup.selectAll(".edge-label")
+        .attr("x", d => ((d.source.x || 0) + (d.target.x || 0)) / 2)
+        .attr("y", d => ((d.source.y || 0) + (d.target.y || 0)) / 2);
     }
     nodeSel.attr("transform", d => `translate(${d.x},${d.y})`);
+    if (_minimapInitialized) updateMinimap();
   });
 
   simulation.on("end", () => zoomFit());
   setTimeout(() => zoomFit(), 2500);
+
+  // Restore pin visual for nodes that were pinned before a filter cycle
+  updatePinVisuals();
+
+  initMinimap(nodes);
 }
 
 function buildSimulation(nodes, links, cx, cy, layout) {
@@ -1819,9 +1897,12 @@ function hideTooltip() {
 /* ── Detail panel ─────────────────────────────────────────────────────────── */
 function showDetailPanel(d) {
   detailPanel.classList.add("open");
-  document.getElementById("dh-ip").textContent = d.ip;
-  document.getElementById("dh-hostname").textContent =
-    d.hostname || (d.dns_names && d.dns_names[0]) || "";
+  document.getElementById("dh-ip").innerHTML =
+    escHtml(d.ip) + ` <button class="copy-btn" onclick="copyText('${escHtml(d.ip)}')" title="Copy IP">⧉</button>`;
+  const _hostStr = d.hostname || (d.dns_names && d.dns_names[0]) || "";
+  document.getElementById("dh-hostname").innerHTML = _hostStr
+    ? escHtml(_hostStr) + ` <button class="copy-btn" onclick="copyText('${escHtml(_hostStr)}')" title="Copy hostname">⧉</button>`
+    : "";
 
   const body = document.getElementById("detail-body");
   const rows = [];
@@ -1915,6 +1996,7 @@ function showDetailPanel(d) {
       const threat = knownBad[j];
       rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:10px;margin-bottom:3px">
         <span style="color:${threat ? 'var(--red)' : 'var(--text2)'}">${escHtml(j)}</span>
+        <button class="copy-btn" onclick="copyText('${escHtml(j)}')" title="Copy JA3">⧉</button>
         ${threat ? `<span style="color:var(--red);margin-left:6px">⚠ ${escHtml(threat)}</span>` : ""}
       </div>`);
     });
@@ -6326,6 +6408,8 @@ function showCtxMenu(event, d) {
   ctxTarget = d;
   ctxMenu.style.left = event.clientX + "px";
   ctxMenu.style.top  = event.clientY + "px";
+  const unpinBtn = document.getElementById("ctx-unpin-all");
+  if (unpinBtn) unpinBtn.style.display = pinnedNodes.size > 0 ? "" : "none";
   ctxMenu.classList.remove("hidden");
 }
 
@@ -6374,6 +6458,9 @@ function buildTimeline(data) {
     tlBar.classList.add("hidden");
     return;
   }
+
+  _tlMinT = minT;
+  _tlSpan = span;
 
   tlBar.classList.remove("hidden");
 
@@ -6454,7 +6541,9 @@ function buildTimeline(data) {
         const center = minT + pct * span;
         const tStart = center - windowSize / 2;
         const tEnd   = center + windowSize / 2;
-        timeLabel.textContent = center.toFixed(2) + "s";
+        timeLabel.textContent = tlAbsTime
+          ? new Date(center * 1000).toISOString().substr(11, 8)
+          : `+${(center - minT).toFixed(1)}s`;
         applyTimelineFilter(tStart, tEnd);
       }
     });
@@ -6524,7 +6613,59 @@ document.getElementById("tl-speed").addEventListener("change", (e) => {
 // Timeline keyboard shortcuts (Space = play/pause, ←/→ = step)
 document.addEventListener("keydown", (e) => {
   const tag = document.activeElement && document.activeElement.tagName;
+
+  // Escape: close shortcuts modal, then fall through to other handlers
+  if (e.key === "Escape") {
+    const sc = document.getElementById("shortcuts-modal");
+    if (sc && sc.style.display !== "none") { sc.style.display = "none"; return; }
+  }
+
+  // ? toggles shortcuts modal (skip when typing in an input)
+  if (e.key === "?" && tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") {
+    const sc = document.getElementById("shortcuts-modal");
+    if (sc) sc.style.display = sc.style.display === "none" ? "flex" : "none";
+    return;
+  }
+
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+  // / → focus search box
+  if (e.key === "/" && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    const sb = document.getElementById("search-box");
+    if (sb) { sb.focus(); sb.select(); }
+    return;
+  }
+
+  // 1–7 → switch views
+  const VIEW_MAP = { "1": "graph", "2": "table", "3": "dns", "4": "ot", "5": "otlog", "6": "vlangraph", "7": "diff" };
+  if (VIEW_MAP[e.key] && graphData) {
+    const btn = document.querySelector(`.vt-btn[data-view="${VIEW_MAP[e.key]}"]`);
+    if (btn && !btn.classList.contains("hidden")) { setView(VIEW_MAP[e.key]); return; }
+  }
+
+  // F → fit graph to screen
+  if ((e.key === "f" || e.key === "F") && currentView === "graph" && graphData) {
+    zoomFit(); return;
+  }
+
+  // P → pin / unpin selected node
+  if ((e.key === "p" || e.key === "P") && currentView === "graph") {
+    if (!selectedNode || !simulation) return;
+    const d = selectedNode;
+    if (pinnedNodes.has(d.ip)) {
+      pinnedNodes.delete(d.ip);
+      d.fx = d.fy = null;
+    } else {
+      pinnedNodes.add(d.ip);
+      d.fx = d.x; d.fy = d.y;
+    }
+    updatePinVisuals();
+    simulation.alpha(0.1).restart();
+    return;
+  }
+
+  // Space / Arrow keys → timeline controls
   const tlBar = document.getElementById("timeline-bar");
   if (!tlBar || tlBar.classList.contains("hidden")) return;
   const slider = document.getElementById("tl-slider");
@@ -6541,3 +6682,171 @@ document.addEventListener("keydown", (e) => {
     slider.dispatchEvent(new Event("input"));
   }
 });
+
+/* ── A2: Copy to clipboard ───────────────────────────────────────────────── */
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(
+    () => showToast("Copied", "info", 1500),
+    () => showToast("Copy failed", "error", 2000)
+  );
+}
+
+/* ── A3: Persistent filter state ────────────────────────────────────────── */
+function saveFilterState() {
+  try {
+    localStorage.setItem("pv_activeProtos", JSON.stringify([...activeProtos]));
+    localStorage.setItem("pv_activeTypes",  JSON.stringify([...activeTypes]));
+  } catch(_) {}
+}
+
+function loadFilterState(availProtos, availTypes) {
+  try {
+    const sp = localStorage.getItem("pv_activeProtos");
+    const st = localStorage.getItem("pv_activeTypes");
+    if (sp) {
+      const saved = new Set(JSON.parse(sp));
+      const filtered = availProtos.filter(p => saved.has(p));
+      if (filtered.length > 0) activeProtos = new Set(filtered);
+    }
+    if (st) {
+      const saved = new Set(JSON.parse(st));
+      const filtered = availTypes.filter(t => saved.has(t));
+      if (filtered.length > 0) activeTypes = new Set(filtered);
+    }
+  } catch(_) {}
+}
+
+/* ── A5: Timeline abs/rel toggle ────────────────────────────────────────── */
+document.getElementById("tl-abs-btn").addEventListener("click", () => {
+  tlAbsTime = !tlAbsTime;
+  const btn = document.getElementById("tl-abs-btn");
+  if (btn) {
+    btn.textContent = tlAbsTime ? "abs" : "rel";
+    btn.classList.toggle("active", !tlAbsTime);
+    btn.title = tlAbsTime ? "Show relative time" : "Show absolute time (UTC)";
+  }
+  // Re-dispatch the slider input to reformat the label
+  const slider = document.getElementById("tl-slider");
+  if (slider) slider.dispatchEvent(new Event("input"));
+});
+
+/* ── B1: Node pinning ───────────────────────────────────────────────────── */
+function updatePinVisuals() {
+  nodesGroup.selectAll(".node").classed("pinned", d => pinnedNodes.has(d.ip));
+}
+
+document.getElementById("ctx-unpin-all").addEventListener("click", () => {
+  ctxMenu.classList.add("hidden");
+  pinnedNodes.clear();
+  nodesGroup.selectAll(".node").each(function(d) { d.fx = d.fy = null; });
+  updatePinVisuals();
+  if (simulation) simulation.alpha(0.3).restart();
+});
+
+/* ── A1: Keyboard shortcuts overlay close button ────────────────────────── */
+document.getElementById("shortcuts-close").addEventListener("click", () => {
+  document.getElementById("shortcuts-modal").style.display = "none";
+});
+document.getElementById("shortcuts-modal").addEventListener("click", (e) => {
+  if (e.target === document.getElementById("shortcuts-modal")) {
+    document.getElementById("shortcuts-modal").style.display = "none";
+  }
+});
+
+/* ── B3: Minimap ────────────────────────────────────────────────────────── */
+const MM_W = 150, MM_H = 100;
+
+function getMmBounds() {
+  if (!_minimapNodes || _minimapNodes.length === 0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of _minimapNodes) {
+    if (n.x == null || n.y == null) continue;
+    if (n.x < minX) minX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.x > maxX) maxX = n.x;
+    if (n.y > maxY) maxY = n.y;
+  }
+  if (!isFinite(minX)) return null;
+  const pad = 40;
+  return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
+}
+
+function initMinimap(nodes) {
+  const mm = document.getElementById("minimap");
+  if (!mm || nodes.length < 2) return;
+
+  _minimapNodes = nodes;
+  _minimapInitialized = true;
+  mm.style.display = "";
+
+  const mmSel = d3.select(mm);
+  mmSel.selectAll("*").remove();
+
+  mmSel.append("g").attr("class", "mm-dots")
+    .selectAll("circle")
+    .data(nodes)
+    .join("circle")
+    .attr("class", "mm-node")
+    .attr("r", 2)
+    .attr("fill", d => hostColor(d.host_type));
+
+  mmSel.append("rect").attr("class", "mm-viewport")
+    .attr("x", 0).attr("y", 0)
+    .attr("width", MM_W).attr("height", MM_H);
+
+  // Drag on minimap pans the main view
+  const mmDrag = d3.drag().on("drag", (event) => {
+    const bounds = getMmBounds();
+    if (!bounds) return;
+    const bw = bounds.maxX - bounds.minX, bh = bounds.maxY - bounds.minY;
+    const cx = bounds.minX + (event.x / MM_W) * bw;
+    const cy = bounds.minY + (event.y / MM_H) * bh;
+    const svgEl = svg.node();
+    const w = svgEl.clientWidth, h = svgEl.clientHeight;
+    const k = currentZoomTransform.k;
+    svg.call(zoom.transform, d3.zoomIdentity.translate(w / 2 - k * cx, h / 2 - k * cy).scale(k));
+  });
+  d3.select(mm).call(mmDrag);
+
+  updateMinimap();
+}
+
+function updateMinimap() {
+  if (!_minimapInitialized) return;
+  const mm = document.getElementById("minimap");
+  if (!mm) return;
+  const bounds = getMmBounds();
+  if (!bounds) return;
+  const bw = Math.max(1, bounds.maxX - bounds.minX);
+  const bh = Math.max(1, bounds.maxY - bounds.minY);
+  d3.select(mm).selectAll(".mm-node")
+    .attr("cx", d => ((d.x || 0) - bounds.minX) / bw * MM_W)
+    .attr("cy", d => ((d.y || 0) - bounds.minY) / bh * MM_H);
+  updateMinimapViewport(bounds, bw, bh);
+}
+
+function updateMinimapViewport(bounds, bw, bh) {
+  if (!_minimapInitialized) return;
+  const mm = document.getElementById("minimap");
+  if (!mm) return;
+  if (!bounds) {
+    bounds = getMmBounds();
+    if (!bounds) return;
+    bw = Math.max(1, bounds.maxX - bounds.minX);
+    bh = Math.max(1, bounds.maxY - bounds.minY);
+  }
+  const svgEl = svg.node();
+  const w = svgEl.clientWidth, h = svgEl.clientHeight;
+  const t = currentZoomTransform;
+  const vpMinX = (-t.x) / t.k;
+  const vpMinY = (-t.y) / t.k;
+  const vpMaxX = (-t.x + w) / t.k;
+  const vpMaxY = (-t.y + h) / t.k;
+  const rx = (vpMinX - bounds.minX) / bw * MM_W;
+  const ry = (vpMinY - bounds.minY) / bh * MM_H;
+  const rw = (vpMaxX - vpMinX) / bw * MM_W;
+  const rh = (vpMaxY - vpMinY) / bh * MM_H;
+  d3.select(mm).select(".mm-viewport")
+    .attr("x", rx).attr("y", ry)
+    .attr("width", rw).attr("height", rh);
+}
