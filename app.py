@@ -1229,7 +1229,8 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
         src_dst_ips[a].add(b)
         src_dst_ips[b].add(a)
         for p in conn["dst_ports"]:
-            src_dst_ports[a].add(p)  # only attribute dst_ports to the initiating side
+            src_dst_ports[a].add(p)
+            src_dst_ports[b].add(p)
 
     for ip, dst_ips in src_dst_ips.items():
         if len(dst_ips) > 5 and len(src_dst_ports.get(ip, set())) > 15:

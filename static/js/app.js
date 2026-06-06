@@ -1161,7 +1161,7 @@ function buildCredentialsSidebar(creds) {
           <span class="cred-type" style="color:var(--text2);font-size:10px">${escHtml(c.type || "")}</span>
           <span style="float:right;color:var(--text2);font-size:10px">${ts}</span>
         </div>
-        <div class="cred-route" style="margin-top:2px">${escHtml(c.src)} → ${escHtml(c.dst)}${c.dport ? ':' + c.dport : ''}</div>
+        <div class="cred-route" style="margin-top:2px">${escHtml(c.src)} → ${escHtml(c.dst)}${c.dport ? ':' + escHtml(String(c.dport)) : ''}</div>
         <div style="margin-top:3px">
           <span class="cred-user">${escHtml(c.username || "(no user)")}</span>
           <span style="color:var(--text2);margin:0 4px">/</span>
@@ -1936,7 +1936,7 @@ function showDetailPanel(d) {
           <span style="color:var(--text2);font-size:10px">${escHtml(c.type||'')}</span>
           <span style="float:right;color:var(--text2);font-size:10px">${escHtml(ts)}</span>
         </div>
-        <div class="cred-route" style="margin-top:2px">${escHtml(c.src||'')} → ${escHtml(c.dst||'')}${c.dport ? ':'+c.dport : ''}</div>
+        <div class="cred-route" style="margin-top:2px">${escHtml(c.src||'')} → ${escHtml(c.dst||'')}${c.dport ? ':'+escHtml(String(c.dport)) : ''}</div>
         <div style="margin-top:3px">
           <span class="cred-user">${escHtml(c.username || '(no user)')}</span>
           <span style="color:var(--text2);margin:0 4px">/</span>
@@ -4850,14 +4850,15 @@ function renderVlanGraph(data) {
     detailPanel.classList.remove("open");
   });
 
-  // Layout switcher
+  // Layout switcher — use onclick (not addEventListener) to avoid accumulating
+  // handlers on the same buttons across successive PCAP loads
   document.querySelectorAll("[data-vlan-layout]").forEach(btn => {
-    btn.addEventListener("click", function() {
+    btn.onclick = function() {
       document.querySelectorAll("[data-vlan-layout]").forEach(b => b.classList.remove("active"));
       this.classList.add("active");
       _vlanLayout = this.dataset.vlanLayout;
       applyVlanLayout();
-    });
+    };
   });
 
   function applyVlanLayout() {
