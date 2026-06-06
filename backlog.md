@@ -38,23 +38,23 @@
 ## Navigation & Discoverability
 
 - [ ] Collapsible sidebar — toggle arrow to collapse the 240 px sidebar to a narrow icon rail
-- [ ] Keyboard shortcuts — F = fit graph, 1–4 = switch views, / = focus search, Escape = close panels; `?` overlay lists all shortcuts
-- [ ] Expanded right-click context menu — Isolate node, Copy IP, Highlight anomalies, Open in Table view
+- [x] Keyboard shortcuts — F = fit graph, 1–7 = switch views, / = focus search, Esc = close; `?` overlay lists all shortcuts
+- [ ] Expanded right-click context menu — Highlight anomalies, Open in Table view
 - [ ] Breadcrumb / back button when jumping from anomaly sidebar → node → packet inspector
 - [ ] View-specific empty states for DNS Map and OT Map before upload (illustrated placeholder)
 
 ## Graph View
 
-- [ ] Node pinning toggle — push-pin icon to permanently lock position (d.fx / d.fy)
-- [ ] Minimap — overview thumbnail (bottom-left) with viewport rectangle; essential for large captures
-- [ ] Isolate mode — show only selected node + direct neighbours; second click restores
-- [ ] Edge label on hover — inline packet count label on hovered edge (more glanceable than tooltip)
+- [x] Node pinning — select a node and press P to lock position; dashed yellow ring; drag updates pin; Unpin All in right-click menu
+- [x] Minimap — 150×100 overview thumbnail (bottom-right) with viewport rectangle; drag to pan; live sync with simulation
+- [x] Isolate mode — double-click a node to show only it + direct neighbours; double-click again to restore
+- [x] Edge label on hover — inline packet count label at edge midpoint; hidden in canvas mode (>150 nodes)
 - [ ] Cluster expand / collapse — clicking cluster centre collapses all nodes of that type into one summary node
 
 ## Packet Inspector & Detail Panel
 
 - [ ] Protocol-coloured hex dump — byte regions highlighted by layer (Ethernet / IP / TCP / payload)
-- [ ] Copy buttons next to IP addresses, hex strings, and field values in detail panel
+- [x] Copy buttons next to IP addresses, hostnames, JA3 fingerprints, and SHA-256 hashes in detail panel and files sidebar
 - [ ] Floating inspector mode — detach packet inspector into a resizable floating panel
 - [ ] Search within packet list — filter input above packet table to narrow by IP, protocol, or info string
 
@@ -62,11 +62,11 @@
 
 - [ ] Brush selection on minimap — click-drag to select a time window (Wireshark mental model)
 - [x] Playback speed control — 0.5×, 1×, 2×, 5× selector next to the play button
-- [ ] Timestamp format toggle — switch between absolute (HH:MM:SS) and relative (seconds from first packet)
+- [x] Timestamp format toggle — "abs" button switches between UTC HH:MM:SS and relative +Ns format
 
 ## Polish & Accessibility
 
-- [ ] Persistent filter state — save last-used filter configuration in localStorage
+- [x] Persistent filter state — last-used protocol/host-type selections saved to localStorage; restored on next load
 - [ ] Light / dark mode toggle (~30 CSS variable overrides)
 - [ ] Stats bar sparklines — tiny inline bar charts next to Hosts / Connections / Packets showing distribution
 - [ ] Colour-blind safe palette option — deuteranopia-safe scheme (blues / oranges + pattern fills) toggle
