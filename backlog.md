@@ -235,3 +235,7 @@ Items surfaced in the 2026-05-17 robustness review (`REVIEW.md`) that were not a
 - [x] **L2** — `Content-Length` response header set as `int`; changed to `str(len(...))` for correctness.
 - [x] **L3** — `merge_results` node output dict omitted `host_type_hints` and `has_s7_download` that single-file `analyze_pcap` includes. Added to the output dict for schema parity.
 - [x] **L5** — Dead code: `data._nodeMap = {}` was assigned in `renderGraph` but never read anywhere. Removed.
+
+## Polish (2026-06-07, feature/vlan-node-icons)
+
+- [x] VLAN Graph host nodes now show the same host-type emoji icons as the main Graph view — `hostIcon(d.host_type)` appended as `<text class="node-icon">` after the host circle; reuses the existing `hostIcon()` function and `.node-icon` CSS (emoji font stack); `text-anchor: middle` and `pointer-events: none` set for correct centering and click-through.

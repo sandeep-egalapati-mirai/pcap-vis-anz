@@ -5385,6 +5385,14 @@ function renderVlanGraph(data) {
     .attr("stroke", d => d3.color(hostColor(d.host_type)).brighter(0.4))
     .attr("stroke-width", d => d.ip_version === 6 ? 1.5 : 0.8)
     .attr("stroke-dasharray", d => d.ip_version === 6 ? "2,1.5" : null);
+  // Host-type icon glyph — same emoji as the main graph (reuses hostIcon() + .node-icon CSS)
+  hostCircles.append("text")
+    .attr("class", "node-icon")
+    .attr("dy", "0.35em")
+    .attr("text-anchor", "middle")
+    .attr("font-size", "9px")
+    .attr("pointer-events", "none")
+    .text(d => hostIcon(d.host_type));
   // IP / hostname label below the dot
   hostCircles.append("text")
     .attr("class", "ip-label")
