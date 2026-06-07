@@ -105,7 +105,7 @@ def test_upload_empty_file_returns_error(client):
 def test_upload_too_many_files_returns_400(client):
     # Werkzeug test client accepts a list value per key for multi-file fields
     data = {
-        "file": [(io.BytesIO(_PCAP_HEADER), f"test{i}.pcap") for i in range(11)]
+        "file": [(io.BytesIO(_PCAP_HEADER), f"test{i}.pcap") for i in range(101)]
     }
     resp = client.post(
         "/upload",
@@ -118,9 +118,9 @@ def test_upload_too_many_files_returns_400(client):
     assert "Too many" in body["error"]
 
 
-def test_upload_ten_files_accepted(client):
+def test_upload_max_files_accepted(client):
     data = {
-        "file": [(io.BytesIO(_PCAP_HEADER), f"test{i}.pcap") for i in range(10)]
+        "file": [(io.BytesIO(_PCAP_HEADER), f"test{i}.pcap") for i in range(100)]
     }
     resp = client.post(
         "/upload",

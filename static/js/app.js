@@ -618,6 +618,11 @@ function startLoadingProgress() {
 async function uploadFiles(files) {
   // Copy to array immediately — closeModal() clears the live FileList via fileInput.value=""
   const fileArray = Array.from(files);
+  const MAX_UPLOAD_FILES = 100; // keep in sync with app.py MAX_UPLOAD_FILES
+  if (fileArray.length > MAX_UPLOAD_FILES) {
+    modalError.textContent = `Too many files (${fileArray.length}). Upload at most ${MAX_UPLOAD_FILES} at a time.`;
+    return;
+  }
   const allowed = ["pcap","pcapng","cap"];
   for (const file of fileArray) {
     const ext = file.name.split(".").pop().toLowerCase();

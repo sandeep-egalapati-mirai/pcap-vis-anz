@@ -48,7 +48,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Session save / load** — Export full analysis to JSON and reload without re-uploading the capture file
 - **Node annotations** — Right-click any node to attach a persistent note (stored in browser localStorage)
 - **Anomaly detection** — 32 detection rules across general network, OT/ICS, IoT, and VLAN threat categories
-- **Large capture support** — Streams up to 1,000,000 packets without loading into memory (up to 1 GB upload); multi-file uploads processed in parallel
+- **Large capture support** — Streams up to 1,000,000 packets without loading into memory (up to 100 files · 1 GB total per upload); multi-file uploads processed in parallel
 
 ## Anomaly Detection
 
@@ -270,7 +270,8 @@ The suite contains 271 tests across 11 files covering protocol parsers, anomaly 
 
 | Setting | Default | Description |
 |---|---|---|
-| `MAX_CONTENT_LENGTH` | 1 GB | Maximum upload file size |
+| `MAX_UPLOAD_FILES` | 100 | Maximum files per upload request |
+| `MAX_CONTENT_LENGTH` | 1 GB | Maximum total upload size |
 | `MAX_PACKETS` | 1,000,000 | Packets processed per file |
 | `MAX_HOSTS` | 50,000 | Max unique hosts tracked per file |
 | `MAX_STORED_PER_CONN` | 50 | Packets stored per connection for the inspector |

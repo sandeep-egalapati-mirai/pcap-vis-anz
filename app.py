@@ -27,6 +27,7 @@ except Exception:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
+MAX_UPLOAD_FILES = 100  # max files per /upload request (checked in handler + frontend)
 app.secret_key = os.environ.get("PCAPVIS_SECRET_KEY", os.urandom(32))
 Compress(app)
 
@@ -3427,8 +3428,8 @@ def upload():
         return jsonify({"error": "No file provided"}), 400
 
     files = [f for f in files if f.filename]
-    if len(files) > 10:
-        return jsonify({"error": "Too many files. Upload at most 10 at a time."}), 400
+    if len(files) > MAX_UPLOAD_FILES:
+        return jsonify({"error": f"Too many files. Upload at most {MAX_UPLOAD_FILES} at a time."}), 400
 
     results = []
     tmp_paths = []
