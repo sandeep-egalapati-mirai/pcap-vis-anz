@@ -29,13 +29,31 @@ def _conn(dst_ports=None, packet_count=1, bytes_total=0):
 
 
 def _pkt(src, dst, dport=None, sport=None, t=None, hex_data=""):
-    return {
+    pkt = {
         "src": src,
         "dst": dst,
         "dport": dport,
         "sport": sport,
         "time": t if t is not None else time.time(),
-        "hex": hex_data,
+        "hex": hex_data or "00",  # "hex" is always present in real stored packets
+    }
+    if hex_data:
+        pkt["payload_hex"] = hex_data  # only present when transport payload exists
+    return pkt
+
+
+def _host_full(is_private=True, host_type="Windows Host", macs=None, vlan_ids=None, vlan_untagged=False, bytes_sent=0):
+    """Return a host dict with all fields needed by analyze_anomalies."""
+    return {
+        "bytes_sent": bytes_sent,
+        "bytes_recv": 0,
+        "host_type": host_type,
+        "packet_count": 0,
+        "is_private": is_private,
+        "macs": set(macs or []),
+        "mac": (list(macs)[0] if macs else ""),
+        "vlan_ids": set(vlan_ids or []),
+        "vlan_untagged": vlan_untagged,
     }
 
 
@@ -432,3 +450,92 @@ def test_dns_tunneling_not_triggered_too_few_queries():
     anomalies = analyze_anomalies(hosts, {}, {})
     types = {a["type"] for a in anomalies}
     assert "dns_tunneling" not in types
+
+
+# ── Bug-sweep regression tests (B1, B2, B3, B10) ──────────────────────────────
+
+def test_arp_spoofing_fires_for_multiple_macs():
+    """B1: ARP-spoofing detector must fire when two MACs claim the same IP on a VLAN."""
+    hosts = {
+        "192.168.10.1": _host_full(
+            macs={"aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"},
+            vlan_ids={10},
+        ),
+        "192.168.10.2": _host_full(macs={"aa:bb:cc:00:00:01"}, vlan_ids={10}),
+    }
+    anomalies = analyze_anomalies(hosts, {}, {})
+    types = _anomaly_types(anomalies)
+    assert "arp_spoofing" in types, "Expected arp_spoofing with two MACs on same VLAN"
+    a = next(x for x in anomalies if x["type"] == "arp_spoofing")
+    assert a["src"] == "192.168.10.1"
+
+
+def test_arp_spoofing_does_not_fire_single_mac():
+    """B1: ARP-spoofing must not fire when a host has only one MAC."""
+    hosts = {
+        "192.168.10.1": _host_full(macs={"aa:bb:cc:dd:ee:ff"}, vlan_ids={10}),
+    }
+    anomalies = analyze_anomalies(hosts, {}, {})
+    assert "arp_spoofing" not in _anomaly_types(anomalies)
+
+
+def test_cleartext_requires_payload_hex():
+    """B2: cleartext_credentials must NOT fire when packet has no payload (no payload_hex)."""
+    hosts = {"10.0.0.1": _host(), "10.0.0.2": _host()}
+    connections = {("10.0.0.1", "10.0.0.2"): _conn(dst_ports=[21])}
+    # Packet has "hex" (raw bytes always set) but no "payload_hex"
+    no_payload_pkt = {
+        "src": "10.0.0.1", "dst": "10.0.0.2",
+        "dport": 21, "sport": 12345,
+        "time": 1000.0,
+        "hex": "deadbeef",  # raw bytes present but no transport payload
+    }
+    packet_store = {("10.0.0.1", "10.0.0.2"): [no_payload_pkt]}
+    anomalies = analyze_anomalies(hosts, connections, packet_store)
+    assert "cleartext_credentials" not in _anomaly_types(anomalies), (
+        "cleartext_credentials must not fire without payload_hex"
+    )
+
+
+def test_cleartext_fires_with_payload_hex():
+    """B2: cleartext_credentials MUST fire when payload_hex is present."""
+    hosts = {"10.0.0.1": _host(), "10.0.0.2": _host()}
+    connections = {("10.0.0.1", "10.0.0.2"): _conn(dst_ports=[21])}
+    with_payload_pkt = {
+        "src": "10.0.0.1", "dst": "10.0.0.2",
+        "dport": 21, "sport": 12345,
+        "time": 1000.0,
+        "hex": "deadbeef",
+        "payload_hex": "deadbeef",  # payload present
+    }
+    packet_store = {("10.0.0.1", "10.0.0.2"): [with_payload_pkt]}
+    anomalies = analyze_anomalies(hosts, connections, packet_store)
+    assert "cleartext_credentials" in _anomaly_types(anomalies)
+
+
+def test_password_reuse_dedup_keeps_distinct():
+    """B3: dedup must NOT collapse two distinct password_reuse anomalies into one."""
+    # Two different passwords each reused across 2+ services → two distinct anomalies
+    credentials = [
+        {"password": "hunter2", "protocol": "FTP",   "dst": "10.0.0.2"},
+        {"password": "hunter2", "protocol": "Telnet", "dst": "10.0.0.3"},
+        {"password": "letmein", "protocol": "SSH",   "dst": "10.0.0.4"},
+        {"password": "letmein", "protocol": "RDP",   "dst": "10.0.0.5"},
+    ]
+    anomalies = analyze_anomalies({}, {}, {}, credentials=credentials)
+    reuse = [a for a in anomalies if a["type"] == "password_reuse"]
+    assert len(reuse) == 2, f"Expected 2 distinct password_reuse anomalies, got {len(reuse)}"
+
+
+def test_beaconing_ignores_subsecond_intervals():
+    """B10: beaconing must NOT fire when mean interval < 1 second (bulk transfers/ACK storms)."""
+    base = 1000.0
+    # 20 packets at 0.1-second intervals — regular but sub-second (ACK storm pattern)
+    pkts = [_pkt("10.0.0.1", "10.0.0.2", t=base + i * 0.1) for i in range(20)]
+    hosts = {"10.0.0.1": _host(), "10.0.0.2": _host()}
+    connections = {("10.0.0.1", "10.0.0.2"): _conn()}
+    packet_store = {("10.0.0.1", "10.0.0.2"): pkts}
+    anomalies = analyze_anomalies(hosts, connections, packet_store)
+    assert "beaconing" not in _anomaly_types(anomalies), (
+        "Sub-second regular intervals must not trigger beaconing"
+    )

@@ -698,6 +698,14 @@ function loadGraph(data) {
   _minimapInitialized = false;
   const _mmEl = document.getElementById("minimap");
   if (_mmEl) _mmEl.style.display = "none";
+  // Reset table sort cache so a new upload never serves the previous capture's rows
+  _sortedEdges = []; _sortedEdgesKey = ""; _sortedEdgesNonce++;
+  // Reset cluster-collapse state
+  collapsedTypes.clear(); _clusterCollapseMode = false;
+  const _ccBtn = document.getElementById("cluster-collapse-btn");
+  if (_ccBtn) { _ccBtn.classList.remove("active"); _ccBtn.title = "Collapse/expand host-type clusters"; }
+  const _clOverlay = document.getElementById("cluster-overlay");
+  if (_clOverlay) _clOverlay.innerHTML = "";
   searchTerm = "";
   searchBox.value = "";
   highlightAnomsMode = false;
@@ -1038,8 +1046,8 @@ function buildFilterList(containerId, items, activeSet, colorMap, kind) {
 
 function updateFilterUI() {
   if (!graphData) return;
-  const totalProtos  = graphData.stats.protocols.length;
-  const totalTypes   = graphData.stats.host_types.length;
+  const totalProtos  = (graphData.stats.protocols || []).length;
+  const totalTypes   = (graphData.stats.host_types || []).length;
   const totalVlans   = (graphData.stats.vlans || []).length +
                        ((graphData.nodes || []).some(n => n.vlan_untagged) ? 1 : 0);
   const totalIpVers  = (graphData.stats.ip_versions || []).length;
@@ -1110,7 +1118,7 @@ function updateFilterUI() {
 
 document.getElementById("proto-clear-btn").addEventListener("click", () => {
   if (!graphData) return;
-  const all = graphData.stats.protocols;
+  const all = graphData.stats.protocols || [];
   const selectAll = activeProtos.size < all.length;
   activeProtos.clear();
   if (selectAll) all.forEach(p => activeProtos.add(p));
@@ -1120,7 +1128,7 @@ document.getElementById("proto-clear-btn").addEventListener("click", () => {
 });
 document.getElementById("type-clear-btn").addEventListener("click", () => {
   if (!graphData) return;
-  const all = graphData.stats.host_types;
+  const all = graphData.stats.host_types || [];
   const selectAll = activeTypes.size < all.length;
   activeTypes.clear();
   if (selectAll) all.forEach(t => activeTypes.add(t));
@@ -1155,9 +1163,9 @@ function clearAllFilters() {
   searchBox.value = "";
   searchTerm = "";
   activeProtos.clear();
-  graphData.stats.protocols.forEach(p => activeProtos.add(p));
+  (graphData.stats.protocols || []).forEach(p => activeProtos.add(p));
   activeTypes.clear();
-  graphData.stats.host_types.forEach(t => activeTypes.add(t));
+  (graphData.stats.host_types || []).forEach(t => activeTypes.add(t));
   activeVlans.clear();
   (graphData.stats.vlans || []).map(String).forEach(v => activeVlans.add(v));
   if ((graphData.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
@@ -1759,14 +1767,7 @@ function renderGraph(data) {
   const _pLevel = {};
   nodes.forEach(n => { _pLevel[n.id] = purdueLevel(n.host_type); });
   _canvasPLevel = _pLevel;
-  const _crossCount = links.filter(e => {
-    const sl = _pLevel[typeof e.source === "object" ? e.source.id : e.source] ?? -1;
-    const tl = _pLevel[typeof e.target === "object" ? e.target.id : e.target] ?? -1;
-    return sl !== -1 && tl !== -1 && sl !== tl;
-  }).length;
-  // Update sidebar cross-zone badge if present
-  const _czBadge = document.getElementById("cross-zone-badge");
-  if (_czBadge) _czBadge.textContent = _crossCount > 0 ? `⚠ ${_crossCount} cross-zone` : "";
+  // (cross-zone count is used only for edge class assignment below — no sidebar badge)
 
   const linkSel = linksGroup.selectAll(".link")
     .data(links)
@@ -3398,12 +3399,20 @@ const VT_BUFFER = 8;    // extra rows rendered above and below the viewport
 
 let _vtRows = [];        // current sorted + decorated edge array
 let _sortedEdges = [];   // PF4: cached sorted edges — rebuilt only when sort key/dir or data changes
-let _sortedEdgesKey = ""; // fingerprint: "col:dir:nodecount"
+let _sortedEdgesKey = ""; // fingerprint: "nonce:col:dir"
+let _sortedEdgesNonce = 0; // incremented on every loadGraph so same-edge-count uploads don't reuse stale cache
 
 function _getSortedEdges() {
-  const key = `${tableSort.col}:${tableSort.dir}:${(graphData?.edges?.length || 0)}`;
+  const key = `${_sortedEdgesNonce}:${tableSort.col}:${tableSort.dir}`;
   if (key !== _sortedEdgesKey) {
-    _sortedEdges = [...(graphData?.edges || [])].sort((a, b) => {
+    const edges = graphData?.edges || [];
+    _sortedEdges = [...edges].sort((a, b) => {
+      // Duration is computed on the fly (edges carry first_seen/last_seen, not duration)
+      if (tableSort.col === "duration") {
+        const ad = (a.last_seen != null && a.first_seen != null) ? a.last_seen - a.first_seen : -1;
+        const bd = (b.last_seen != null && b.first_seen != null) ? b.last_seen - b.first_seen : -1;
+        return tableSort.dir === "asc" ? ad - bd : bd - ad;
+      }
       const av = a[tableSort.col] || 0, bv = b[tableSort.col] || 0;
       if (typeof av === "string")
         return tableSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -7724,7 +7733,18 @@ function renderPresetList() {
 
 /* ── E3: Colour-blind safe palette ───────────────────────────────────────── */
 function updateNodeColors() {
-  nodesGroup.selectAll(".node circle").attr("fill", d => hostColor(d.host_type));
+  // Only repaint the main (first) circle in each node group.
+  // Anomaly rings (.anomaly-ring-*) must keep their severity colors.
+  // If VLAN coloring is active, keep that scheme instead of reverting to host-type.
+  nodesGroup.selectAll(".node circle").filter(function() {
+    return this === this.parentNode.querySelector("circle");
+  }).attr("fill", d => {
+    if (colorByVlan) {
+      // Mirror the VLAN-color handler logic (see btn-color-vlan click at ~2604)
+      return vlanColor((d.vlans && d.vlans.length) ? String(d.vlans[0]) : (d.vlan_untagged ? "untagged" : null));
+    }
+    return hostColor(d.host_type);
+  });
   if (graphData) buildFilters(graphData);
   if (useCanvasEdges) drawCanvasEdges();
 }

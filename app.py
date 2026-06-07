@@ -376,8 +376,8 @@ def geo_lookup(ip):
             "country": r.country.name,
             "country_code": r.country.iso_code,
             "city": r.city.name,
-            "lat": float(r.location.latitude) if r.location.latitude else None,
-            "lon": float(r.location.longitude) if r.location.longitude else None,
+            "lat": float(r.location.latitude) if r.location.latitude is not None else None,
+            "lon": float(r.location.longitude) if r.location.longitude is not None else None,
         }
     except Exception:
         return None
@@ -472,7 +472,9 @@ def parse_modbus(payload_bytes):
         if protocol_id != 0 or len(payload_bytes) < 7:
             return None
         unit_id  = payload_bytes[6]
-        func_code = payload_bytes[7] if len(payload_bytes) > 7 else None
+        if len(payload_bytes) <= 7:
+            return None  # no function code byte — not a parseable Modbus PDU
+        func_code = payload_bytes[7]
         FC_NAMES = {
             1: "Read Coils", 2: "Read Discrete Inputs",
             3: "Read Holding Registers", 4: "Read Input Registers",
@@ -482,7 +484,7 @@ def parse_modbus(payload_bytes):
             23: "Read/Write Multiple Registers", 43: "Read Device Identification",
             90: "Modbus Encapsulated (suspicious)",
         }
-        is_error = func_code is not None and func_code > 0x80
+        is_error = func_code > 0x80
         real_fc = (func_code & 0x7F) if is_error else func_code
         result = {
             "transaction_id": transaction_id,
@@ -492,7 +494,7 @@ def parse_modbus(payload_bytes):
             "function_name": FC_NAMES.get(real_fc, f"Unknown FC {real_fc}"),
             "is_write": real_fc in (5, 6, 15, 16, 22, 23),
             "is_error": is_error,
-            "is_response": is_error,
+            # is_response is set by analyze_pcap based on sport==502 (directional)
             "details": {},
         }
         data = payload_bytes[8:] if len(payload_bytes) > 8 else b""
@@ -689,6 +691,8 @@ def parse_coap(payload_bytes):
                 opt_len = ((payload_bytes[idx] << 8) | payload_bytes[idx+1]) + 269; idx += 2
             opt_num = prev_opt + opt_delta
             prev_opt = opt_num
+            if idx + opt_len > len(payload_bytes):
+                break  # truncated packet — stop option parsing safely
             opt_val = payload_bytes[idx:idx+opt_len]
             idx += opt_len
             if opt_num == 11:  # Uri-Path
@@ -1255,7 +1259,7 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
             dport = pkt.get("dport")
             sport = pkt.get("sport")
             if dport in (21, 23) or sport in (21, 23):
-                if pkt.get("hex"):
+                if pkt.get("payload_hex"):  # only fire when actual payload exists
                     port = dport if dport in (21, 23) else sport
                     proto_name = "FTP" if port == 21 else "Telnet"
                     anomalies.append({
@@ -1289,7 +1293,7 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
         if len(intervals) < 3:
             continue
         mean_interval = float(_xp.mean(intervals))
-        if mean_interval <= 0:
+        if mean_interval < 1.0:  # ignore sub-second bursts (bulk transfers, ACK storms)
             continue
         std_interval = float(_xp.std(intervals))
         cv = std_interval / mean_interval
@@ -1578,7 +1582,7 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
     for (a, b), pkts in packet_store.items():
         for pkt in pkts:
             mb = pkt.get("modbus")
-            if mb and mb.get("exception_code"):
+            if mb and mb.get("exception_code") is not None:
                 anomalies.append({
                     "type": "ot_modbus_exception",
                     "severity": "medium",
@@ -1780,13 +1784,15 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
     # Build (vlan_id, ip) → set of MACs; flag any IP with 2+ distinct MACs on same VLAN
     vlan_ip_macs: dict = defaultdict(set)
     for ip, h in hosts.items():
-        mac = h.get("mac", "")
-        if not mac or mac == "00:00:00:00:00:00":
+        # Use the full set of observed MACs (h["macs"]) so ARP-spoof detection
+        # can actually see multiple MACs per IP, not just the first-seen one.
+        all_macs = {m for m in h.get("macs", set()) if m and m != "00:00:00:00:00:00"}
+        if not all_macs:
             continue
         for vlan_id in h.get("vlan_ids", set()):
-            vlan_ip_macs[(vlan_id, ip)].add(mac)
+            vlan_ip_macs[(vlan_id, ip)].update(all_macs)
         if h.get("vlan_untagged") and not h.get("vlan_ids"):
-            vlan_ip_macs[("untagged", ip)].add(mac)
+            vlan_ip_macs[("untagged", ip)].update(all_macs)
 
     for (vlan_id, ip), macs in vlan_ip_macs.items():
         if len(macs) > 1:
@@ -1838,11 +1844,13 @@ def analyze_anomalies(hosts, connections, packet_store, credentials=None,
                     "description": f"Password reused across {len(services)} services: {', '.join(svc_list[:5])}",
                 })
 
-    # Deduplicate (keep unique type+src+dst combos)
+    # Deduplicate — key includes description so distinct findings of the same
+    # type between the same pair (e.g. two password_reuse events, two JA3 hits)
+    # are all kept; only exact duplicates are collapsed.
     seen = set()
     deduped = []
     for a in anomalies:
-        key = (a["type"], a["src"], a["dst"])
+        key = (a["type"], a["src"], a["dst"], a.get("description", ""))
         if key not in seen:
             seen.add(key)
             deduped.append(a)
@@ -2038,11 +2046,14 @@ def analyze_pcap(filepath):
                 "vlan_pcps": set(),
                 "vlan_untagged": False,
                 "vlan_qinq": False,
+                "macs": set(),  # all observed MACs — used by ARP-spoof detector
             }
         h = hosts[ip]
-        if mac and not h["mac"]:
-            h["mac"] = mac
-            h["mac_vendor"] = mac_vendor(mac)
+        if mac:
+            h["macs"].add(mac)
+            if not h["mac"]:
+                h["mac"] = mac
+                h["mac_vendor"] = mac_vendor(mac)
         return h
 
     MAX_PACKETS = 1_000_000
@@ -2596,7 +2607,7 @@ def analyze_pcap(filepath):
                                 if _off < len(payload) and payload[_off] == 0x02:
                                     _off += 1
                                     _vlen, _off = _ber_len(payload, _off)
-                                    _snmp_ver = payload[_off] if _vlen >= 1 else 99
+                                    _snmp_ver = payload[_off] if (_vlen >= 1 and _off < len(payload)) else 99
                                     _off += _vlen
                                     if _snmp_ver != 3 and _off < len(payload) and payload[_off] == 0x04:
                                         _off += 1
@@ -3246,9 +3257,9 @@ def merge_results(results):
                 if remaining > 0:
                     merged_packets[conn_key] = existing + pkts[:remaining]
 
-        # Merge anomalies (deduplicate)
+        # Merge anomalies (deduplicate by type+src+dst+description)
         for a in result.get("anomalies", []):
-            akey = (a["type"], a["src"], a["dst"])
+            akey = (a["type"], a["src"], a["dst"], a.get("description", ""))
             if akey not in anomaly_keys:
                 anomaly_keys.add(akey)
                 merged_anomalies.append(a)

@@ -396,3 +396,52 @@ def test_is_grease_values():
     # Non-GREASE values
     for v in [0x002F, 0x0035, 0x0000, 0x0017]:
         assert not _is_grease(v), f"Expected {v:#06x} to NOT be GREASE"
+
+
+# ── Bug-sweep regression tests (B4, B5, B7) ──────────────────────────────────
+
+def test_modbus_no_func_code_returns_none():
+    """B5: parse_modbus must return None for a payload with no function code byte (<=7 bytes)."""
+    # 7-byte payload: MBAP header only (transaction=1, protocol=0, length=1, unit=1), no FC byte
+    payload = struct.pack(">HHHB", 1, 0, 1, 1)  # exactly 7 bytes
+    assert parse_modbus(payload) is None, "7-byte Modbus payload (no FC) must return None"
+
+
+def test_modbus_is_response_not_in_parser_output():
+    """B4: parse_modbus must not set is_response (it's computed directionally in analyze_pcap)."""
+    pkt = _modbus_pkt(1, 1, 3, struct.pack(">HH", 100, 10))
+    r = parse_modbus(pkt)
+    assert r is not None
+    assert "is_response" not in r, "parse_modbus must not set is_response"
+
+
+def test_modbus_is_response_not_set_for_error_response():
+    """B4: error response must also not have is_response field from the parser."""
+    pkt = _modbus_pkt(3, 1, 0x83, bytes([2]))
+    r = parse_modbus(pkt)
+    assert r is not None
+    assert r["is_error"] is True
+    assert "is_response" not in r, "parse_modbus must not set is_response even for error frames"
+
+
+def test_coap_truncated_option_no_crash():
+    """B7: CoAP parser must not crash or over-read on a truncated option value."""
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from app import parse_coap
+    # Valid CoAP header (4 bytes) + option delta=11 (Uri-Path), length=20, but only 3 bytes of value
+    # Option byte: delta=0xB (11), length=0x3 — then only 3 value bytes, rest truncated
+    header = bytes([0x40, 0x01, 0x00, 0x01])  # Ver=1, T=CON, TKL=0, Code=0.01 GET, MsgID=1
+    # Option: delta nibble=0xB (11=Uri-Path), length nibble=0xF4 (extends: 0xF → length=20+13=33)
+    # but payload only has 3 bytes after the extension byte — truncated
+    option_byte = bytes([0xBD])   # delta=0xB(11), length nibble=D(13→extended)
+    ext_len = bytes([0x00])       # extended length = 0+13=13 bytes, but...
+    tiny_payload = bytes([0x61, 0x62, 0x63])  # only 3 bytes of a 13-byte option value
+    payload = header + option_byte + ext_len + tiny_payload
+    # Must not raise; may return None or a partial result
+    try:
+        result = parse_coap(payload)
+        # If it returns something, it should be a dict or None
+        assert result is None or isinstance(result, dict)
+    except Exception as e:
+        assert False, f"parse_coap raised on truncated option: {e}"

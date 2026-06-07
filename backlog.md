@@ -171,3 +171,27 @@ Items surfaced in the 2026-05-17 robustness review (`REVIEW.md`) that were not a
 - [ ] **S2** — No CSRF protection on `/upload` POST (low risk on localhost; medium when `--public`)
 - [ ] **H3** — README does not warn that `--public` exposes a Werkzeug dev server
 - [ ] **General** — No `prompt()` modal replacement (blocks page, disabled by Firefox after 2 dialogs); affects OT risk note input and annotation input
+
+## Bug-Sweep Fixes (2026-06-07)
+
+- [x] **B1** — ARP-spoofing detector was dead code: `host()` only stored first-seen MAC so detector's set was always size ≤1. Fixed by accumulating all observed MACs per IP in `h["macs"]`; detector now reads from that set.
+- [x] **B2** — Cleartext-creds false positive: check was `pkt.get("hex")` which is always truthy (set unconditionally for every stored packet). Changed to `pkt.get("payload_hex")` (only present when transport payload exists).
+- [x] **B3** — Anomaly dedup silently collapsed distinct findings with same `(type, src, dst)`. Added `description` to dedup key at both `analyze_anomalies` and `merge_results` sites.
+- [x] **B4** — `parse_modbus` set `"is_response": is_error`, conflating two unrelated concepts. Removed; `is_response` is set directionally in `analyze_pcap` via `sport == 502`.
+- [x] **B5** — `parse_modbus` emitted a junk record (`"Unknown FC None"`) for ≤7-byte payloads with no function code. Now returns `None` early.
+- [x] **B6** — Modbus exception code 0 dropped by truthiness. Changed to `is not None`.
+- [x] **B7** — CoAP option parser could read beyond buffer on truncated packets. Added bounds check before `opt_val` slice.
+- [x] **B8** — `geo_lookup` treated coordinate `0.0` as missing (truthiness). Changed to `is not None`.
+- [x] **B9** — SNMP BER index could raise `IndexError` after `_ber_len` on truncated packets. Added `_off < len(payload)` guard.
+- [x] **B10** — Beaconing false positives on sub-second ACK/retransmit bursts. Added `mean_interval >= 1.0s` floor.
+- [x] **F1** — Session load crash: `updateFilterUI` accessed `stats.protocols.length` / `stats.host_types.length` without `|| []` guard, throwing `TypeError` on partial session JSON.
+- [x] **F2** — Table view showed previous capture's rows: `_getSortedEdges` cache fingerprinted by edge count only; same-count uploads reused stale data. Added per-load nonce to fingerprint.
+- [x] **F3** — "Duration" column sort was a no-op: edges have no `duration` field. Added special-case in comparator using `last_seen - first_seen`.
+- [x] **F4** — Colour-blind toggle corrupted anomaly rings (painted over severity colors) and ignored active VLAN coloring. Fixed `updateNodeColors` to target only the main circle and branch on `colorByVlan`.
+- [x] **F5** — Cluster-collapse state (`collapsedTypes`, `_clusterCollapseMode`) not reset on new upload. Added reset in `loadGraph`.
+- [x] **F6** — Dead `_crossCount` / `cross-zone-badge` computation (element never in DOM). Removed.
+
+## Deferred (architectural — out of scope for this sweep)
+
+- [ ] **Port-scan misattribution** — undirected connection key `tuple(sorted([sip,dip]))` loses direction; scanner vs server attribution can be wrong. Needs directional byte/port accounting in `analyze_pcap` core data flow.
+- [ ] **Exfiltration direction** — same undirected key causes `conn["bytes"]` to include both directions; downloads can be flagged as exfiltration. Same root cause as port-scan misattribution.
