@@ -92,6 +92,17 @@
   - **FH4** `renderGraph`/`renderOTMap`/`renderVlanGraph` normalise non-array shapes before iterating
   - **FH5** `exportCsv` guards `protocols`/`ports` with `||[]`; three `localStorage.setItem` calls wrapped in try/catch
   - Deferred (out of scope): thread cancellation on `analyze_pcap` timeout; mass `addEventListener` null guards
+- [x] Full-fidelity exports — parse all data, cap only for rendering (feature/full-fidelity-exports):
+  - **BE1** Raised `MAX_HOSTS` 50k→250k, `MAX_CONNECTIONS` 200k→1M — now parse all hosts/connections; caps are parse-time backstops, not UI limits
+  - **BE2** `stats.hosts_truncated` / `stats.connections_truncated` flags — honest signal when (rarely) the backstop is hit; frontend shows a distinct warning toast
+  - **BE3** Removed per-field truncation slices from serialization: `dns_names[:5]`, `open_ports[:30]`, `dns_queries[:10]` per node; `ports[:20]` per edge; same in `merge_results` — full sets now reach the frontend and exports
+  - **FE1** `RENDER_NODE_CAP=1500` / `RENDER_EDGE_CAP=4000` constants in `app.js` — graph renders only top-N by traffic; cap operates on local copies inside `renderGraph`, never mutating `graphData`
+  - **FE2** Persistent `#cap-banner` (blue) shown when graph is capped: *"Graph shows top N of M hosts — exports contain the full dataset"*; one-shot toast mirrors VLAN cap precedent
+  - **FE3** `_isRendered(id)` helper + guards in `_jumpToAnomaly` and search handler — when target is outside rendered subset, detail panel still opens with full data; toast directs user to Table view / CSV
+  - **FE4** Hard-cap-hit warning toast when `stats.hosts_truncated`/`connections_truncated` are true
+  - **FE5** New **Hosts Inventory CSV** (`exportHostsCsv`) — one row per `graphData.nodes` entry (full IP space); columns: IP, Hostname, MAC, MAC Vendor, Host Type, OS Hint, Protocols, Open Ports, Bytes Sent/Recv, VLANs, Purdue Level, Risk Score, Is Private, Geo Country; button in Export menu
+  - **FE6** `sliceMore(arr, n)` display helper — `showDetailPanel` now slices `open_ports`→30, `dns_names`/`dns_queries`→20 with "+N more" notice so the panel stays tidy while data/exports remain full
+  - Updated `test_merge.py` (ports-cap test renamed to assert full preservation); added `tests/test_serialization.py` (3 new tests: edge ports untruncated, node open_ports untruncated, stats flags present)
 
 ## VLAN Follow-ups
 

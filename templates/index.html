@@ -99,7 +99,8 @@
       <button class="header-btn" id="export-btn">Export ▾</button>
       <div class="dropdown-menu hidden" id="export-menu">
         <div class="dropdown-item" id="exp-png">Export PNG</div>
-        <div class="dropdown-item" id="exp-csv">Export CSV</div>
+        <div class="dropdown-item" id="exp-csv">Export Connections CSV</div>
+        <div class="dropdown-item" id="exp-hosts">Export Hosts Inventory CSV</div>
         <div class="dropdown-item" id="exp-anomalies">Export Anomalies</div>
         <div class="dropdown-item" id="exp-report">Export Audit Report</div>
         <div class="dropdown-item" id="exp-vlan-inventory">Export VLAN Inventory CSV</div>
@@ -240,6 +241,9 @@
       <div id="trunc-banner">
         ⚠ Large capture — showing first 150,000 packets
       </div>
+
+      <!-- Render-cap banner (shown when the graph is capped to top-N nodes) -->
+      <div id="cap-banner"></div>
 
       <!-- Graph controls -->
       <div id="graph-controls">

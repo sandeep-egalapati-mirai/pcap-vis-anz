@@ -1012,6 +1012,25 @@ header h1 span { color: var(--accent); }
 }
 #trunc-banner.visible { display: block; }
 
+/* Render-cap banner — shown when the main graph is limited to top-N hosts */
+#cap-banner {
+  display: none;
+  position: absolute;
+  top: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(88,166,255,0.12);
+  border: 1px solid #58a6ff;
+  color: #58a6ff;
+  border-radius: var(--radius);
+  padding: 4px 14px;
+  font-size: 12px;
+  z-index: 10;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#cap-banner.visible { display: block; }
+
 /* ── Timeline bar ────────────────────────────────────────────────────────── */
 #timeline-bar {
   background: var(--bg2);

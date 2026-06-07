@@ -42,7 +42,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Inline anomaly explanations** — Every anomaly badge has an `ℹ` button; clicking it expands a "What / Why / Steps" panel covering all 30+ anomaly types with remediation guidance
 - **Packet inspector** — Click any edge or node to open a Wireshark-style panel with three tabs: **Packets** (per-packet protocol tree and protocol-coloured hex dump — each layer highlighted in a distinct colour), **Cmd Log** (OT command history for OT connections), and **Stream** (ASCII/hex payload reassembly for TCP sessions); **⧉ float button** detaches the inspector into a resizable draggable overlay; **⊡** re-docks it; live packet search with `N / M` count badge
 - **OT Analysis panel** — Per-node read/write/error ratio bar, master/outstation role badge, Modbus unit IDs, DNP3 link addresses
-- **Exports** — PNG graph screenshot, connections CSV, anomalies CSV, credentials CSV (with passwords), Markdown audit report (capture summary, risk ranking, anomalies by severity, OT inventory, VLAN device inventory, VLAN traffic by VLAN, TLS/SNI observations, captured credentials, file transfers, OT write log), VLAN Inventory CSV, VLAN Traffic CSV, VLAN Diagram SVG
+- **Exports** — PNG graph screenshot, **Connections CSV** (every connection with full port list), **Hosts Inventory CSV** (one row per IP — full IP space regardless of graph render), anomalies CSV, credentials CSV (with passwords), Markdown audit report (capture summary, risk ranking, anomalies by severity, OT inventory, VLAN device inventory, VLAN traffic by VLAN, TLS/SNI observations, captured credentials, file transfers, OT write log), VLAN Inventory CSV, VLAN Traffic CSV, VLAN Diagram SVG; all CSV exports always contain the complete dataset even when the graph only renders a top-N subset
 - **File transfer detection** — Detects HTTP file downloads (Content-Disposition: attachment + interesting Content-Type); sidebar "File Transfers" panel with filename, MIME, size, SHA-256 hash; 200 files/capture, 500/merge (deduped by hash)
 - **PCAP baseline diff** — "Set Baseline" button in header; upload a second PCAP and open the "⊕ Diff" tab to compare: new/disappeared hosts (with specific change labels: type change, risk delta >20, new protocols, new ports), new connections with protocols, traffic-volume changes (>2× or <0.5× packet ratio), and new anomalies vs baseline; four-column diff view, no server round-trip
 - **Session save / load** — Export full analysis to JSON and reload without re-uploading the capture file
@@ -264,7 +264,7 @@ pip install pytest            # or: pip install -r requirements-dev.txt
 pytest tests/ -q
 ```
 
-The suite contains 271 tests across 11 files covering protocol parsers, anomaly detection (including all 16 OT/IoT rules), credential extraction, file transfer detection, multi-file merging, and the `/upload` HTTP endpoint.
+The suite contains 319 tests across 12 files covering protocol parsers, anomaly detection (including all 16 OT/IoT rules), credential extraction, file transfer detection, multi-file merging, full-fidelity serialization (no port/DNS truncation), and the `/upload` HTTP endpoint.
 
 ## Configuration
 
@@ -273,10 +273,18 @@ The suite contains 271 tests across 11 files covering protocol parsers, anomaly 
 | `MAX_UPLOAD_FILES` | 100 | Maximum files per upload request |
 | `MAX_CONTENT_LENGTH` | 1 GB | Maximum total upload size |
 | `MAX_PACKETS` | 1,000,000 | Packets processed per file |
-| `MAX_HOSTS` | 50,000 | Max unique hosts tracked per file |
-| `MAX_CONNECTIONS` | 200,000 | Max unique IP-pairs tracked per file |
+| `MAX_HOSTS` | 250,000 | Backstop — max unique hosts per file (parse-time safety guard; rarely hit) |
+| `MAX_CONNECTIONS` | 1,000,000 | Backstop — max unique IP-pairs per file (parse-time safety guard; rarely hit) |
 | `MAX_STORED_PER_CONN` | 50 | Packets stored per connection for the inspector |
 | `_FILE_CACHE_MAX_BYTES` | 256 MB | Memory budget for captured file bodies |
+| `RENDER_NODE_CAP` | 1,500 | Max SVG node groups drawn in the force graph (see below) |
+| `RENDER_EDGE_CAP` | 4,000 | Max edges drawn (SVG/canvas) in the force graph |
+
+### Full-fidelity exports vs. render caps
+
+The backend parses and serializes **all** hosts and connections up to the backstop limits. CSV exports (Connections, Hosts Inventory, VLAN Inventory, VLAN Traffic) always use the full dataset — no connection or IP is omitted from an export due to UI rendering decisions.
+
+When a capture contains more than `RENDER_NODE_CAP` hosts, the graph view renders only the top-N by traffic and shows a blue banner: *"Graph shows top N of M hosts — exports contain the full dataset."* The **Table view** and all CSV exports still reflect every host and connection. The `stats.hosts_truncated` / `stats.connections_truncated` flags in the `/upload` JSON response are `true` only when the parse-time backstop limits (250k hosts / 1M connections) are actually exceeded.
 | Connections in inspector | top 40 | Connections with packet detail (by packet count) |
 | Ports shown per node | 30 | Open ports listed in the detail panel |
 | DNS names per node | 5 | Resolved hostnames shown in the detail panel |

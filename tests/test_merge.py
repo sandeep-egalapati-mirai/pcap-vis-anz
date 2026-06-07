@@ -148,13 +148,15 @@ def test_merge_node_hostname_not_overwritten():
     assert out["nodes"][0]["hostname"] == "first.local"
 
 
-def test_merge_node_open_ports_capped_at_30():
+def test_merge_node_open_ports_all_preserved():
+    """merge_results now preserves ALL ports (no [:30] cap) so exports are lossless."""
     ports_a = list(range(1, 26))   # 25 ports
     ports_b = list(range(26, 51))  # 25 more ports = 50 total
     r1 = _result(nodes=[_node("10.0.0.1", open_ports=ports_a)], edges=[], total_packets=5)
     r2 = _result(nodes=[_node("10.0.0.1", open_ports=ports_b)], edges=[], total_packets=5)
     out = merge_results([r1, r2])
-    assert len(out["nodes"][0]["open_ports"]) <= 30
+    # All 50 ports must survive — render-side display slicing is handled in the frontend
+    assert len(out["nodes"][0]["open_ports"]) == 50
 
 
 def test_merge_node_dns_names_merged():

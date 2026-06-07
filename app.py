@@ -2063,8 +2063,8 @@ def analyze_pcap(filepath):
         return h
 
     MAX_PACKETS = 1_000_000
-    MAX_HOSTS = 50_000
-    MAX_CONNECTIONS = 200_000   # cap unique IP-pairs to prevent N² memory blowup
+    MAX_HOSTS = 250_000         # raised: parse all hosts; render cap is in the frontend
+    MAX_CONNECTIONS = 1_000_000  # raised: parse all connections; render cap is in the frontend
     MAX_CREDS = 500
     MAX_FILES = 200
     MAX_OT_COMMANDS = 5_000
@@ -2073,6 +2073,8 @@ def analyze_pcap(filepath):
     MAX_CRED_STATE_ENTRIES = 5_000  # total half-open cred-state entries per protocol
     processed = 0
     parse_errors = 0
+    _hosts_truncated = False       # True if MAX_HOSTS backstop was hit
+    _conns_truncated = False       # True if MAX_CONNECTIONS backstop was hit
     packet_store = defaultdict(list)
     MAX_STORED_PER_CONN = 50
     first_pkt_time = None
@@ -2274,6 +2276,7 @@ def analyze_pcap(filepath):
 
                 # Cap host table to prevent memory exhaustion from crafted PCAPs
                 if len(hosts) >= MAX_HOSTS and sip not in hosts and dip not in hosts:
+                    _hosts_truncated = True
                     continue
 
                 plen = meta.wirelen if meta.wirelen > 0 else len(raw)
@@ -2300,6 +2303,7 @@ def analyze_pcap(filepath):
 
                 # Cap connection table to prevent N² memory exhaustion on crafted PCAPs
                 if conn_key not in connections and len(connections) >= MAX_CONNECTIONS:
+                    _conns_truncated = True
                     continue
 
                 # Update connection timing
@@ -3054,16 +3058,16 @@ def analyze_pcap(filepath):
             "mac": h["mac"],
             "mac_vendor": h["mac_vendor"],
             "hostname": h["hostname"],
-            "dns_names": sorted(h["dns_names"])[:5],
+            "dns_names": sorted(h["dns_names"]),
             "protocols": sorted(h["protocols"]),
             "services": sorted(h["services"]),
-            "open_ports": sorted(h["dst_ports"])[:30],
+            "open_ports": sorted(h["dst_ports"]),
             "os_hint": h["os_hint"],
             "host_type": h["host_type"],
             "packet_count": h["packet_count"],
             "bytes_sent": h["bytes_sent"],
             "bytes_recv": h["bytes_recv"],
-            "dns_queries": sorted(h["dns_queries"])[:10],
+            "dns_queries": sorted(h["dns_queries"]),
             "is_private": h["is_private"],
             "flags": list(h["flags"]),
             "geo": geo,
@@ -3099,7 +3103,7 @@ def analyze_pcap(filepath):
             "protocols": sorted(c["protocols"]),
             "packet_count": c["packet_count"],
             "bytes": c["bytes"],
-            "ports": sorted(c["dst_ports"])[:20],
+            "ports": sorted(c["dst_ports"]),
             "first_seen": c["first_seen"],
             "last_seen": c["last_seen"],
             "ot_reads": c.get("ot_reads", 0),
@@ -3147,6 +3151,8 @@ def analyze_pcap(filepath):
             "ipv6_count": sum(1 for n in nodes if n["ip_version"] == 6),
             "cdp_lldp_discovered": len(cdp_lldp),
             "truncated": processed >= MAX_PACKETS,
+            "hosts_truncated": _hosts_truncated,
+            "connections_truncated": _conns_truncated,
             "capture_start": first_pkt_time,
             "capture_end": last_pkt_time,
             "parse_errors": parse_errors,
@@ -3331,16 +3337,16 @@ def merge_results(results):
             "mac": mn["mac"],
             "mac_vendor": mn["mac_vendor"],
             "hostname": mn["hostname"],
-            "dns_names": sorted(mn["dns_names"])[:5],
+            "dns_names": sorted(mn["dns_names"]),
             "protocols": sorted(mn["protocols"]),
             "services": sorted(mn["services"]),
-            "open_ports": sorted(mn["open_ports"])[:30],
+            "open_ports": sorted(mn["open_ports"]),
             "os_hint": mn["os_hint"],
             "host_type": mn["host_type"],
             "packet_count": mn["packet_count"],
             "bytes_sent": mn["bytes_sent"],
             "bytes_recv": mn["bytes_recv"],
-            "dns_queries": sorted(mn["dns_queries"])[:10],
+            "dns_queries": sorted(mn["dns_queries"]),
             "is_private": mn["is_private"],
             "flags": list(mn.get("flags", [])),
             "geo": mn.get("geo"),
@@ -3374,7 +3380,7 @@ def merge_results(results):
             "protocols": sorted(me["protocols"]),
             "packet_count": me["packet_count"],
             "bytes": me["bytes"],
-            "ports": sorted(me["ports"])[:20],
+            "ports": sorted(me["ports"]),
             "first_seen": me.get("first_seen"),
             "last_seen": me.get("last_seen"),
             "ot_reads": me.get("ot_reads", 0),
@@ -3410,6 +3416,8 @@ def merge_results(results):
             "ipv4_count": sum(1 for n in nodes_out if n["ip_version"] == 4),
             "ipv6_count": sum(1 for n in nodes_out if n["ip_version"] == 6),
             "truncated": truncated,
+            "hosts_truncated": any(r.get("stats", {}).get("hosts_truncated") for r in results if "error" not in r),
+            "connections_truncated": any(r.get("stats", {}).get("connections_truncated") for r in results if "error" not in r),
             "gpu": GPU_AVAILABLE,
             "capture_start": capture_start,
             "capture_end": capture_end,

@@ -439,6 +439,13 @@ function fmtNum(n) {
   return Number.isFinite(n) ? n.toLocaleString() : "0";
 }
 
+/** Display helper: show first n items and an "+K more" suffix if the array is longer. */
+function sliceMore(arr, n) {
+  if (!Array.isArray(arr) || arr.length === 0) return "";
+  const shown = arr.slice(0, n).map(String);
+  return arr.length > n ? shown.join(", ") + ` … +${arr.length - n} more` : shown.join(", ");
+}
+
 /* ── Toast notifications ─────────────────────────────────────────────────── */
 function showToast(msg, type = "info", duration = 4000) {
   const icons = { error: "✕", success: "✓", info: "ℹ", warn: "⚠" };
@@ -491,6 +498,11 @@ let highlightAnomsMode = false;   // D4
 let colorBlindMode = false;        // E3
 let filterPresets = [];            // E2
 
+// Render caps — graph draws only top-N by traffic; exports always use the full dataset.
+// Raise these constants if you want to render more (at a browser performance cost).
+const RENDER_NODE_CAP = 1500;  // max SVG node groups drawn in the force graph
+const RENDER_EDGE_CAP = 4000;  // max edges drawn (SVG or canvas)
+
 // Canvas edge rendering (GPU-composited, activated for large graphs)
 const CANVAS_THRESHOLD = 150;  // node count above which canvas edges are used
 let useCanvasEdges = false;
@@ -525,6 +537,7 @@ const fileInput      = document.getElementById("file-input");
 const dropZone       = document.getElementById("drop-zone");
 const modalError     = document.getElementById("modal-error");
 const truncBanner    = document.getElementById("trunc-banner");
+const capBanner      = document.getElementById("cap-banner");
 const searchBox      = document.getElementById("search-box");
 const graphWrap      = document.getElementById("graph-wrap");
 const tableView      = document.getElementById("table-view");
@@ -734,12 +747,23 @@ function loadGraph(data) {
 
   const stats = data.stats || {};
 
-  // Truncation banner
+  // Truncation banner (packet cap)
   if (stats.truncated) {
     truncBanner.classList.add("visible");
   } else {
     truncBanner.classList.remove("visible");
   }
+
+  // Hard-cap-hit warning (hosts or connections backstop was exceeded — exports are incomplete)
+  if (stats.hosts_truncated || stats.connections_truncated) {
+    showToast(
+      "⚠ This capture exceeded the host/connection backstop limits — some IPs or connections were dropped and will not appear in exports. Consider splitting the capture.",
+      "warn", 12000
+    );
+  }
+
+  // Reset render-cap banner; renderGraph will re-set it if needed
+  capBanner.classList.remove("visible");
 
   // Processing warnings (partial file failures, anomaly detection failure)
   if (stats.geoip_available === false) {
@@ -1658,6 +1682,13 @@ function _anomalySummary(type, src, count, items) {
   }
 }
 
+/** Returns true when the given node ID has an SVG element in the current render. */
+function _isRendered(id) {
+  let found = false;
+  nodesGroup.selectAll(".node").each(d => { if (d.id === id) found = true; });
+  return found;
+}
+
 function _jumpToAnomaly(a) {
   if (!a.src) return;
   const node = graphData && graphData.nodes.find(n => n.ip === a.src);
@@ -1665,10 +1696,17 @@ function _jumpToAnomaly(a) {
   selectedNode = node;
   showDetailPanel(node, { from: "anomaly", label: a.type.replace(/_/g, " ") });
   detailPanel.classList.add("open");
-  const linkSel = linksGroup.selectAll(".link");
-  const nodeSel = nodesGroup.selectAll(".node");
-  nodeSel.classed("selected", n => n.id === node.id);
-  highlightNode(node, linkSel, nodeSel);
+  if (_isRendered(node.id)) {
+    const linkSel = linksGroup.selectAll(".link");
+    const nodeSel = nodesGroup.selectAll(".node");
+    nodeSel.classed("selected", n => n.id === node.id);
+    highlightNode(node, linkSel, nodeSel);
+  } else {
+    showToast(
+      `${node.ip} is not in the rendered top ${RENDER_NODE_CAP.toLocaleString()} hosts — details shown above. Use the Table view or Hosts Inventory CSV for the full dataset.`,
+      "info", 6000
+    );
+  }
   setView("graph");
 }
 
@@ -1739,13 +1777,32 @@ function renderGraph(data) {
   data._nodeMap = {};
   data.nodes.forEach(n => { data._nodeMap[n.id] = n; n._visible = true; });
 
-  const nodes = data.nodes.map(d => ({ ...d }));
+  // Build local node/edge copies — the render cap operates only on these locals.
+  // graphData.nodes / graphData.edges are NEVER mutated here; exports depend on them being full.
+  let nodes = data.nodes.map(d => ({ ...d }));
+
+  // ── Render cap: draw only the top-N hosts by traffic for browser performance ──
+  const _totalNodeCount = nodes.length;
+  let _capActive = false;
+  if (nodes.length > RENDER_NODE_CAP) {
+    _capActive = true;
+    nodes.sort((a, b) => (b.packet_count || 0) - (a.packet_count || 0));
+    nodes = nodes.slice(0, RENDER_NODE_CAP);
+  }
+
   const nodeById = {};
   nodes.forEach(n => nodeById[n.id] = n);
 
-  const links = data.edges
+  let links = data.edges
     .filter(e => nodeById[e.source] && nodeById[e.target] && e.source !== e.target)
     .map(e => ({ ...e, source: e.source, target: e.target }));
+
+  // Edge ceiling backstop: keep highest-traffic edges
+  if (links.length > RENDER_EDGE_CAP) {
+    _capActive = true;
+    links.sort((a, b) => (b.packet_count || 0) - (a.packet_count || 0));
+    links = links.slice(0, RENDER_EDGE_CAP);
+  }
 
   // Show overlay when nodes exist but no IP connections (ARP-only or all self-loops)
   const noConnMsg = document.getElementById("no-connections-msg");
@@ -1929,6 +1986,19 @@ function renderGraph(data) {
   updatePinVisuals();
 
   initMinimap(nodes);
+
+  // Toggle the render-cap banner
+  if (_capActive) {
+    capBanner.textContent =
+      `ℹ Graph shows top ${nodes.length.toLocaleString()} of ${_totalNodeCount.toLocaleString()} hosts by traffic — exports contain the full dataset.`;
+    capBanner.classList.add("visible");
+    showToast(
+      `Graph capped to top ${nodes.length.toLocaleString()} of ${_totalNodeCount.toLocaleString()} hosts by traffic. All hosts appear in the Hosts Inventory CSV and Table view.`,
+      "info", 8000
+    );
+  } else {
+    capBanner.classList.remove("visible");
+  }
 }
 
 function buildSimulation(nodes, links, cx, cy, layout) {
@@ -2293,18 +2363,20 @@ function showDetailPanel(d, navCtx) {
   if ((d.open_ports || []).length) {
     rows.push(sectionTitle("Ports seen"));
     rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;padding-left:0;margin-bottom:6px">${
-      (d.open_ports || []).slice(0, 20).map(escHtml).join(", ")
+      escHtml(sliceMore(d.open_ports || [], 30))
     }</div>`);
   }
 
   if ((d.dns_names || []).length) {
     rows.push(sectionTitle("DNS names"));
-    (d.dns_names || []).forEach(n => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px">${escHtml(n)}</div>`));
+    (d.dns_names || []).slice(0, 20).forEach(n => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px">${escHtml(n)}</div>`));
+    if ((d.dns_names || []).length > 20) rows.push(`<div class="d-val" style="font-size:11px;color:var(--text2)">… +${(d.dns_names.length - 20)} more (all in CSV export)</div>`);
   }
 
   if ((d.dns_queries || []).length) {
     rows.push(sectionTitle("DNS queries sent"));
-    (d.dns_queries || []).forEach(q => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px;color:var(--text2)">${escHtml(q)}</div>`));
+    (d.dns_queries || []).slice(0, 20).forEach(q => rows.push(`<div class="d-val" style="font-family:var(--font-mono);font-size:11px;margin-bottom:3px;color:var(--text2)">${escHtml(q)}</div>`));
+    if ((d.dns_queries || []).length > 20) rows.push(`<div class="d-val" style="font-size:11px;color:var(--text2)">… +${(d.dns_queries.length - 20)} more (all in CSV export)</div>`);
   }
 
   if (d.tls_sni && d.tls_sni.length) {
@@ -2580,6 +2652,12 @@ searchBox.addEventListener("input", () => {
         selectedNode = match;
         showDetailPanel(match);
         detailPanel.classList.add("open");
+        if (!_isRendered(match.id)) {
+          showToast(
+            `${match.ip} is not in the rendered top ${RENDER_NODE_CAP.toLocaleString()} hosts by traffic — details shown in the panel. Use the Table view or Hosts Inventory CSV for the full dataset.`,
+            "info", 6000
+          );
+        }
       }
     }
   }, 300);
@@ -6381,6 +6459,10 @@ document.getElementById("exp-csv").addEventListener("click", () => {
   exportCsv();
   document.getElementById("export-menu").classList.add("hidden");
 });
+document.getElementById("exp-hosts").addEventListener("click", () => {
+  exportHostsCsv();
+  document.getElementById("export-menu").classList.add("hidden");
+});
 document.getElementById("exp-anomalies").addEventListener("click", () => {
   exportAnomalies();
   document.getElementById("export-menu").classList.add("hidden");
@@ -6565,6 +6647,34 @@ function exportVlanInventoryCsv() {
     ]));
   });
   downloadCsv(rows, "vlan-inventory.csv");
+}
+
+function exportHostsCsv() {
+  if (!graphData || !(graphData.nodes || []).length) {
+    showToast("No hosts to export.", "info"); return;
+  }
+  const rows = [["IP", "Hostname", "MAC", "MAC Vendor", "Host Type", "OS Hint",
+    "Protocols", "Open Ports", "Packet Count", "Bytes Sent", "Bytes Recv",
+    "VLANs", "Purdue Level", "Risk Score", "Is Private", "Geo Country"]];
+  (graphData.nodes || []).forEach(n => rows.push([
+    n.ip || n.id || "",
+    n.hostname || (n.dns_names && n.dns_names[0]) || "",
+    n.mac || "",
+    n.mac_vendor || "",
+    n.host_type || "",
+    n.os_hint || "",
+    (n.protocols || []).join(";"),
+    (n.open_ports || []).join(";"),
+    n.packet_count || 0,
+    n.bytes_sent || 0,
+    n.bytes_recv || 0,
+    (n.vlans || []).join(";"),
+    n.purdue_level != null ? n.purdue_level : "",
+    n.risk_score || 0,
+    n.is_private ? "Yes" : "No",
+    (n.geo && (n.geo.country_code || n.geo.country)) || "",
+  ]));
+  downloadCsv(rows, "hosts-inventory.csv");
 }
 
 function exportVlanTrafficCsv() {
