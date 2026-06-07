@@ -77,6 +77,7 @@
 - [x] Saved filter presets — name and save a filter combination for one-click recall; presets stored in localStorage; chip list in sidebar with delete buttons; auto-shown when at least one preset exists
 - [x] Inline anomaly explanation panel — ℹ button on every anomaly badge expands a "What / Why / Steps" explanation covering all ~30 anomaly types; toggles closed with a second click
 - [x] Dashboard / summary view — 8th view tab (⊛ Dashboard); 5 summary cards (hosts/connections/packets/anomalies/protocols); top-10 risk-score horizontal bar chart; protocol distribution bars; anomaly severity chips (High/Med/Low/Info counts); busiest-connections list; clicking a risk-bar row jumps to graph and highlights the node; key shortcut: 8
+- [x] Dashboard Top Anomalies panel — lists up to 6 highest-severity anomaly groups (sorted high→info, then by count); each row shows a severity dot + human-readable summary reusing `_anomalySummary()`; clicking any row calls `_jumpToAnomaly()` to navigate to the graph, select the source node, and open the detail panel; "+N more" footer when findings exceed the display limit; empty state "No anomalies detected"
 
 ## VLAN Follow-ups
 

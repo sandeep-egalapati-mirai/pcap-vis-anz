@@ -5884,6 +5884,50 @@ function renderDashboard() {
   anomPanel.appendChild(sevRow);
   rightCol.appendChild(anomPanel);
 
+  // Top anomalies list (clickable — drills down to graph)
+  const topAnomPanel = document.createElement("div");
+  topAnomPanel.className = "db-panel";
+  topAnomPanel.innerHTML = `<div class="db-panel-title">Top Anomalies</div>`;
+  if (!anomalies || anomalies.length === 0) {
+    topAnomPanel.innerHTML += '<div class="db-empty">No anomalies detected</div>';
+  } else {
+    // Group by type+src (same key as the sidebar's stage-2 grouping)
+    const anomGroups = new Map();
+    anomalies.forEach(a => {
+      const key = `${a.type}|${a.src || ""}`;
+      if (!anomGroups.has(key)) anomGroups.set(key, { rep: a, items: [] });
+      anomGroups.get(key).items.push(a);
+    });
+    // Sort: severity rank desc, then count desc
+    const _topSevOrder = { high: 4, medium: 3, low: 2, info: 1 };
+    const sortedAnomGroups = [...anomGroups.values()]
+      .sort((a, b) => {
+        const sd = (_topSevOrder[b.rep.severity] || 0) - (_topSevOrder[a.rep.severity] || 0);
+        return sd !== 0 ? sd : b.items.length - a.items.length;
+      });
+    const displayAnomGroups = sortedAnomGroups.slice(0, 6);
+    const anomRemainder = sortedAnomGroups.length - displayAnomGroups.length;
+    const anomList = document.createElement("div");
+    anomList.className = "db-anom-list";
+    displayAnomGroups.forEach(({ rep, items }) => {
+      const row = document.createElement("div");
+      row.className = "db-anom-row";
+      row.title = "Click to inspect in graph";
+      row.innerHTML = `<span class="db-anom-dot ${escHtml(rep.severity)}"></span>` +
+        `<span class="db-anom-label">${escHtml(_anomalySummary(rep.type, rep.src, items.length, items))}</span>`;
+      row.addEventListener("click", () => _jumpToAnomaly(rep));
+      anomList.appendChild(row);
+    });
+    if (anomRemainder > 0) {
+      const moreRow = document.createElement("div");
+      moreRow.className = "db-anom-more";
+      moreRow.textContent = `+${anomRemainder} more`;
+      anomList.appendChild(moreRow);
+    }
+    topAnomPanel.appendChild(anomList);
+  }
+  rightCol.appendChild(topAnomPanel);
+
   // Busiest connections
   const connPanel = document.createElement("div");
   connPanel.className = "db-panel";
