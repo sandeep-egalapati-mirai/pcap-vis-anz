@@ -53,6 +53,8 @@ def _get_executor() -> ThreadPoolExecutor:
 # cleared at the start of each /upload request.
 _file_body_cache: dict = {}
 _file_body_cache_lock = threading.Lock()
+_file_body_cache_bytes: int = 0   # running total; guarded by _file_body_cache_lock
+_FILE_CACHE_MAX_BYTES = 256 * 1024 * 1024  # 256 MB hard cap on cached file bodies
 
 # ── MAC OUI vendor table (common prefixes) ────────────────────────────────────
 MAC_VENDORS = {
@@ -300,7 +302,10 @@ _PCAP_MAGIC = {
 def allowed_file(filename, file_stream=None):
     if "." not in filename:
         return False
-    if filename.rsplit(".", 1)[1].lower() not in ALLOWED_EXTENSIONS:
+    parts = filename.rsplit(".", 1)
+    if len(parts) < 2 or not parts[1]:   # catches bare "." with empty extension
+        return False
+    if parts[1].lower() not in ALLOWED_EXTENSIONS:
         return False
     if file_stream is not None:
         header = file_stream.read(4)
@@ -2059,9 +2064,13 @@ def analyze_pcap(filepath):
 
     MAX_PACKETS = 1_000_000
     MAX_HOSTS = 50_000
+    MAX_CONNECTIONS = 200_000   # cap unique IP-pairs to prevent N² memory blowup
     MAX_CREDS = 500
     MAX_FILES = 200
     MAX_OT_COMMANDS = 5_000
+    MAX_TTL_VALUES = 256        # per-host TTL sample cap (enough for Counter.most_common)
+    MAX_DNS_ENTRIES = 1_000     # per-host dns_names / dns_queries cap
+    MAX_CRED_STATE_ENTRIES = 5_000  # total half-open cred-state entries per protocol
     processed = 0
     parse_errors = 0
     packet_store = defaultdict(list)
@@ -2273,7 +2282,8 @@ def analyze_pcap(filepath):
                 sh = host(sip, smac)
                 dh = host(dip, dmac)
 
-                sh["ttl_values"].append(ttl)
+                if len(sh["ttl_values"]) < MAX_TTL_VALUES:
+                    sh["ttl_values"].append(ttl)
                 sh["packet_count"] += 1
                 sh["bytes_sent"] += plen
                 dh["packet_count"] += 1
@@ -2287,6 +2297,10 @@ def analyze_pcap(filepath):
 
                 protocol = "IP"
                 conn_key = tuple(sorted([sip, dip]))
+
+                # Cap connection table to prevent N² memory exhaustion on crafted PCAPs
+                if conn_key not in connections and len(connections) >= MAX_CONNECTIONS:
+                    continue
 
                 # Update connection timing
                 conn = connections[conn_key]
@@ -2420,11 +2434,16 @@ def analyze_pcap(filepath):
                                             "filename": _filename, "mime_type": _mime,
                                             "size": _size, "sha256": _sha,
                                         })
-                                        _file_body_cache[_sha] = {
-                                            "body": bytes(_body),
-                                            "filename": _filename,
-                                            "mime": _mime or "application/octet-stream",
-                                        }
+                                        _body_bytes = bytes(_body)
+                                        with _file_body_cache_lock:
+                                            global _file_body_cache_bytes
+                                            if _file_body_cache_bytes + len(_body_bytes) <= _FILE_CACHE_MAX_BYTES:
+                                                _file_body_cache[_sha] = {
+                                                    "body": _body_bytes,
+                                                    "filename": _filename,
+                                                    "mime": _mime or "application/octet-stream",
+                                                }
+                                                _file_body_cache_bytes += len(_body_bytes)
                             except Exception:
                                 pass
 
@@ -2460,7 +2479,8 @@ def analyze_pcap(filepath):
                                     qname = dns.qd.qname
                                     if isinstance(qname, bytes):
                                         qname = qname.decode("utf-8", errors="replace")
-                                    sh["dns_queries"].add(qname.rstrip("."))
+                                    if len(sh["dns_queries"]) < MAX_DNS_ENTRIES:
+                                        sh["dns_queries"].add(qname.rstrip("."))
                                 elif dns.qr == 1:
                                     an = dns.an
                                     for _ in range(100):
@@ -2478,7 +2498,8 @@ def analyze_pcap(filepath):
                                             if rip_str in hosts:
                                                 if not hosts[rip_str]["hostname"]:
                                                     hosts[rip_str]["hostname"] = rname
-                                                hosts[rip_str]["dns_names"].add(rname)
+                                                if len(hosts[rip_str]["dns_names"]) < MAX_DNS_ENTRIES:
+                                                    hosts[rip_str]["dns_names"].add(rname)
                                         an = an.payload if hasattr(an, "payload") else None
                             except Exception:
                                 pass
@@ -2525,7 +2546,8 @@ def analyze_pcap(filepath):
                             _ftxt = payload.decode("utf-8", errors="replace").strip()
                             _fcmd = _ftxt.upper()
                             if _fcmd.startswith("USER "):
-                                _cred_ftp[conn_key] = {"user": _ftxt[5:].strip()[:120]}
+                                if len(_cred_ftp) < MAX_CRED_STATE_ENTRIES:
+                                    _cred_ftp[conn_key] = {"user": _ftxt[5:].strip()[:120]}
                             elif _fcmd.startswith("PASS ") and conn_key in _cred_ftp:
                                 _cred_rec = {"protocol": "FTP", "type": "USER/PASS",
                                              "username": _cred_ftp.pop(conn_key)["user"],
@@ -2541,7 +2563,8 @@ def analyze_pcap(filepath):
                                     _cred_rec = {"protocol": "SMTP", "type": "AUTH PLAIN",
                                                  "username": _pts[1][:120], "password": _pts[2][:120]}
                             elif re.match(r"AUTH LOGIN", _stxt, re.IGNORECASE):
-                                _cred_smtp[conn_key] = {"phase": "user"}
+                                if len(_cred_smtp) < MAX_CRED_STATE_ENTRIES:
+                                    _cred_smtp[conn_key] = {"phase": "user"}
                             elif conn_key in _cred_smtp:
                                 _cs = _cred_smtp[conn_key]
                                 if _cs.get("phase") == "user":
@@ -2556,7 +2579,8 @@ def analyze_pcap(filepath):
                         elif dport in _CRED_POP3_PORTS or sport in _CRED_POP3_PORTS:
                             _ptxt = payload.decode("utf-8", errors="replace").strip()
                             if _ptxt.upper().startswith("USER "):
-                                _cred_pop3[conn_key] = {"user": _ptxt[5:].strip()[:120]}
+                                if len(_cred_pop3) < MAX_CRED_STATE_ENTRIES:
+                                    _cred_pop3[conn_key] = {"user": _ptxt[5:].strip()[:120]}
                             elif _ptxt.upper().startswith("PASS ") and conn_key in _cred_pop3:
                                 _cred_rec = {"protocol": "POP3", "type": "USER/PASS",
                                              "username": _cred_pop3.pop(conn_key)["user"],
@@ -2644,6 +2668,8 @@ def analyze_pcap(filepath):
                                     _clean.append(_raw_tel[_ti])
                                     _ti += 1
                             _tel_txt = _clean.decode("utf-8", errors="replace")
+                            if conn_key not in _cred_telnet and len(_cred_telnet) >= MAX_CRED_STATE_ENTRIES:
+                                continue
                             _tstate = _cred_telnet.setdefault(conn_key, {"phase": None, "buf": "", "user": ""})
                             _tel_lower = _tel_txt.lower()
                             if "login:" in _tel_lower or "username:" in _tel_lower:
@@ -3393,6 +3419,20 @@ def merge_results(results):
 
 # ── Security headers ──────────────────────────────────────────────────────────
 
+@app.errorhandler(413)
+def request_entity_too_large(e):
+    return jsonify({"error": "Upload too large. Maximum total size is 1 GB."}), 413
+
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "Not found."}), 404
+
+@app.errorhandler(500)
+def internal_server_error(e):
+    logger.exception("Unhandled 500 error")
+    return jsonify({"error": "Internal server error."}), 500
+
+
 @app.after_request
 def set_security_headers(response):
     response.headers["Content-Security-Policy"] = (
@@ -3419,7 +3459,9 @@ def index():
 @app.route("/upload", methods=["POST"])
 def upload():
     with _file_body_cache_lock:
+        global _file_body_cache_bytes
         _file_body_cache.clear()
+        _file_body_cache_bytes = 0
     files = request.files.getlist("file")
     if not files:
         single = request.files.get("file")
@@ -3491,11 +3533,10 @@ def download_file(sha256):
         entry = _file_body_cache.get(sha256)
     if entry is None:
         return jsonify({"error": "File not in cache. Re-upload the PCAP to download."}), 404
+    safe_fn = secure_filename(entry["filename"]) or f"transfer_{sha256[:8]}"
     resp = make_response(entry["body"])
     resp.headers["Content-Type"] = entry["mime"]
-    resp.headers["Content-Disposition"] = (
-        f'attachment; filename="{entry["filename"]}"'
-    )
+    resp.headers["Content-Disposition"] = f'attachment; filename="{safe_fn}"'
     resp.headers["Content-Length"] = len(entry["body"])
     return resp
 

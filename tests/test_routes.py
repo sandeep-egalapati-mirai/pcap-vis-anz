@@ -131,6 +131,85 @@ def test_upload_max_files_accepted(client):
     assert "nodes" in resp.get_json()
 
 
+# ── Robustness: error handlers ────────────────────────────────────────────────
+
+def test_413_handler_returns_json(client):
+    """413 RequestEntityTooLarge should return JSON, not Werkzeug's HTML page."""
+    orig = flask_app.config.get("MAX_CONTENT_LENGTH")
+    flask_app.config["MAX_CONTENT_LENGTH"] = 10  # 10-byte cap for this test
+    try:
+        resp = _upload(client, b"A" * 11, "big.pcap")
+        # Werkzeug may return 413 or 400 depending on where the limit is enforced;
+        # either way the response must be JSON (not HTML).
+        assert resp.status_code in (400, 413)
+        assert resp.get_json() is not None
+    finally:
+        flask_app.config["MAX_CONTENT_LENGTH"] = orig
+
+
+def test_404_handler_returns_json(client):
+    resp = client.get("/no-such-route-xyz")
+    assert resp.status_code == 404
+    body = resp.get_json()
+    assert body is not None
+    assert "error" in body
+
+
+# ── Robustness: malformed batch ───────────────────────────────────────────────
+
+def test_malformed_mid_batch_returns_partial_results(client):
+    """One garbage file in a batch should not kill the whole request."""
+    data = {
+        "file": [
+            (io.BytesIO(_PCAP_HEADER), "good1.pcap"),
+            (io.BytesIO(b"GARBAGE_NOT_PCAP"), "bad.pcap"),
+            (io.BytesIO(_PCAP_HEADER), "good2.pcap"),
+        ]
+    }
+    resp = client.post("/upload", data=data, content_type="multipart/form-data")
+    # Must not crash; may return 200 (with warnings) or 400 depending on validation
+    assert resp.status_code in (200, 400)
+    assert resp.get_json() is not None
+
+
+# ── Robustness: download filename sanitisation ─────────────────────────────────
+
+def test_download_unknown_hash_returns_404_json(client):
+    resp = client.get("/download/" + "a" * 64)
+    assert resp.status_code == 404
+    assert resp.get_json() is not None
+
+
+def test_download_invalid_hash_returns_400(client):
+    resp = client.get("/download/../../etc/passwd")
+    assert resp.status_code in (400, 404)
+    body = resp.get_json()
+    assert body is not None
+
+
+# ── Robustness: allowed_file edge cases ───────────────────────────────────────
+
+def test_upload_dot_only_filename_rejected(client):
+    """A filename of '.' must be rejected cleanly (not index-error internally)."""
+    resp = client.post(
+        "/upload",
+        data={"file": (io.BytesIO(_PCAP_HEADER), ".")},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400
+    assert resp.get_json() is not None
+
+
+def test_upload_no_extension_filename_rejected(client):
+    resp = client.post(
+        "/upload",
+        data={"file": (io.BytesIO(_PCAP_HEADER), "nodotfile")},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400
+    assert resp.get_json() is not None
+
+
 # ── Other routes ──────────────────────────────────────────────────────────────
 
 def test_gpu_status_returns_json(client):

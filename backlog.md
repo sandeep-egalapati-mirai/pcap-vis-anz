@@ -79,6 +79,19 @@
 - [x] Dashboard / summary view — 8th view tab (⊛ Dashboard); 5 summary cards (hosts/connections/packets/anomalies/protocols); top-10 risk-score horizontal bar chart; protocol distribution bars; anomaly severity chips (High/Med/Low/Info counts); busiest-connections list; clicking a risk-bar row jumps to graph and highlights the node; key shortcut: 8
 - [x] Dashboard Top Anomalies panel — lists up to 6 highest-severity anomaly groups (sorted high→info, then by count); each row shows a severity dot + human-readable summary reusing `_anomalySummary()`; clicking any row calls `_jumpToAnomaly()` to navigate to the graph, select the source node, and open the detail panel; "+N more" footer when findings exceed the display limit; empty state "No anomalies detected"
 - [x] Raise multi-file upload cap to 100 — backend `MAX_UPLOAD_FILES = 100` constant replaces hard-coded `10`; frontend pre-validates count in `uploadFiles()` with matching error message; drop-zone hint updated; `test_routes.py` boundary tests updated to 100/101
+- [x] Robustness hardening pass (BH1–BH6, FH1–FH5, 12 new tests):
+  - **BH1** JSON error handlers for 413/404/500 — API contract preserved under all failure modes
+  - **BH2** `secure_filename` on download `Content-Disposition` — removes header-injection/path-traversal risk
+  - **BH3** `_file_body_cache` locked writes + 256 MB byte cap — removes data race and memory exhaustion
+  - **BH4** `MAX_CONNECTIONS = 200_000` cap — prevents N² connection-table blowup on crafted PCAPs
+  - **BH5** Per-host/conn caps: `ttl_values` ≤256, `dns_names`/`dns_queries` ≤1000, cred-state dicts ≤5000
+  - **BH6** `allowed_file` rejects bare `"."` and empty-extension filenames
+  - **FH1** Session validator requires `Array.isArray(nodes) && Array.isArray(edges)`
+  - **FH2** `||0` / `||1` guards on all `packet_count` divisors (node radius, edge width, canvas, collision, note icons)
+  - **FH3** `fmtNum`/`fmtBytes` guard non-finite/undefined inputs centrally
+  - **FH4** `renderGraph`/`renderOTMap`/`renderVlanGraph` normalise non-array shapes before iterating
+  - **FH5** `exportCsv` guards `protocols`/`ports` with `||[]`; three `localStorage.setItem` calls wrapped in try/catch
+  - Deferred (out of scope): thread cancellation on `analyze_pcap` timeout; mass `addEventListener` null guards
 
 ## VLAN Follow-ups
 

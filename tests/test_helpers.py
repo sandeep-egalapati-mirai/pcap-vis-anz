@@ -3,7 +3,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import purdue_level_py
+from app import purdue_level_py, allowed_file
 
 
 # ── purdue_level_py ───────────────────────────────────────────────────────────
@@ -56,6 +56,30 @@ def test_purdue_level_it_infrastructure():
     assert purdue_level_py("DNS Server") == 4
     assert purdue_level_py("Container Host") == 4
     assert purdue_level_py("Discovery") == 4
+
+
+# ── allowed_file ──────────────────────────────────────────────────────────────
+
+def test_allowed_file_dot_only():
+    """Filename '.' has an empty extension after rsplit — must return False."""
+    assert allowed_file(".") is False
+
+def test_allowed_file_no_extension():
+    assert allowed_file("nodotfile") is False
+
+def test_allowed_file_valid_extensions():
+    assert allowed_file("capture.pcap") is True
+    assert allowed_file("capture.pcapng") is True
+    assert allowed_file("capture.cap") is True
+
+def test_allowed_file_invalid_extension():
+    assert allowed_file("capture.txt") is False
+    assert allowed_file("capture.exe") is False
+
+def test_allowed_file_double_extension():
+    """Only the last extension matters."""
+    assert allowed_file("archive.tar.pcap") is True
+    assert allowed_file("capture.pcap.txt") is False
 
 def test_purdue_level_no_country_is_not_l5():
     assert purdue_level_py("Windows Host") == 4  # no country → L4, not L5

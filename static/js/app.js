@@ -429,13 +429,14 @@ const ANOMALY_EXPLANATIONS = {
 };
 
 function fmtBytes(b) {
+  if (!Number.isFinite(b) || b < 0) return "0 B";
   if (b < 1024) return b + " B";
   if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
   return (b / 1048576).toFixed(1) + " MB";
 }
 
 function fmtNum(n) {
-  return n.toLocaleString();
+  return Number.isFinite(n) ? n.toLocaleString() : "0";
 }
 
 /* ── Toast notifications ─────────────────────────────────────────────────── */
@@ -1718,7 +1719,7 @@ function drawCanvasEdges() {
     ctx.moveTo(sx, sy);
     ctx.lineTo(ex, ey);
     ctx.strokeStyle = isCross ? "#ff8c00" : protoColor(d.protocols);
-    ctx.lineWidth = 1 + Math.log1p(d.packet_count / _canvasMaxEdgePkt * 50) * 1.2;
+    ctx.lineWidth = 1 + Math.log1p((d.packet_count || 0) / _canvasMaxEdgePkt * 50) * 1.2;
     ctx.stroke();
   }
   ctx.restore();
@@ -1730,6 +1731,10 @@ function renderGraph(data) {
   nodesGroup.selectAll("*").remove();
   if (simulation) { simulation.on("tick", null).on("end", null); simulation.stop(); }
   clearTimeout(_zoomFitTimer);
+
+  // Defensive normalisation: session import validates shapes, but guard here too
+  if (!Array.isArray(data.nodes)) data.nodes = [];
+  if (!Array.isArray(data.edges)) data.edges = [];
 
   data._nodeMap = {};
   data.nodes.forEach(n => { data._nodeMap[n.id] = n; n._visible = true; });
@@ -1746,14 +1751,14 @@ function renderGraph(data) {
   const noConnMsg = document.getElementById("no-connections-msg");
   if (noConnMsg) noConnMsg.classList.toggle("visible", links.length === 0 && nodes.length > 0);
 
-  const maxPkt = nodes.reduce((m, n) => Math.max(m, n.packet_count), 1);
+  const maxPkt = Math.max(1, nodes.reduce((m, n) => Math.max(m, n.packet_count || 0), 0));
   function nodeRadius(d) {
-    return 6 + Math.log1p(d.packet_count / maxPkt * 200) * 3;
+    return 6 + Math.log1p((d.packet_count || 0) / maxPkt * 200) * 3;
   }
 
-  const maxEdgePkt = links.reduce((m, e) => Math.max(m, e.packet_count), 1);
+  const maxEdgePkt = Math.max(1, links.reduce((m, e) => Math.max(m, e.packet_count || 0), 0));
   function edgeWidth(d) {
-    return 1 + Math.log1p(d.packet_count / maxEdgePkt * 50) * 1.2;
+    return 1 + Math.log1p((d.packet_count || 0) / maxEdgePkt * 50) * 1.2;
   }
 
   // ── Canvas edge mode (GPU-composited rendering for large graphs) ──
@@ -1929,10 +1934,10 @@ function renderGraph(data) {
 function buildSimulation(nodes, links, cx, cy, layout) {
   if (simulation) { simulation.on("tick", null).on("end", null); simulation.stop(); }
 
-  const _maxPkt = nodes.reduce((m, n) => Math.max(m, n.packet_count), 1);
+  const _maxPkt = Math.max(1, nodes.reduce((m, n) => Math.max(m, n.packet_count || 0), 0));
   const sim = d3.forceSimulation(nodes)
     .force("collide", d3.forceCollide().radius(d => {
-      return 6 + Math.log1p(d.packet_count / _maxPkt * 200) * 3 + 12;
+      return 6 + Math.log1p((d.packet_count || 0) / _maxPkt * 200) * 3 + 12;
     }));
 
   if (layout === "force") {
@@ -3619,6 +3624,8 @@ function purdueLevel(node) {
 
 function renderOTMap(data) {
   if (!data) return;
+  if (!Array.isArray(data.nodes)) data.nodes = [];
+  if (!Array.isArray(data.edges)) data.edges = [];
   const svg = document.getElementById("ot-map-svg");
   svg.innerHTML = "";
 
@@ -5030,7 +5037,7 @@ function renderVlanGraph(data) {
   const svgEl = document.getElementById("vlan-svg");
   const emptyEl = document.getElementById("vlan-empty");
 
-  const allVlans = data.stats.vlans || [];
+  const allVlans = ((data.stats || {}).vlans) || [];
   const hasUntagged = data.nodes.some(n => n.vlan_untagged);
   const totalVlans = allVlans.length + (hasUntagged ? 1 : 0);
 
@@ -6482,10 +6489,10 @@ function exportCsv() {
     rows.push([
       e.source,
       e.target,
-      e.protocols.join(";"),
+      (e.protocols || []).join(";"),
       e.packet_count,
       e.bytes,
-      e.ports.join(";"),
+      (e.ports || []).join(";"),
       duration,
     ]);
   });
@@ -6984,7 +6991,7 @@ document.getElementById("session-file-input").addEventListener("change", (e) => 
   reader.onload = (ev) => {
     try {
       const data = JSON.parse(ev.target.result);
-      if (!data.nodes || !data.edges) throw new Error("Invalid session file");
+      if (!Array.isArray(data.nodes) || !Array.isArray(data.edges)) throw new Error("Invalid session file: nodes and edges must be arrays");
       loadGraph(data);
       closeModal();
     } catch (err) {
@@ -7031,7 +7038,7 @@ function applyAnnotations() {
     const g = d3.select(this);
     g.selectAll(".node-note-icon").remove();
     if (note) {
-      const r = 6 + Math.log1p(d.packet_count / graphData.nodes.reduce((m, n) => Math.max(m, n.packet_count), 1) * 200) * 3;
+      const r = 6 + Math.log1p((d.packet_count || 0) / Math.max(1, graphData.nodes.reduce((m, n) => Math.max(m, n.packet_count || 0), 0)) * 200) * 3;
       g.append("text")
         .attr("class", "node-note-icon")
         .attr("dy", -(r + 4))
@@ -7048,7 +7055,7 @@ function updateNoteIcon(ip, hasNote) {
     const g = d3.select(this);
     g.selectAll(".node-note-icon").remove();
     if (hasNote) {
-      const r = 6 + Math.log1p(d.packet_count / graphData.nodes.reduce((m, n) => Math.max(m, n.packet_count), 1) * 200) * 3;
+      const r = 6 + Math.log1p((d.packet_count || 0) / Math.max(1, graphData.nodes.reduce((m, n) => Math.max(m, n.packet_count || 0), 0)) * 200) * 3;
       g.append("text")
         .attr("class", "node-note-icon")
         .attr("dy", -(r + 4))
@@ -7558,8 +7565,10 @@ function updateMinimapViewport(bounds, bw, bh) {
     sidebar.classList.toggle("collapsed", collapsed);
     toggleBtn.textContent = collapsed ? "›" : "‹";
     toggleBtn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
-    if (collapsed) localStorage.setItem("pv_sidebar_collapsed", "1");
-    else localStorage.removeItem("pv_sidebar_collapsed");
+    try {
+      if (collapsed) localStorage.setItem("pv_sidebar_collapsed", "1");
+      else localStorage.removeItem("pv_sidebar_collapsed");
+    } catch(_) {}
   }
 
   toggleBtn.addEventListener("click", () => {
@@ -7677,8 +7686,10 @@ document.getElementById("ctx-open-table").addEventListener("click", () => {
   btn.addEventListener("click", () => {
     const next = document.body.dataset.theme === "light" ? "dark" : "light";
     applyTheme(next);
-    if (next === "light") localStorage.setItem("pv_theme", "light");
-    else localStorage.removeItem("pv_theme");
+    try {
+      if (next === "light") localStorage.setItem("pv_theme", "light");
+      else localStorage.removeItem("pv_theme");
+    } catch(_) {}
   });
 })();
 
@@ -7812,8 +7823,10 @@ function updateNodeColors() {
     colorBlindMode = !colorBlindMode;
     btn.classList.toggle("active", colorBlindMode);
     btn.title = colorBlindMode ? "Colour-blind safe palette (on)" : "Colour-blind safe palette";
-    if (colorBlindMode) localStorage.setItem("pv_colorblind", "1");
-    else localStorage.removeItem("pv_colorblind");
+    try {
+      if (colorBlindMode) localStorage.setItem("pv_colorblind", "1");
+      else localStorage.removeItem("pv_colorblind");
+    } catch(_) {}
     updateNodeColors();
   });
 })();

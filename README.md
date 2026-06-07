@@ -274,7 +274,9 @@ The suite contains 271 tests across 11 files covering protocol parsers, anomaly 
 | `MAX_CONTENT_LENGTH` | 1 GB | Maximum total upload size |
 | `MAX_PACKETS` | 1,000,000 | Packets processed per file |
 | `MAX_HOSTS` | 50,000 | Max unique hosts tracked per file |
+| `MAX_CONNECTIONS` | 200,000 | Max unique IP-pairs tracked per file |
 | `MAX_STORED_PER_CONN` | 50 | Packets stored per connection for the inspector |
+| `_FILE_CACHE_MAX_BYTES` | 256 MB | Memory budget for captured file bodies |
 | Connections in inspector | top 40 | Connections with packet detail (by packet count) |
 | Ports shown per node | 30 | Open ports listed in the detail panel |
 | DNS names per node | 5 | Resolved hostnames shown in the detail panel |
@@ -291,6 +293,8 @@ This tool is designed for **air-gapped / offline use**:
 - PNG export uses `blob:` URLs — no third-party image host
 
 HTTP security headers are set on every response (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`). The app binds to `127.0.0.1` by default so it is not reachable from the network. Pass `--public` to bind to `0.0.0.0` for LAN access — only do this on trusted networks, as the app processes potentially sensitive capture files.
+
+Robustness hardening applied in v0.9: all API endpoints return JSON errors (including 413/404/500), captured file bodies are memory-bounded (256 MB cache), connection/host/DNS/credential-state tables are capped, download filenames are sanitised with `secure_filename`, and the session-import validator rejects non-array shapes before they reach the renderers.
 
 ## Troubleshooting
 
