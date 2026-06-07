@@ -315,3 +315,39 @@ def test_merge_risk_score_defaults_zero():
     r = _result(nodes=[_node("10.0.0.1")], edges=[], total_packets=5)
     out = merge_results([r])
     assert out["nodes"][0]["risk_score"] == 0
+
+
+# ── Stats schema completeness (M1 regression) ─────────────────────────────────
+
+def _result_with_stats(extra_stats, **kwargs):
+    """Like _result() but merges extra_stats into the stats dict."""
+    r = _result(**kwargs)
+    r["stats"].update(extra_stats)
+    return r
+
+
+def test_merge_stats_has_parse_errors():
+    """merge_results must propagate parse_errors so the frontend can show a toast."""
+    r1 = _result_with_stats({"parse_errors": 3}, nodes=[], edges=[], total_packets=10)
+    r2 = _result_with_stats({"parse_errors": 2}, nodes=[], edges=[], total_packets=10)
+    out = merge_results([r1, r2])
+    assert "parse_errors" in out["stats"], "parse_errors key missing from merged stats"
+    assert out["stats"]["parse_errors"] == 5
+
+
+def test_merge_stats_has_geoip_available():
+    """merge_results must carry geoip_available so the frontend GeoIP toast fires."""
+    r = _result(nodes=[], edges=[], total_packets=5)
+    out = merge_results([r])
+    assert "geoip_available" in out["stats"], "geoip_available key missing from merged stats"
+    # Value is boolean (may be True or False depending on test environment)
+    assert isinstance(out["stats"]["geoip_available"], bool)
+
+
+def test_merge_stats_has_cdp_lldp_discovered():
+    """merge_results must sum cdp_lldp_discovered across files."""
+    r1 = _result_with_stats({"cdp_lldp_discovered": 2}, nodes=[], edges=[], total_packets=5)
+    r2 = _result_with_stats({"cdp_lldp_discovered": 3}, nodes=[], edges=[], total_packets=5)
+    out = merge_results([r1, r2])
+    assert "cdp_lldp_discovered" in out["stats"], "cdp_lldp_discovered key missing from merged stats"
+    assert out["stats"]["cdp_lldp_discovered"] == 5

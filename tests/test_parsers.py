@@ -445,3 +445,49 @@ def test_coap_truncated_option_no_crash():
         assert result is None or isinstance(result, dict)
     except Exception as e:
         assert False, f"parse_coap raised on truncated option: {e}"
+
+
+# ── MQTT ──────────────────────────────────────────────────────────────────────
+
+def _mqtt_subscribe(message_id, topics):
+    """Build a minimal MQTT SUBSCRIBE payload (no fixed-header wrapper needed for parse_mqtt)."""
+    from app import parse_mqtt
+    # Fixed header: packet type 8 (SUBSCRIBE), flags 0x02; remaining length follows
+    topic_bytes = b""
+    for topic, qos in topics:
+        t_enc = topic.encode("utf-8")
+        topic_bytes += struct.pack(">H", len(t_enc)) + t_enc + bytes([qos])
+    # Remaining = 2 (message_id) + topic_bytes
+    remaining = struct.pack(">H", message_id) + topic_bytes
+    remaining_len = len(remaining)
+    assert remaining_len < 128, "test helper only supports 1-byte remaining length"
+    return bytes([0x82, remaining_len]) + remaining
+
+
+def test_mqtt_subscribe_single_topic():
+    """parse_mqtt must capture a SUBSCRIBE topic correctly."""
+    from app import parse_mqtt
+    payload = _mqtt_subscribe(1, [("/sensor/temp", 0)])
+    r = parse_mqtt(payload)
+    assert r is not None
+    assert r["type"] == 8           # msg_type integer
+    assert r["type_name"] == "SUBSCRIBE"
+    assert "/sensor/temp" in r["details"].get("topics", "")
+
+
+def test_mqtt_subscribe_topic_at_buffer_end():
+    """L1 fix: a topic whose bytes end exactly at the buffer boundary must be captured.
+
+    Before the fix, ``while p_idx + 2 < len(payload)`` used strict-less-than, which
+    caused the loop to exit one iteration early when the last topic occupied the final
+    two bytes (the length prefix).  The corrected guard is ``<= len(payload)``.
+    """
+    from app import parse_mqtt
+    # Build a SUBSCRIBE with two topics; the second topic ends exactly at buffer boundary.
+    payload = _mqtt_subscribe(42, [("a/b", 1), ("x/y", 0)])
+    r = parse_mqtt(payload)
+    assert r is not None
+    topics_str = r["details"].get("topics", "")
+    assert "x/y" in topics_str, (
+        f"Second topic 'x/y' ending at buffer boundary was not captured; got: {topics_str!r}"
+    )

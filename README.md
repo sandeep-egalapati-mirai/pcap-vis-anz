@@ -19,7 +19,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Filtering** — Filter graph by protocol or host type via sidebar checkboxes; selections saved to localStorage and restored on next load
 - **Search** — Find nodes by IP address or hostname (300ms debounce); `/` keyboard shortcut focuses the search box
 - **Detail panel** — Click any node to see host details (ports, services, traffic stats, DNS queries, TLS SNI names, anomalies, OT analysis, conversations, and captured credentials); copy buttons (⧉) next to IP, hostname, JA3 fingerprints, and SHA-256 hashes
-- **Eight views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout), OT Log (chronological OT command history), VLAN Graph (VLAN segment topology), Diff (baseline comparison), and **Dashboard** (summary cards, risk-score bar chart, protocol distribution, anomaly severity breakdown, **clickable Top Anomalies list** with drill-down to graph, busiest connections; key `8`)
+- **Eight views** — Graph (network map), Table (sortable connection list), DNS Map (query explorer), OT Map (Purdue Model zone layout), OT Log (chronological OT command history), VLAN Graph (VLAN segment topology), Diff (baseline comparison), and **Dashboard** (summary cards, risk-score bar chart — **click any bar to open the host detail panel**, protocol distribution, anomaly severity breakdown, **clickable Top Anomalies list** with drill-down to graph, busiest connections; key `8`)
 - **Light/dark mode** — ☀/☾ toggle in header; full CSS variable override for both themes; persisted in localStorage with FOUC prevention
 - **Collapsible sidebar** — `‹`/`›` toggle button collapses the sidebar to a 32 px icon rail; state persisted in localStorage
 - **Packet inspector search** — live-filter input above the packet table; matches any column text; shows `N / M` count badge; clears when switching connections
@@ -279,6 +279,7 @@ The suite contains 319 tests across 12 files covering protocol parsers, anomaly 
 | `_FILE_CACHE_MAX_BYTES` | 256 MB | Memory budget for captured file bodies |
 | `RENDER_NODE_CAP` | 1,500 | Max SVG node groups drawn in the force graph (see below) |
 | `RENDER_EDGE_CAP` | 4,000 | Max edges drawn (SVG/canvas) in the force graph |
+| `MAX_CRED_STATE_ENTRIES` | 5,000 | Half-open credential state entries per protocol (Telnet, FTP, etc.); module-level so it can be overridden in tests |
 
 ### Full-fidelity exports vs. render caps
 

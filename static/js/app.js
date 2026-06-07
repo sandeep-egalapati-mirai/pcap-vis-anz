@@ -1273,20 +1273,37 @@ function applyFilters(skipFit) {
 
   if (useCanvasEdges) drawCanvasEdges();
 
-  // Zero-results feedback — message distinguishes filter type
+  // Zero-results feedback — message distinguishes filter type.
+  // Special case: if a search term matches nodes in the full dataset but none are
+  // rendered (they were capped out), suppress the "no match" overlay and toast instead.
   const noResults = document.getElementById("no-results-msg");
-  if (noResults) noResults.classList.toggle("visible", visibleNodeIds.size === 0 && !!graphData);
   const noResultsText = document.getElementById("no-results-text");
-  if (noResultsText) {
-    noResultsText.textContent = (isolatedNodeIp && visibleNodeIds.size === 0)
-      ? "No neighbours found"
-      : (_tlVisibleIps !== null && visibleNodeIds.size === 0)
-      ? "No activity in this time window"
-      : "No hosts match the current filters";
+  if (visibleNodeIds.size === 0 && !!graphData && searchTerm) {
+    const cappedMatch = (graphData.nodes || []).some(n =>
+      n.ip.includes(searchTerm) || (n.hostname && n.hostname.toLowerCase().includes(searchTerm)));
+    if (cappedMatch) {
+      if (noResults) noResults.classList.remove("visible");
+      showToast(`"${searchTerm}" is outside the rendered top-${RENDER_NODE_CAP} hosts — visible in Table view and exports.`, "info", 6000);
+    } else {
+      if (noResults) noResults.classList.add("visible");
+      if (noResultsText) noResultsText.textContent = "No hosts match the current filters";
+    }
+  } else {
+    if (noResults) noResults.classList.toggle("visible", visibleNodeIds.size === 0 && !!graphData);
+    if (noResultsText) {
+      noResultsText.textContent = (isolatedNodeIp && visibleNodeIds.size === 0)
+        ? "No neighbours found"
+        : (_tlVisibleIps !== null && visibleNodeIds.size === 0)
+        ? "No activity in this time window"
+        : "No hosts match the current filters";
+    }
   }
 
-  // Fit viewport to visible nodes (debounced so it doesn't fire during simulation)
-  if (!skipFit && visibleNodeIds.size > 0 && visibleNodeIds.size < (graphData.nodes || []).length) {
+  // Fit viewport to visible nodes (debounced so it doesn't fire during simulation).
+  // Compare against the rendered count (not full graphData.nodes.length) so that under
+  // the render cap the fit doesn't trigger on every filter cycle.
+  const _renderedCount = nodesGroup.selectAll(".node").size();
+  if (!skipFit && visibleNodeIds.size > 0 && visibleNodeIds.size < _renderedCount) {
     clearTimeout(applyFilters._fitTimer);
     applyFilters._fitTimer = setTimeout(zoomFitVisible, 300);
   }
@@ -1774,8 +1791,7 @@ function renderGraph(data) {
   if (!Array.isArray(data.nodes)) data.nodes = [];
   if (!Array.isArray(data.edges)) data.edges = [];
 
-  data._nodeMap = {};
-  data.nodes.forEach(n => { data._nodeMap[n.id] = n; n._visible = true; });
+  data.nodes.forEach(n => { n._visible = true; });
 
   // Build local node/edge copies — the render cap operates only on these locals.
   // graphData.nodes / graphData.edges are NEVER mutated here; exports depend on them being full.
@@ -5911,10 +5927,18 @@ function renderDashboard() {
         <div class="db-bar-track"><div class="db-bar-fill ${cls}" style="width:${pct}%"></div></div>
         <div class="db-bar-val">${n.risk_score || 0}</div>`;
       row.addEventListener("click", () => {
+        const nd = (graphData.nodes || []).find(x => x.id === n.id);
+        if (!nd) return;
+        selectedNode = nd;
+        showDetailPanel(nd);
+        detailPanel.classList.add("open");
         setView("graph");
         setTimeout(() => {
-          const nd = nodes.find(x => x.id === n.id);
-          if (nd) { selectedNode = nd; buildDetailPanel(nd); highlightNode(nd.ip); }
+          if (_isRendered(nd.id)) {
+            highlightNode(nd, linksGroup.selectAll(".link"), nodesGroup.selectAll(".node"));
+          } else {
+            showToast(`${nd.id} is outside the rendered top-${RENDER_NODE_CAP} — visible in Table view and exports.`, "info", 5000);
+          }
         }, 80);
       });
       barList.appendChild(row);
@@ -6774,6 +6798,8 @@ function generateAuditReport() {
   const xfiles = graphData.files || [];
   const otCmds = graphData.ot_commands || [];
 
+  // Escape a string for use inside a markdown table cell (prevent column breaks)
+  const mdCell = s => String(s == null ? "—" : s).replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ");
   const lines = [];
   const h = (lvl, txt) => lines.push("#".repeat(lvl) + " " + txt);
   const p = txt => lines.push(txt);
@@ -6789,8 +6815,9 @@ function generateAuditReport() {
   p(`|--------|-------|`);
   p(`| Hosts | ${s.hosts ?? nodes.length} |`);
   p(`| Connections | ${s.connections ?? edges.length} |`);
-  p(`| Packets | ${s.packets ?? "—"} |`);
-  p(`| Bytes | ${s.bytes ? (s.bytes / 1e6).toFixed(2) + " MB" : "—"} |`);
+  p(`| Packets | ${s.total_packets != null ? fmtNum(s.total_packets) : "—"} |`);
+  const _totalBytes = edges.reduce((a, e) => a + (e.bytes || 0), 0);
+  p(`| Bytes | ${_totalBytes > 0 ? (_totalBytes / 1e6).toFixed(2) + " MB" : "—"} |`);
   p(`| Anomalies | ${anomalies.length} |`);
   p(`| Credentials captured | ${creds.length} |`);
   p(`| File transfers detected | ${xfiles.length} |`);
@@ -6812,7 +6839,7 @@ function generateAuditReport() {
       const host = (n.dns_names && n.dns_names[0]) || n.hostname || "—";
       const risk = n.risk_score ?? 0;
       const aCount = anomalies.filter(a => a.src === n.id || a.dst === n.id).length;
-      p(`| ${n.id} | ${host} | ${n.host_type || "—"} | ${risk} | ${aCount} |`);
+      p(`| ${mdCell(n.id)} | ${mdCell(host)} | ${mdCell(n.host_type || "—")} | ${risk} | ${aCount} |`);
     });
     br();
   }
@@ -6907,7 +6934,7 @@ function generateAuditReport() {
     p(`|------|----------|--------|-------------|----------|------|`);
     creds.slice(0, 100).forEach(c => {
       const t = c.rel_time != null ? `+${c.rel_time}s` : (c.time || "—");
-      p(`| ${t} | ${c.protocol} | ${c.src} | ${c.dst} | ${c.username || "—"} | ${c.type} |`);
+      p(`| ${mdCell(t)} | ${mdCell(c.protocol)} | ${mdCell(c.src)} | ${mdCell(c.dst)} | ${mdCell(c.username || "—")} | ${mdCell(c.type)} |`);
     });
     if (creds.length > 100) p(`\n_…and ${creds.length - 100} more_`);
     br();
@@ -6921,7 +6948,7 @@ function generateAuditReport() {
     xfiles.slice(0, 50).forEach(f => {
       const t = f.rel_time != null ? `+${f.rel_time}s` : "—";
       const sz = _fmtBytes(f.size);
-      p(`| ${t} | ${f.filename} | ${f.mime_type || "—"} | ${sz} | \`${(f.sha256 || '').slice(0, 16)}…\` | ${f.src} → ${f.dst} |`);
+      p(`| ${mdCell(t)} | ${mdCell(f.filename)} | ${mdCell(f.mime_type || "—")} | ${sz} | \`${(f.sha256 || '').slice(0, 16)}…\` | ${mdCell(f.src)} → ${mdCell(f.dst)} |`);
     });
     if (xfiles.length > 50) p(`_…and ${xfiles.length - 50} more_`);
     br();

@@ -234,6 +234,10 @@ HOST_TYPE_PRIORITY = [
 
 SUSPICIOUS_PORTS = {4444, 1337, 31337, 6666, 6667, 6668}
 
+# Maximum number of half-open credential state entries per protocol (Telnet, FTP, etc.)
+# Kept as a module-level constant so tests can monkeypatch it to exercise the cap guard.
+MAX_CRED_STATE_ENTRIES = 5_000
+
 # Purdue model level mapping (mirrors JS purdueLevel())
 _PURDUE_L5_TYPES: set[str] = set()  # external hosts determined by country field
 _PURDUE_L4_TYPES = {
@@ -601,7 +605,7 @@ def parse_mqtt(payload_bytes):
         elif msg_type == 8 and len(payload) >= 4:  # SUBSCRIBE
             topics = []
             p_idx = 2  # skip message ID
-            while p_idx + 2 < len(payload):
+            while p_idx + 2 <= len(payload):
                 t_len = (payload[p_idx] << 8) | payload[p_idx+1]
                 p_idx += 2
                 if p_idx + t_len <= len(payload):
@@ -2070,7 +2074,7 @@ def analyze_pcap(filepath):
     MAX_OT_COMMANDS = 5_000
     MAX_TTL_VALUES = 256        # per-host TTL sample cap (enough for Counter.most_common)
     MAX_DNS_ENTRIES = 1_000     # per-host dns_names / dns_queries cap
-    MAX_CRED_STATE_ENTRIES = 5_000  # total half-open cred-state entries per protocol
+    # MAX_CRED_STATE_ENTRIES is module-level (above) so tests can monkeypatch it
     processed = 0
     parse_errors = 0
     _hosts_truncated = False       # True if MAX_HOSTS backstop was hit
@@ -2672,28 +2676,29 @@ def analyze_pcap(filepath):
                                     _clean.append(_raw_tel[_ti])
                                     _ti += 1
                             _tel_txt = _clean.decode("utf-8", errors="replace")
-                            if conn_key not in _cred_telnet and len(_cred_telnet) >= MAX_CRED_STATE_ENTRIES:
-                                continue
-                            _tstate = _cred_telnet.setdefault(conn_key, {"phase": None, "buf": "", "user": ""})
-                            _tel_lower = _tel_txt.lower()
-                            if "login:" in _tel_lower or "username:" in _tel_lower:
-                                _tstate["phase"] = "user"
-                                _tstate["buf"] = ""
-                            elif "password:" in _tel_lower:
-                                _tstate["phase"] = "pass"
-                                _tstate["buf"] = ""
-                            elif _tstate["phase"] in ("user", "pass"):
-                                _tstate["buf"] = (_tstate["buf"] + _tel_txt)[:256]
-                                if "\n" in _tstate["buf"] or "\r" in _tstate["buf"]:
-                                    _val = _tstate["buf"].strip()[:120]
-                                    if _tstate["phase"] == "user":
-                                        _tstate["user"] = _val
-                                        _tstate["phase"] = "pass"
-                                        _tstate["buf"] = ""
-                                    elif _tstate["phase"] == "pass" and _tstate["user"]:
-                                        _cred_rec = {"protocol": "Telnet", "type": "Login",
-                                                     "username": _tstate["user"], "password": _val}
-                                        del _cred_telnet[conn_key]
+                            # Guard only the credential-state branch; never skip the
+                            # whole packet iteration (that would drop packet/byte counts).
+                            if conn_key in _cred_telnet or len(_cred_telnet) < MAX_CRED_STATE_ENTRIES:
+                                _tstate = _cred_telnet.setdefault(conn_key, {"phase": None, "buf": "", "user": ""})
+                                _tel_lower = _tel_txt.lower()
+                                if "login:" in _tel_lower or "username:" in _tel_lower:
+                                    _tstate["phase"] = "user"
+                                    _tstate["buf"] = ""
+                                elif "password:" in _tel_lower:
+                                    _tstate["phase"] = "pass"
+                                    _tstate["buf"] = ""
+                                elif _tstate["phase"] in ("user", "pass"):
+                                    _tstate["buf"] = (_tstate["buf"] + _tel_txt)[:256]
+                                    if "\n" in _tstate["buf"] or "\r" in _tstate["buf"]:
+                                        _val = _tstate["buf"].strip()[:120]
+                                        if _tstate["phase"] == "user":
+                                            _tstate["user"] = _val
+                                            _tstate["phase"] = "pass"
+                                            _tstate["buf"] = ""
+                                        elif _tstate["phase"] == "pass" and _tstate["user"]:
+                                            _cred_rec = {"protocol": "Telnet", "type": "Login",
+                                                         "username": _tstate["user"], "password": _val}
+                                            del _cred_telnet[conn_key]
                     except Exception:
                         pass
                     if _cred_rec:
@@ -3370,6 +3375,8 @@ def merge_results(results):
             ),
             "risk_score": mn.get("risk_score", 0),
             "ip_version": 6 if ":" in ip else 4,
+            "host_type_hints": dict(mn.get("host_type_hints", {})),
+            "has_s7_download": bool(mn.get("has_s7_download", False)),
         })
 
     edges_out = []
@@ -3418,6 +3425,9 @@ def merge_results(results):
             "truncated": truncated,
             "hosts_truncated": any(r.get("stats", {}).get("hosts_truncated") for r in results if "error" not in r),
             "connections_truncated": any(r.get("stats", {}).get("connections_truncated") for r in results if "error" not in r),
+            "parse_errors": sum(r.get("stats", {}).get("parse_errors", 0) for r in results if "error" not in r),
+            "geoip_available": _get_geoip_reader() is not None,
+            "cdp_lldp_discovered": sum(r.get("stats", {}).get("cdp_lldp_discovered", 0) for r in results if "error" not in r),
             "gpu": GPU_AVAILABLE,
             "capture_start": capture_start,
             "capture_end": capture_end,
@@ -3545,7 +3555,7 @@ def download_file(sha256):
     resp = make_response(entry["body"])
     resp.headers["Content-Type"] = entry["mime"]
     resp.headers["Content-Disposition"] = f'attachment; filename="{safe_fn}"'
-    resp.headers["Content-Length"] = len(entry["body"])
+    resp.headers["Content-Length"] = str(len(entry["body"]))
     return resp
 
 

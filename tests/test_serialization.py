@@ -95,3 +95,44 @@ def test_stats_has_truncation_flags(tmp_path):
     assert "connections_truncated" in stats, "stats.connections_truncated key missing"
     assert stats["hosts_truncated"] is False, "hosts_truncated should be False for small capture"
     assert stats["connections_truncated"] is False, "connections_truncated should be False for small capture"
+
+
+# ── Tests: telnet cred-state cap does not drop packet counts (H3 regression) ──
+
+def test_telnet_cred_cap_does_not_drop_packet_count(tmp_path, monkeypatch):
+    """H3 fix: when the telnet cred-state table is full, subsequent telnet packets
+    must still be counted toward hosts and edges — the old ``continue`` skipped the
+    entire packet iteration including the counters.
+
+    We monkeypatch MAX_CRED_STATE_ENTRIES to 0 so a single telnet packet triggers
+    the cap guard, then assert the edge/host packet_count is non-zero.
+    """
+    import app as app_module
+
+    # Lower the cap to 0 → every new telnet conn_key is "full", exercising the guard
+    monkeypatch.setattr(app_module, "MAX_CRED_STATE_ENTRIES", 0)
+
+    # Build a minimal Telnet TCP frame (port 23) with a tiny payload
+    from tests.conftest import _pcap_header, _pcap_record, _eth_ip_tcp
+    frame = _eth_ip_tcp(src_ip="10.5.0.1", dst_ip="10.5.0.2", src_port=54321, dst_port=23,
+                        payload=b"login: ")
+    path = str(tmp_path / "telnet_test.pcap")
+    with open(path, "wb") as f:
+        f.write(_pcap_header())
+        f.write(_pcap_record(frame, ts_sec=0))
+
+    result = app_module.analyze_pcap(path)
+
+    # The packet must have been counted — edge and host should exist
+    edges = {(e["source"], e["target"]): e for e in result.get("edges", [])}
+    nodes = {n["ip"]: n for n in result.get("nodes", [])}
+
+    assert "10.5.0.1" in nodes or "10.5.0.2" in nodes, (
+        "Neither telnet host was recorded — packet counting appears broken"
+    )
+    # Find the edge (direction may be either way)
+    pair = edges.get(("10.5.0.1", "10.5.0.2")) or edges.get(("10.5.0.2", "10.5.0.1"))
+    assert pair is not None, "Telnet edge not recorded — packet was silently dropped"
+    assert pair["packet_count"] >= 1, (
+        f"Edge packet_count={pair['packet_count']} — telnet cap guard skipped packet counting"
+    )

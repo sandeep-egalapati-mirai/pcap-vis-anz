@@ -221,3 +221,17 @@ Items surfaced in the 2026-05-17 robustness review (`REVIEW.md`) that were not a
 
 - [ ] **Port-scan misattribution** — undirected connection key `tuple(sorted([sip,dip]))` loses direction; scanner vs server attribution can be wrong. Needs directional byte/port accounting in `analyze_pcap` core data flow.
 - [ ] **Exfiltration direction** — same undirected key causes `conn["bytes"]` to include both directions; downloads can be flagged as exfiltration. Same root cause as port-scan misattribution.
+
+## Bug-Sweep Fixes (2026-06-07, feature/bug-sweep)
+
+- [x] **H1** — Dashboard "Top Hosts by Risk" bar click threw `ReferenceError: buildDetailPanel is not defined`; `highlightNode(nd.ip)` also used wrong signature. Fixed to call `showDetailPanel(nd)` + `highlightNode(nd, linkSel, nodeSel)` with `_isRendered` guard; capped-out hosts get an informative toast instead.
+- [x] **H2** — Audit report "Packets" and "Bytes" rows were always blank; used `s.packets`/`s.bytes` which don't exist on the backend. Fixed to `s.total_packets` (fmtNum) and edges-summed bytes.
+- [x] **H3** — Telnet cred-state cap (`MAX_CRED_STATE_ENTRIES`) used `continue` inside the main packet loop, silently dropping packet/byte/protocol counting for connections after the cap was reached. Fixed to scope the guard to the telnet state-machine branch only. Promoted `MAX_CRED_STATE_ENTRIES` to module level so tests can monkeypatch it.
+- [x] **M1** — `merge_results` stats dict was missing `parse_errors`, `geoip_available`, and `cdp_lldp_discovered` that single-file `analyze_pcap` emits. Frontend GeoIP toast and parse-error toast never fired for multi-file uploads. Added all three keys.
+- [x] **M2** — Zero-results overlay showed falsely when a searched IP existed in `graphData.nodes` but was capped out of the render. Added a full-dataset check: if a cap-miss match is found, show an informative toast instead of the overlay.
+- [x] **M3** — "Fit to visible" timer fired on every filter cycle when render cap was active (visible count always < full graphData.nodes.length). Fixed to compare against the rendered node count (`nodesGroup.selectAll(".node").size()`).
+- [x] **M4** — Markdown table injection: hostnames/usernames/filenames with `|` or newlines broke audit report table layout. Added `mdCell()` helper (replaces `|`→`\|`, strips CR/LF) applied to all user-data cells in the report.
+- [x] **L1** — MQTT SUBSCRIBE topic loop used `< len(payload)` (strict) causing the final topic to be missed when it ends exactly at the buffer boundary. Changed to `<=`.
+- [x] **L2** — `Content-Length` response header set as `int`; changed to `str(len(...))` for correctness.
+- [x] **L3** — `merge_results` node output dict omitted `host_type_hints` and `has_s7_download` that single-file `analyze_pcap` includes. Added to the output dict for schema parity.
+- [x] **L5** — Dead code: `data._nodeMap = {}` was assigned in `renderGraph` but never read anywhere. Removed.
