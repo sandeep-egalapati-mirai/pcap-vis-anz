@@ -239,6 +239,7 @@ Items surfaced in the 2026-05-17 robustness review (`REVIEW.md`) that were not a
 ## Polish (2026-06-07, feature/vlan-node-icons)
 
 - [x] VLAN Graph host nodes now show the same host-type emoji icons as the main Graph view — `hostIcon(d.host_type)` appended as `<text class="node-icon">` after the host circle; reuses the existing `hostIcon()` function and `.node-icon` CSS (emoji font stack); `text-anchor: middle` and `pointer-events: none` set for correct centering and click-through.
+- [x] **Bug fix**: VLAN graph host-type icons were invisible — `.node-icon` base rule sets `fill: transparent`; main-graph icons are rescued by the more-specific `.node text { fill: var(--text) }` rule, but VLAN node groups use class `vhost` (not `node`) so that rule never applied. Fixed by adding `.attr("fill", "var(--text)")` inline on the VLAN icon text element.
 
 ## Performance Improvements (2026-06-07, feature/perf-improvements)
 
