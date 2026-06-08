@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import re
+import socket
 import tempfile
 import threading
 import statistics
@@ -237,6 +238,18 @@ SUSPICIOUS_PORTS = {4444, 1337, 31337, 6666, 6667, 6668}
 # Maximum number of half-open credential state entries per protocol (Telnet, FTP, etc.)
 # Kept as a module-level constant so tests can monkeypatch it to exercise the cap guard.
 MAX_CRED_STATE_ENTRIES = 5_000
+
+# Pre-compiled regex patterns used inside the hot per-packet credential/file extraction
+# block.  Compiling once at import time removes the per-call cache-lookup overhead.
+_RE_MIME_VALID = re.compile(r'^[a-z0-9][a-z0-9!#$&\-^_.+/]*$')
+_RE_CONTENT_DISP_FNAME = re.compile(r'filename\*?=["\']?([^"\';\r\n]+)', re.IGNORECASE)
+_RE_HTTP_BASIC_AUTH = re.compile(r"Authorization:\s*Basic\s+([A-Za-z0-9+/=]+)", re.IGNORECASE)
+_RE_SMTP_AUTH_PLAIN = re.compile(r"AUTH PLAIN ([A-Za-z0-9+/=]+)", re.IGNORECASE)
+_RE_SMTP_AUTH_LOGIN = re.compile(r"AUTH LOGIN", re.IGNORECASE)
+_RE_IMAP_LOGIN = re.compile(
+    r'[A-Za-z0-9]+ LOGIN ("(?:[^"\\]|\\.)*"|[^\s"]+)\s+("(?:[^"\\]|\\.)*"|[^\s"]+)',
+    re.IGNORECASE,
+)
 
 # Purdue model level mapping (mirrors JS purdueLevel())
 _PURDUE_L5_TYPES: set[str] = set()  # external hosts determined by country field
@@ -2127,8 +2140,8 @@ def analyze_pcap(filepath):
                 if len(raw) < 14:
                     continue
 
-                dmac = ':'.join(f'{b:02x}' for b in raw[0:6])
-                smac = ':'.join(f'{b:02x}' for b in raw[6:12])
+                dmac = raw[0:6].hex(":")   # C-level: ~3× faster than f-string join
+                smac = raw[6:12].hex(":")
                 ethertype = (raw[12] << 8) | raw[13]
                 l2_off = 14
 
@@ -2231,8 +2244,8 @@ def analyze_pcap(filepath):
                 if ethertype == 0x0806:
                     if len(raw) >= l2_off + 28:
                         try:
-                            spa = '.'.join(str(b) for b in raw[l2_off + 14:l2_off + 18])
-                            sha = ':'.join(f'{b:02x}' for b in raw[l2_off + 8:l2_off + 14])
+                            spa = socket.inet_ntoa(raw[l2_off + 14:l2_off + 18])
+                            sha = raw[l2_off + 8:l2_off + 14].hex(":")
                             if spa and spa not in ("0.0.0.0", "255.255.255.255"):
                                 h = host(spa, sha)
                                 h["protocols"].add("ARP")
@@ -2259,8 +2272,8 @@ def analyze_pcap(filepath):
                         continue
                     ttl = raw[l2_off + 8]
                     proto_num = raw[l2_off + 9]
-                    sip = '.'.join(str(b) for b in raw[l2_off + 12:l2_off + 16])
-                    dip = '.'.join(str(b) for b in raw[l2_off + 16:l2_off + 20])
+                    sip = socket.inet_ntoa(raw[l2_off + 12:l2_off + 16])
+                    dip = socket.inet_ntoa(raw[l2_off + 16:l2_off + 20])
                     l3_off = l2_off
                     l4_off = l3_off + ihl
                     is_ipv6 = False
@@ -2297,13 +2310,14 @@ def analyze_pcap(filepath):
                 dh["bytes_recv"] += plen
 
                 # broadcast / multicast flags
-                if dip.endswith(".255") or dip == "255.255.255.255":
+                is_bcast = dip.endswith(".255") or dip == "255.255.255.255"
+                if is_bcast:
                     dh["flags"].add("broadcast")
                 if dip.startswith(("224.", "225.", "239.")) or dip.startswith("ff"):
                     dh["flags"].add("multicast")
 
                 protocol = "IP"
-                conn_key = tuple(sorted([sip, dip]))
+                conn_key = (sip, dip) if sip <= dip else (dip, sip)  # avoids list alloc + sort
 
                 # Cap connection table to prevent N² memory exhaustion on crafted PCAPs
                 if conn_key not in connections and len(connections) >= MAX_CONNECTIONS:
@@ -2326,7 +2340,7 @@ def analyze_pcap(filepath):
                     dh["vlan_ids"].add(_vlan_id)
                     conn["vlan_ids"].add(_vlan_id)
                     vlan_pkt_total[_vlan_id] += 1
-                    if dip.endswith(".255") or dip == "255.255.255.255":
+                    if is_bcast:
                         vlan_pkt_bcast[_vlan_id] += 1
                     if pcp is not None:
                         sh["vlan_pcps"].add(pcp)
@@ -2382,7 +2396,7 @@ def analyze_pcap(filepath):
                         else:
                             dh["dst_ports"].add(dport)
 
-                        connections[conn_key]["dst_ports"].add(dport)
+                        conn["dst_ports"].add(dport)
 
                         # HTTP response file detection
                         if payload and len(files) < MAX_FILES and sport in _CRED_HTTP_PORTS and payload[:5] == b"HTTP/":
@@ -2402,10 +2416,10 @@ def analyze_pcap(filepath):
                                         _hv_s = _hv.strip()
                                         if _hk_l == "content-type":
                                             _mime = _hv_s.split(";")[0].strip().lower()
-                                            if not re.match(r'^[a-z0-9][a-z0-9!#$&\-^_.+/]*$', _mime):
+                                            if not _RE_MIME_VALID.match(_mime):
                                                 _mime = "application/octet-stream"
                                         elif _hk_l == "content-disposition":
-                                            _fnm = re.search(r'filename\*?=["\']?([^"\';\r\n]+)', _hv_s, re.IGNORECASE)
+                                            _fnm = _RE_CONTENT_DISP_FNAME.search(_hv_s)
                                             if _fnm:
                                                 _filename = _fnm.group(1).strip().strip("\"'")[:200]
                                         elif _hk_l == "content-length":
@@ -2512,7 +2526,7 @@ def analyze_pcap(filepath):
                             except Exception:
                                 pass
 
-                        connections[conn_key]["dst_ports"].add(dport)
+                        conn["dst_ports"].add(dport)
 
                 # ── ICMP ─────────────────────────────────────────────────────
                 elif proto_num == 1:
@@ -2528,7 +2542,7 @@ def analyze_pcap(filepath):
                         # HTTP Basic auth & POST form fields
                         if dport in _CRED_HTTP_PORTS and payload[:5] in (b"GET /", b"POST ", b"PUT /", b"PATCH", b"DELET"):
                             _htxt = payload[:4000].decode("utf-8", errors="replace")
-                            _am = re.search(r"Authorization:\s*Basic\s+([A-Za-z0-9+/=]+)", _htxt, re.IGNORECASE)
+                            _am = _RE_HTTP_BASIC_AUTH.search(_htxt)
                             if _am:
                                 _dec = base64.b64decode(_am.group(1) + "==").decode("utf-8", errors="replace")
                                 if ":" in _dec:
@@ -2563,14 +2577,14 @@ def analyze_pcap(filepath):
                         # SMTP AUTH PLAIN / AUTH LOGIN
                         elif dport in _CRED_SMTP_PORTS or sport in _CRED_SMTP_PORTS:
                             _stxt = payload.decode("utf-8", errors="replace").strip()
-                            _m = re.match(r"AUTH PLAIN ([A-Za-z0-9+/=]+)", _stxt, re.IGNORECASE)
+                            _m = _RE_SMTP_AUTH_PLAIN.match(_stxt)
                             if _m:
                                 _dec = base64.b64decode(_m.group(1) + "==").decode("utf-8", errors="replace")
                                 _pts = _dec.split("\x00")
                                 if len(_pts) >= 3:
                                     _cred_rec = {"protocol": "SMTP", "type": "AUTH PLAIN",
                                                  "username": _pts[1][:120], "password": _pts[2][:120]}
-                            elif re.match(r"AUTH LOGIN", _stxt, re.IGNORECASE):
+                            elif _RE_SMTP_AUTH_LOGIN.match(_stxt):
                                 if len(_cred_smtp) < MAX_CRED_STATE_ENTRIES:
                                     _cred_smtp[conn_key] = {"phase": "user"}
                             elif conn_key in _cred_smtp:
@@ -2596,8 +2610,7 @@ def analyze_pcap(filepath):
                         # IMAP LOGIN command (handles quoted credentials)
                         elif dport in _CRED_IMAP_PORTS or sport in _CRED_IMAP_PORTS:
                             _itxt = payload.decode("utf-8", errors="replace").strip()
-                            _im = re.match(r'[A-Za-z0-9]+ LOGIN ("(?:[^"\\]|\\.)*"|[^\s"]+)\s+("(?:[^"\\]|\\.)*"|[^\s"]+)',
-                                           _itxt, re.IGNORECASE)
+                            _im = _RE_IMAP_LOGIN.match(_itxt)
                             if _im:
                                 _cred_rec = {"protocol": "IMAP", "type": "LOGIN",
                                              "username": _im.group(1).strip('"')[:120],
@@ -2713,7 +2726,6 @@ def analyze_pcap(filepath):
                 sh["protocols"].add(protocol)
                 dh["protocols"].add(protocol)
 
-                conn = connections[conn_key]
                 conn["protocols"].add(protocol)
                 conn["packet_count"] += 1
                 conn["bytes"] += plen
@@ -3013,6 +3025,13 @@ def analyze_pcap(filepath):
         if a.get("dst") and a["dst"] != a.get("src"):
             ip_anomalies[a["dst"]].append(a)
 
+    # Build per-IP connection index once — avoids O(hosts × connections) scans below.
+    # Each entry: ip → [(peer_ip, conn_dict), ...]
+    ip_conns: dict = defaultdict(list)
+    for (ca, cb), _cv in connections.items():
+        ip_conns[ca].append((cb, _cv))
+        ip_conns[cb].append((ca, _cv))
+
     host_risk = {}
     for ip, h in hosts.items():
         score = 0
@@ -3020,16 +3039,14 @@ def analyze_pcap(filepath):
         score += min(sum(_SEV_WEIGHT.get(a.get("severity", "low"), 5)
                          for a in ip_anomalies[ip]), 60)
         # Cross-zone egress to non-private IP (+15)
-        for (ca, cb) in connections:
-            peer = cb if ca == ip else (ca if cb == ip else None)
-            if peer and not is_private(peer):
+        for peer, _ in ip_conns[ip]:
+            if not is_private(peer):
                 score += 15
                 break
         # Suspicious port usage (capped at 20)
         sp_count = sum(
-            1 for (ca, cb), conn in connections.items()
-            if (ca == ip or cb == ip)
-            for p in conn["dst_ports"] if p in SUSPICIOUS_PORTS
+            1 for _, _conn in ip_conns[ip]
+            for p in _conn["dst_ports"] if p in SUSPICIOUS_PORTS
         )
         score += min(sp_count * 5, 20)
         # OT device targeted by write command (+10)
@@ -3040,14 +3057,13 @@ def analyze_pcap(filepath):
     # Attach absolute timestamps to anomalies for the timeline strip
     for a in anomalies:
         src, dst = a.get("src"), a.get("dst")
-        key = tuple(sorted([src, dst])) if src and dst and src != dst else None
+        key = (src, dst) if src and dst and src != dst and src <= dst else \
+              (dst, src) if src and dst and src != dst else None
         conn = connections.get(key) if key else None
         if conn is None and src:
-            # src-only anomalies (port_scan, multiunit_poll): find any conn from src
-            for (ca, cb), cv in connections.items():
-                if ca == src or cb == src:
-                    conn = cv
-                    break
+            # src-only anomalies (port_scan, multiunit_poll): use index instead of full scan
+            _peers = ip_conns.get(src)
+            conn = _peers[0][1] if _peers else None
         a["first_seen"] = conn["abs_first_seen"] if conn else None
         a["last_seen"] = conn["abs_last_seen"] if conn else None
 

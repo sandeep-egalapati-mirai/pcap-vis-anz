@@ -526,6 +526,11 @@ const pinnedNodes = new Set();
 let isolatedNodeIp = null;
 let _minimapInitialized = false;
 let _minimapNodes = [];
+let _visibleNodeIds  = new Set();  // updated by applyFilters / highlightNode; read by drawCanvasEdges
+let _renderedNodeIds = new Set();  // set at render time; used for O(1) _isRendered()
+let _minimapTickCount = 0;         // for minimap throttle
+let _allVlans  = [];               // hoisted from applyFilters — constant per graphData
+let _allIpVers = [];               //   ""
 
 /* ── DOM refs ────────────────────────────────────────────────────────────── */
 const svg            = d3.select("#graph-svg");
@@ -715,6 +720,7 @@ function loadGraph(data) {
   pinnedNodes.clear();
   isolatedNodeIp = null;
   _minimapInitialized = false;
+  _minimapTickCount = 0;
   const _mmEl = document.getElementById("minimap");
   if (_mmEl) _mmEl.style.display = "none";
   // Reset table sort cache so a new upload never serves the previous capture's rows
@@ -815,6 +821,10 @@ function loadGraph(data) {
   activeVlans      = new Set((stats.vlans || []).map(String));
   if ((data.nodes || []).some(n => n.vlan_untagged)) activeVlans.add("untagged");
   activeIpVersions = new Set((stats.ip_versions || []).map(String));
+  // Hoist constant per-dataset filter metadata so applyFilters() doesn't recompute each call
+  _allVlans  = (stats.vlans || []).map(String);
+  if ((data.nodes || []).some(n => n.vlan_untagged)) _allVlans.push("untagged");
+  _allIpVers = (stats.ip_versions || []).map(String);
   // Restore persisted filter preferences (narrows the sets above to last-used selection)
   loadFilterState(stats.protocols || [], stats.host_types || []);
 
@@ -1230,11 +1240,8 @@ function applyFilters(skipFit) {
   }
 
   const visibleNodeIds = new Set();
-  const allVlans = (graphData.stats.vlans || []).map(String);
-  if ((graphData.nodes || []).some(n => n.vlan_untagged)) allVlans.push("untagged");
-  const vlanFilterActive  = allVlans.length > 0 && activeVlans.size < allVlans.length;
-  const allIpVers = (graphData.stats.ip_versions || []).map(String);
-  const ipVerFilterActive = allIpVers.length > 1 && activeIpVersions.size < allIpVers.length;
+  const vlanFilterActive  = _allVlans.length > 0 && activeVlans.size < _allVlans.length;
+  const ipVerFilterActive = _allIpVers.length > 1 && activeIpVersions.size < _allIpVers.length;
   nodesGroup.selectAll(".node").each(function(d) {
     const vlanOk    = !vlanFilterActive ||
       (d.vlans || []).some(v => activeVlans.has(String(v))) ||
@@ -1245,15 +1252,13 @@ function applyFilters(skipFit) {
     const visible   = activeTypes.has(d.host_type) && vlanOk && ipVerOk && tlOk && isolateOk &&
       (!searchTerm || d.ip.includes(searchTerm) ||
        (d.hostname && d.hostname.toLowerCase().includes(searchTerm)));
-    d3.select(this).classed("faded", !visible);
+    const el = d3.select(this);
+    el.classed("faded",      !visible);
+    el.classed("isolated",   d.ip === isolatedNodeIp);
+    el.classed("anom-faded", highlightAnomsMode && !anomalyNodeIps[d.ip]);
     if (visible) visibleNodeIds.add(d.id);
   });
-
-  // Apply isolated ring to the focus node
-  nodesGroup.selectAll(".node").classed("isolated", d => d.ip === isolatedNodeIp);
-
-  // D4: Highlight anomaly nodes — fade all nodes that have no anomalies
-  nodesGroup.selectAll(".node").classed("anom-faded", d => highlightAnomsMode && !anomalyNodeIps[d.ip]);
+  _visibleNodeIds = visibleNodeIds;
 
   linksGroup.selectAll(".link").each(function(d) {
     const protoOk = !(d.protocols && d.protocols.length) ||
@@ -1701,9 +1706,7 @@ function _anomalySummary(type, src, count, items) {
 
 /** Returns true when the given node ID has an SVG element in the current render. */
 function _isRendered(id) {
-  let found = false;
-  nodesGroup.selectAll(".node").each(d => { if (d.id === id) found = true; });
-  return found;
+  return _renderedNodeIds.has(id);
 }
 
 function _jumpToAnomaly(a) {
@@ -1743,12 +1746,6 @@ function drawCanvasEdges() {
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Collect visible node IDs from the SVG node selection
-  const visibleNodeIds = new Set();
-  nodesGroup.selectAll(".node").each(function(d) {
-    if (!d3.select(this).classed("faded")) visibleNodeIds.add(d.id);
-  });
-
   ctx.save();
   ctx.translate(t.x, t.y);
   ctx.scale(t.k, t.k);
@@ -1759,22 +1756,18 @@ function drawCanvasEdges() {
                     (d.protocols || []).some(p => activeProtos.has(p));
     const sid = typeof d.source === "object" ? d.source.id : d.source;
     const tid = typeof d.target === "object" ? d.target.id : d.target;
-    if (!protoOk || !visibleNodeIds.has(sid) || !visibleNodeIds.has(tid)) continue;
+    if (!protoOk || !_visibleNodeIds.has(sid) || !_visibleNodeIds.has(tid)) continue;
 
     const sx = typeof d.source === "object" ? d.source.x : 0;
     const sy = typeof d.source === "object" ? d.source.y : 0;
     const ex = typeof d.target === "object" ? d.target.x : 0;
     const ey = typeof d.target === "object" ? d.target.y : 0;
 
-    const sl = _canvasPLevel[sid] ?? -1;
-    const tl = _canvasPLevel[tid] ?? -1;
-    const isCross = sl !== -1 && tl !== -1 && sl !== tl;
-
     ctx.beginPath();
     ctx.moveTo(sx, sy);
     ctx.lineTo(ex, ey);
-    ctx.strokeStyle = isCross ? "#ff8c00" : protoColor(d.protocols);
-    ctx.lineWidth = 1 + Math.log1p((d.packet_count || 0) / _canvasMaxEdgePkt * 50) * 1.2;
+    ctx.strokeStyle = d._canvasColor;  // precomputed at render time
+    ctx.lineWidth   = d._canvasWidth;  // precomputed at render time
     ctx.stroke();
   }
   ctx.restore();
@@ -1808,6 +1801,7 @@ function renderGraph(data) {
 
   const nodeById = {};
   nodes.forEach(n => nodeById[n.id] = n);
+  _renderedNodeIds = new Set(nodes.map(n => n.id));
 
   let links = data.edges
     .filter(e => nodeById[e.source] && nodeById[e.target] && e.source !== e.target)
@@ -1880,6 +1874,15 @@ function renderGraph(data) {
   // In canvas mode, hide SVG lines and store link data for canvas drawing
   if (useCanvasEdges) {
     _canvasLinks = links;
+    // Precompute static per-edge canvas properties; only re-run when data changes
+    _canvasLinks.forEach(d => {
+      const sid = typeof d.source === "object" ? d.source.id : d.source;
+      const tid = typeof d.target === "object" ? d.target.id : d.target;
+      const sl = _canvasPLevel[sid] ?? -1;
+      const tl = _canvasPLevel[tid] ?? -1;
+      d._canvasColor = (sl !== -1 && tl !== -1 && sl !== tl) ? "#ff8c00" : protoColor(d.protocols);
+      d._canvasWidth = 1 + Math.log1p((d.packet_count || 0) / _canvasMaxEdgePkt * 50) * 1.2;
+    });
     linkSel.style("display", "none");
   }
 
@@ -1992,7 +1995,7 @@ function renderGraph(data) {
         .attr("y", d => ((d.source.y || 0) + (d.target.y || 0)) / 2);
     }
     nodeSel.attr("transform", d => `translate(${d.x},${d.y})`);
-    if (_minimapInitialized) updateMinimap();
+    if (_minimapInitialized && (++_minimapTickCount % 5 === 0)) updateMinimap();
   });
 
   simulation.on("end", () => { clearTimeout(_zoomFitTimer); zoomFit(); });
@@ -2113,12 +2116,13 @@ function highlightNode(d, linkSel, nodeSel) {
   });
 
   nodeSel.classed("faded", n => !connectedIds.has(n.id));
+  _visibleNodeIds = connectedIds;  // keep canvas in sync during hover
 }
 
 function unhighlightAll(linkSel, nodeSel) {
   linkSel.classed("highlighted", false).classed("faded", false);
   nodeSel.classed("faded", false);
-  applyFilters(true);
+  applyFilters(true);  // applyFilters will restore _visibleNodeIds
 }
 
 /* ── Shared node decoration helper ──────────────────────────────────────── */
@@ -3038,6 +3042,8 @@ function _appendPktRows(pkts, t0, start, end) {
       <td>${p.len | 0}</td>
       <td title="${escHtml(p.info || "")}">${escHtml(p.info || "")}</td>
     `;
+    // Cache lowercased text for O(1) search without re-materialising textContent per keystroke
+    tr.dataset.searchText = tr.textContent.toLowerCase();
     tr.addEventListener("click", () => {
       pktTbody.querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
       tr.classList.add("selected");
@@ -7738,18 +7744,24 @@ function applyPktSearch() {
   rows.forEach(row => {
     if (row.querySelector("td[colspan]")) return; // "Load more" row
     total++;
-    const text = row.textContent.toLowerCase();
+    // Use cached lowercase text (set at row build time) to avoid re-materialising textContent
+    const text = row.dataset.searchText || row.textContent.toLowerCase();
     const show = !term || text.includes(term);
     row.style.display = show ? "" : "none";
     if (show) visible++;
   });
   if (countEl) countEl.textContent = term ? `${visible} / ${total}` : "";
 }
+let _pktSearchTimer = null;
+function applyPktSearchDebounced() {
+  clearTimeout(_pktSearchTimer);
+  _pktSearchTimer = setTimeout(applyPktSearch, 160);
+}
 
 (function() {
   const pktSearch = document.getElementById("pkt-search");
   if (pktSearch) {
-    pktSearch.addEventListener("input", applyPktSearch);
+    pktSearch.addEventListener("input", applyPktSearchDebounced);
   }
 })();
 

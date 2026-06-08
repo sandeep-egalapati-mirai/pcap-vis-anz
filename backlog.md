@@ -239,3 +239,22 @@ Items surfaced in the 2026-05-17 robustness review (`REVIEW.md`) that were not a
 ## Polish (2026-06-07, feature/vlan-node-icons)
 
 - [x] VLAN Graph host nodes now show the same host-type emoji icons as the main Graph view — `hostIcon(d.host_type)` appended as `<text class="node-icon">` after the host circle; reuses the existing `hostIcon()` function and `.node-icon` CSS (emoji font stack); `text-anchor: middle` and `pointer-events: none` set for correct centering and click-through.
+
+## Performance Improvements (2026-06-07, feature/perf-improvements)
+
+**Backend — `app.py`**
+- [x] **B1** — MAC formatting: `':'.join(f'{b:02x}' for b in raw[0:6])` → `raw[0:6].hex(":")` (C-level, ~3× faster); same for ARP SHA
+- [x] **B2** — IPv4 dotted-quad: `'.'.join(str(b) for b in ...)` → `socket.inet_ntoa(...)` (C-level) for both `sip`/`dip` and ARP SPA; added `import socket`
+- [x] **B3** — `conn_key`: `tuple(sorted([sip, dip]))` → `(sip, dip) if sip <= dip else (dip, sip)` (eliminates list alloc + sort)
+- [x] **B4** — Reuse `conn` local: removed redundant `conn = connections[conn_key]` at line 2716 and two `connections[conn_key]["dst_ports"].add(...)` re-index calls
+- [x] **B5** — Hoist broadcast check: `is_bcast = dip.endswith(".255") or dip == "255.255.255.255"` computed once; reused for both `dh["flags"]` and `vlan_pkt_bcast`
+- [x] **B6** — Module-level compiled regexes: `_RE_MIME_VALID`, `_RE_CONTENT_DISP_FNAME`, `_RE_HTTP_BASIC_AUTH`, `_RE_SMTP_AUTH_PLAIN`, `_RE_SMTP_AUTH_LOGIN`, `_RE_IMAP_LOGIN` replace inline patterns in hot credential/file block
+- [x] **B7** — Risk-scoring O(H×C) → O(C): build `ip_conns` index once before risk loop; replaces two full `connections` scans per host with per-IP lookup
+- [x] **B8** — Anomaly-timestamp fallback: `ip_conns[src][0]` replaces full `connections` scan per src-only anomaly
+
+**Frontend — `static/js/app.js`**
+- [x] **F1** — Canvas tick visible-set: removed per-tick `nodesGroup.selectAll(".node").each(...)` DOM scan from `drawCanvasEdges`; cache `_visibleNodeIds` updated only in `applyFilters` and `highlightNode`; precompute static per-edge `_canvasColor`/`_canvasWidth` once at render
+- [x] **F2** — Minimap throttle: `updateMinimap()` in tick handler fires only every 5th tick via `_minimapTickCount`
+- [x] **F3** — `applyFilters` single-pass: folded `isolated`/`anom-faded` class writes into the existing `.each()` (was 3 separate `selectAll` passes); hoisted `_allVlans`/`_allIpVers` to module scope (computed once per dataset in `loadGraph`)
+- [x] **F5** — Packet-search debounce: `applyPktSearch` now debounced 160ms; rows cache lowercased text in `dataset.searchText` at build time to avoid re-materialising `textContent` per keystroke
+- [x] **F6** — `_isRendered` O(1): replaced full DOM `.each()` scan with `_renderedNodeIds.has(id)` (Set populated at render time)

@@ -49,6 +49,7 @@ An interactive web-based tool for visualizing network packet captures. Upload a 
 - **Node annotations** — Right-click any node to attach a persistent note (stored in browser localStorage)
 - **Anomaly detection** — 32 detection rules across general network, OT/ICS, IoT, and VLAN threat categories
 - **Large capture support** — Streams up to 1,000,000 packets without loading into memory (up to 100 files · 1 GB total per upload); multi-file uploads processed in parallel
+- **Performance-optimised parsing** — C-level MAC/IPv4 formatting (`bytes.hex`, `socket.inet_ntoa`), branch-compare `conn_key`, hoisted broadcast flag, module-level compiled regexes, and O(C) risk-scoring via a per-IP connection index (replaces prior O(H×C) double-scan); frontend canvas tick uses a cached visible-node set and precomputed per-edge colour/width, minimap throttled to every 5th tick, `applyFilters` folded to a single DOM pass
 
 ## Anomaly Detection
 
