@@ -239,6 +239,9 @@ Sample `.pcap` files are also available at [https://www.malware-traffic-analysis
 pcap-vis-anz/
 ├── app.py                  # Flask backend + PCAP parser (scapy)
 ├── requirements.txt        # Python dependencies
+├── data/
+│   ├── dbip-country-lite.mmdb  # Bundled DB-IP Country Lite GeoIP DB (CC BY 4.0)
+│   └── DB-IP-LICENSE.txt       # Attribution and refresh instructions
 ├── templates/
 │   └── index.html          # Single-page app shell
 ├── static/
@@ -250,6 +253,7 @@ pcap-vis-anz/
     ├── test_anomalies_ot.py    # OT/IoT anomaly rule tests (Modbus writes, DNP3 control, S7, EtherNet/IP, IEC-104, BACnet, IoT)
     ├── test_credentials.py     # Credential extraction tests
     ├── test_file_extraction.py # HTTP file transfer detection tests
+    ├── test_geoip.py           # GeoIP bundled-DB and geo_lookup() tests
     ├── test_helpers.py         # Helper function tests (is_private, mac_vendor, geo_lookup)
     ├── test_http_mqtt_coap.py  # HTTP / MQTT / CoAP parser tests
     ├── test_merge.py           # Multi-file merge tests
@@ -265,7 +269,7 @@ pip install pytest            # or: pip install -r requirements-dev.txt
 pytest tests/ -q
 ```
 
-The suite contains 319 tests across 12 files covering protocol parsers, anomaly detection (including all 16 OT/IoT rules), credential extraction, file transfer detection, multi-file merging, full-fidelity serialization (no port/DNS truncation), and the `/upload` HTTP endpoint.
+The suite contains 332 tests across 13 files covering protocol parsers, anomaly detection (including all 16 OT/IoT rules), credential extraction, file transfer detection, multi-file merging, full-fidelity serialization (no port/DNS truncation), GeoIP bundling, and the `/upload` HTTP endpoint.
 
 ## Configuration
 
@@ -298,9 +302,29 @@ When a capture contains more than `RENDER_NODE_CAP` hosts, the graph view render
 This tool is designed for **air-gapped / offline use**:
 
 - D3.js v7 is bundled locally — no CDN requests
+- **GeoIP database bundled** — [DB-IP Country Lite](https://db-ip.com) (CC BY 4.0) ships as `data/dbip-country-lite.mmdb`; no internet connection or MaxMind account required. Country names, ISO codes, and flag emoji work out of the box. Attribution: *IP Geolocation by DB-IP*.
 - CSS uses system fonts only — no Google Fonts
 - The only outbound browser request is `POST /upload` to the same origin
 - PNG export uses `blob:` URLs — no third-party image host
+
+**Using a richer GeoIP database:** The bundled DB-IP Country Lite resolves country only (city names are absent). If you have a city-level database (`GeoLite2-City.mmdb` or `dbip-city-lite.mmdb`), you can point the app at it:
+
+```bash
+# Environment variable (works with both python app.py and gunicorn)
+GEOIP_DB_PATH=/path/to/GeoLite2-City.mmdb python app.py
+
+# Or place it at the default system path (checked before the bundled DB)
+/usr/share/GeoIP/GeoLite2-City.mmdb
+```
+
+**Refreshing the bundled database:** DB-IP releases free monthly updates.
+
+```bash
+YYYYMM=2026-07  # update to the target month
+curl -L -o /tmp/dbip.mmdb.gz \
+  "https://download.db-ip.com/free/dbip-country-lite-${YYYYMM}.mmdb.gz"
+gunzip -c /tmp/dbip.mmdb.gz > data/dbip-country-lite.mmdb
+```
 
 HTTP security headers are set on every response (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`). The app binds to `127.0.0.1` by default so it is not reachable from the network. Pass `--public` to bind to `0.0.0.0` for LAN access — only do this on trusted networks, as the app processes potentially sensitive capture files.
 

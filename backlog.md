@@ -127,7 +127,7 @@
 
 - OT Map: PNG export exports the current zoom/pan view; consider a "fit-to-full" export option
 - OT Map: Drag-to-reclassify ghost circle may flicker at extreme zoom levels
-- General: GeoIP lookup is optional and silently skipped if MMDB absent; consider a warning banner
+- ~~General: GeoIP lookup is optional and silently skipped if MMDB absent; consider a warning banner~~ — resolved: DB-IP Country Lite bundled (see feature/bundled-geoip)
 - General: Test coverage for `analyze_pcap` and `merge_results` is thin — add integration tests with sample PCAPs
 
 - [x] Feature #4: TCP Follow Stream — "Stream" tab in packet inspector; sorts packets by time, groups by direction (client=blue, server=green), decodes hex payload to ASCII with non-printables as `.`; tab hidden when no payloads captured
@@ -240,6 +240,14 @@ Items surfaced in the 2026-05-17 robustness review (`REVIEW.md`) that were not a
 
 - [x] VLAN Graph host nodes now show the same host-type emoji icons as the main Graph view — `hostIcon(d.host_type)` appended as `<text class="node-icon">` after the host circle; reuses the existing `hostIcon()` function and `.node-icon` CSS (emoji font stack); `text-anchor: middle` and `pointer-events: none` set for correct centering and click-through.
 - [x] **Bug fix**: VLAN graph host-type icons were invisible — `.node-icon` base rule sets `fill: transparent`; main-graph icons are rescued by the more-specific `.node text { fill: var(--text) }` rule, but VLAN node groups use class `vhost` (not `node`) so that rule never applied. Fixed by adding `.attr("fill", "var(--text)")` inline on the VLAN icon text element.
+
+## Bundled GeoIP (2026-06-08, feature/bundled-geoip)
+
+- [x] **GeoIP self-contained** — DB-IP IP-to-Country Lite (CC BY 4.0, June 2026 edition, ~8 MB uncompressed) bundled as `data/dbip-country-lite.mmdb`; no MaxMind account or external download required. Attribution per CC BY 4.0: *IP Geolocation by DB-IP* (https://db-ip.com).
+- [x] **Path resolution** — `_get_geoip_reader()` tries in order: `GEOIP_DB_PATH` env var → `/usr/share/GeoIP/GeoLite2-City.mmdb` → bundled DB. Env var works under gunicorn.
+- [x] **DB-type branching** — `_geoip_is_city` flag set from `metadata().database_type`; Country DB calls `reader.country()` (returns `city/lat/lon=None`); City DB retains existing `reader.city()` path. All consumers already guard with `|| ""`/truthiness so nothing breaks.
+- [x] **Toast self-resolves** — `geoip_available` is now `true` with the bundled DB; `app.js:775` toast no longer fires.
+- [x] **7 unit tests** added in `tests/test_geoip.py` covering reader availability, `geoip_available` flag, `geo_lookup("8.8.8.8") → US`, Country-DB city/lat/lon=None, dict shape, private IP graceful handling.
 
 ## Performance Improvements (2026-06-07, feature/perf-improvements)
 

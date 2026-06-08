@@ -371,18 +371,40 @@ def is_private(ip):
 
 
 _geoip_reader = None
+_geoip_is_city = False          # True when the opened DB supports city-level lookups
 _geoip_lock = threading.Lock()
+
+# Candidate paths tried in order when opening the GeoIP database.
+# 1. GEOIP_DB_PATH env var (gunicorn-safe override, any .mmdb format)
+# 2. System MaxMind/DB-IP City database (provides city names + coords)
+# 3. Bundled DB-IP Country Lite (CC BY 4.0, ships with the repo)
+_GEOIP_BUNDLED = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "data", "dbip-country-lite.mmdb")
+_GEOIP_CANDIDATES = [
+    os.environ.get("GEOIP_DB_PATH", ""),
+    "/usr/share/GeoIP/GeoLite2-City.mmdb",
+    _GEOIP_BUNDLED,
+]
 
 
 def _get_geoip_reader():
-    global _geoip_reader
+    global _geoip_reader, _geoip_is_city
     if _geoip_reader is not None:
         return _geoip_reader
     with _geoip_lock:
         if _geoip_reader is None:
             try:
                 import geoip2.database
-                _geoip_reader = geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-City.mmdb')
+                for path in _GEOIP_CANDIDATES:
+                    if path and os.path.isfile(path):
+                        try:
+                            reader = geoip2.database.Reader(path)
+                            _geoip_reader = reader
+                            db_type = reader.metadata().database_type
+                            _geoip_is_city = "City" in db_type
+                            break
+                        except Exception:
+                            continue
             except Exception:
                 pass
     return _geoip_reader
@@ -394,14 +416,24 @@ def geo_lookup(ip):
     if reader is None:
         return None
     try:
-        r = reader.city(ip)
-        return {
-            "country": r.country.name,
-            "country_code": r.country.iso_code,
-            "city": r.city.name,
-            "lat": float(r.location.latitude) if r.location.latitude is not None else None,
-            "lon": float(r.location.longitude) if r.location.longitude is not None else None,
-        }
+        if _geoip_is_city:
+            r = reader.city(ip)
+            return {
+                "country": r.country.name,
+                "country_code": r.country.iso_code,
+                "city": r.city.name,
+                "lat": float(r.location.latitude) if r.location.latitude is not None else None,
+                "lon": float(r.location.longitude) if r.location.longitude is not None else None,
+            }
+        else:
+            r = reader.country(ip)
+            return {
+                "country": r.country.name,
+                "country_code": r.country.iso_code,
+                "city": None,
+                "lat": None,
+                "lon": None,
+            }
     except Exception:
         return None
 
